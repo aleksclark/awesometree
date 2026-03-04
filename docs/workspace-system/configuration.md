@@ -1,40 +1,57 @@
 # Configuration
 
-## `~/.config/workspaces.toml`
+## `~/.config/awesometree/config.json`
 
-```toml
-[defaults]
-repo = "/home/user/work/myrepo"
-branch = "master"
-
-[[workspace]]
-name = "feature-x"
-repo = "/home/user/work/myrepo"
-branch = "master"
-# layout = "tile"   # tile|fair|max|floating
-# path = "~/custom" # overrides worktree
-# gui = ["firefox"] # extra apps
+```json
+{
+  "projects": [
+    {
+      "name": "myrepo",
+      "repo": "~/work/myrepo",
+      "branch": "master",
+      "gui": ["firefox"],
+      "layout": "tile",
+      "workspaces": [
+        { "name": "feature-x", "active": true, "tag_index": 10, "dir": "..." },
+        { "name": "bugfix-y", "active": false, "tag_index": 0, "dir": "" }
+      ]
+    }
+  ]
+}
 ```
 
-## Fields
+## Project Fields
 
-| Field | Req | Description |
-|-------|-----|-------------|
-| `name` | yes | Used in tag name and worktree dir |
-| `repo` | no | Git repo (fallback: `[defaults]`) |
-| `branch` | no | Base branch; omit for path-only |
-| `path` | no | Explicit dir (skips worktree) |
-| `gui` | no | Shell commands launched with Zed |
-| `layout` | no | WM layout (default: `tile`) |
+| Field | Required | Description |
+|-------|----------|-------------|
+| `name` | yes | Project identifier |
+| `repo` | yes | Path to git repo (`~/` expanded) |
+| `branch` | no | Base branch for new worktrees (default: `master`) |
+| `gui` | no | Extra shell commands launched alongside Zed |
+| `layout` | no | WM layout: `tile`, `fair`, `max`, `floating` |
 
-## Runtime State
+## Workspace Entry Fields
 
-`~/.local/state/workspaces.json` tracks `tag_index`, `dir`,
-`active` per workspace. Managed by `ws`, not user-edited.
+| Field | Managed | Description |
+|-------|---------|-------------|
+| `name` | user | Workspace name (used in tag and worktree dir) |
+| `active` | auto | Whether workspace is currently up |
+| `tag_index` | auto | AwesomeWM `sharedtagindex` (≥ `TAG_OFFSET`) |
+| `dir` | auto | Resolved worktree path when active |
 
-## Worktrees
+## Worktree Layout
 
-At `~/worktrees/<name>` (`/` -> `-`). Removed on `destroy`;
-kept on `close`.
+```
+~/worktrees/<project>/<workspace-name>/
+```
 
-See: [ws CLI](ws-cli.md) | [Lifecycle](lifecycle.md)
+Slashes in workspace names become hyphens. Created on `up`;
+removed on `destroy`; kept on `close`.
+
+## Tag Indexing
+
+Tag indices start at `TAG_OFFSET = 10` to avoid collision
+with static AwesomeWM tags (1–9). Allocated by finding the
+first unused index.
+
+See: [CLI Reference](ws-cli.md) | [Lifecycle](lifecycle.md)

@@ -3,36 +3,44 @@
 ## States
 
 ```
-[unconfigured] --create--> [inactive] --up--> [active]
-[active] --close--> [inactive]
-[active] --destroy--> [unconfigured]
+[no config] ──create──▶ [inactive] ──up──▶ [active]
+                 [active] ──close──▶ [inactive]
+                 [active] ──destroy──▶ [removed]
 ```
 
-## Create (`ws create` / `Super+I`)
+## Create (`awesometree create` / create form)
 
-1. Append `[[workspace]]` to `workspaces.toml`
-2. `git fetch origin <branch>` in source repo
-3. Create worktree at `~/worktrees/<name>`
-4. Unset upstream (push defaults to `origin/<ws-branch>`)
-5. Eval Lua to add `P:<name>` tag
-6. Launch `zeditor -n <dir>` + configured `gui` commands
-7. Write state JSON
+1. Validate project exists (or create new project)
+2. Append `WorkspaceEntry` to the project in config JSON
+3. Run `Manager::up` (see below)
 
-## Up (`ws up`)
+## Up (`Manager::up`)
 
-Same as create steps 2-7 from existing config. On startup,
-`setup_autostart()` runs `ws up` for all workspaces.
+1. `git fetch origin <branch>` in source repo
+2. `git worktree add` at `~/worktrees/<project>/<name>`
+   (reuses existing branch or creates from `origin/<branch>`)
+3. `git branch --unset-upstream` on the new branch
+4. Eval Lua via `awesome-client` to create `P:<name>` tag
+   with `sharedtagindex` (offset from `TAG_OFFSET = 10`)
+5. Launch `zeditor -n <dir>` + any `gui` commands
+6. Mark workspace active in config, save JSON
 
-## Close (`ws down --keep-worktree`)
+On startup, `awesometree up` (no name) brings up all
+previously-active workspaces without launching apps.
 
-1. Restore previous tag, kill clients, delete tag
-2. Remove from state; worktree stays on disk
+## Close (`awesometree close`)
 
-## Destroy (`ws destroy`)
+1. Detect current `P:` tag via `awesome-client`
+2. Restore previous tag (`awful.tag.history.restore`)
+3. Kill tag clients, delete tag
+4. Mark workspace inactive; worktree stays on disk
 
-1. Abort if `git status --porcelain` shows changes
-2. Close (kill clients, delete tag)
-3. `git worktree remove`
-4. Remove from TOML config
+## Destroy (`awesometree destroy-current`)
 
-See: [ws CLI](ws-cli.md) | [Lua module](lua-module.md)
+1. Detect current `P:` tag
+2. Abort if `git status --porcelain` shows changes
+3. Restore previous tag, kill clients, delete tag
+4. `git worktree remove`
+5. Remove workspace entry from config JSON
+
+See: [CLI Reference](ws-cli.md) | [Configuration](configuration.md)

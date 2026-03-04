@@ -2,8 +2,17 @@ use gpui::prelude::FluentBuilder;
 use gpui::*;
 use std::sync::mpsc;
 
+#[derive(Clone)]
+pub struct PickerItem {
+    pub name: String,
+    pub project: String,
+    pub active: bool,
+}
+
+pub const CREATE_SENTINEL: &str = "\0CREATE";
+
 pub enum PickerMode {
-    List { items: Vec<String>, prompt: String },
+    List { items: Vec<PickerItem> },
     Freeform { prompt: String },
     CreateForm {
         projects: Vec<String>,
@@ -71,7 +80,7 @@ pub fn parse_create_result(s: &str) -> Option<CreateFormResult> {
     }
 }
 
-actions!(ws_picker, [Cancel, Confirm, SelectNext, SelectPrev, TabForward, TabBack]);
+actions!(ws_picker, [Cancel, Confirm, SelectNext, SelectPrev, TabForward, TabBack, OpenCreate]);
 
 #[derive(Clone, Copy, PartialEq)]
 enum FormField {
@@ -82,7 +91,7 @@ enum FormField {
 }
 
 struct PickerView {
-    items: Vec<String>,
+    items: Vec<PickerItem>,
     filtered: Vec<usize>,
     query: String,
     selected: usize,
@@ -96,7 +105,6 @@ struct PickerView {
     projects: Vec<String>,
     project_filtered: Vec<usize>,
     project_selected: usize,
-    prompt: String,
     tx: mpsc::Sender<String>,
     focus: FocusHandle,
 }
@@ -110,7 +118,7 @@ impl PickerView {
     ) -> Self {
         let focus = cx.focus_handle();
         match mode {
-            PickerMode::List { items, prompt } => {
+            PickerMode::List { items } => {
                 let filtered = (0..items.len()).collect();
                 Self {
                     items,
@@ -127,12 +135,11 @@ impl PickerView {
                     projects: vec![],
                     project_filtered: vec![],
                     project_selected: 0,
-                    prompt,
                     tx,
                     focus,
                 }
             }
-            PickerMode::Freeform { prompt } => Self {
+            PickerMode::Freeform { prompt: _ } => Self {
                 items: vec![],
                 filtered: vec![],
                 query: String::new(),
@@ -147,7 +154,6 @@ impl PickerView {
                 projects: vec![],
                 project_filtered: vec![],
                 project_selected: 0,
-                prompt,
                 tx,
                 focus,
             },
@@ -168,7 +174,6 @@ impl PickerView {
                     projects,
                     project_filtered,
                     project_selected: 0,
-                    prompt: String::new(),
                     tx,
                     focus,
                 }
@@ -190,7 +195,7 @@ impl PickerView {
                 .items
                 .iter()
                 .enumerate()
-                .filter(|(_, item)| fuzzy_match(&item.to_lowercase(), &q))
+                .filter(|(_, item)| fuzzy_match(&item.name.to_lowercase(), &q))
                 .map(|(i, _)| i)
                 .collect();
         }
@@ -306,7 +311,7 @@ impl PickerView {
             }
             self.query.clone()
         } else if let Some(&idx) = self.filtered.get(self.selected) {
-            self.items[idx].clone()
+            self.items[idx].name.clone()
         } else {
             window.remove_window();
             return;
@@ -381,6 +386,11 @@ impl PickerView {
             cx.notify();
         }
     }
+
+    fn on_open_create(&mut self, _: &OpenCreate, window: &mut Window, _cx: &mut Context<Self>) {
+        let _ = self.tx.send(CREATE_SENTINEL.to_string());
+        window.remove_window();
+    }
 }
 
 fn bg() -> Rgba { rgba(0x1e1e2eff) }
@@ -398,8 +408,24 @@ fn btn_hover() -> Rgba { rgba(0xb4d0fbff) }
 fn new_badge() -> Rgba { rgba(0xf9e2afff) }
 fn new_badge_fg() -> Rgba { rgba(0x1e1e2eff) }
 
-fn render_form_field(label: &str, value: &str, focused: bool, placeholder: &str) -> Div {
+fn render_form_field(
+    label: &str,
+    value: &str,
+    focused: bool,
+    placeholder: &str,
+    field: FormField,
+    cx: &mut Context<'_, PickerView>,
+) -> Stateful<Div> {
     div()
+        .id(ElementId::Name(format!("field-{label}").into()))
+        .cursor_pointer()
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(move |view, _, _, cx| {
+                view.form_field = field;
+                cx.notify();
+            }),
+        )
         .flex()
         .flex_col()
         .gap(px(4.))
@@ -560,6 +586,8 @@ impl PickerView {
                         &name_val,
                         field == FormField::Name,
                         "e.g. aleks/my-feature",
+                        FormField::Name,
+                        cx,
                     ))
                     .child(
                         div()
@@ -571,6 +599,8 @@ impl PickerView {
                                 &project_val,
                                 field == FormField::Project,
                                 "select or type new name",
+                                FormField::Project,
+                                cx,
                             ))
                             .when(field == FormField::Project && !project_filtered.is_empty(), |this: Div| {
                                 this.child(render_dropdown_items(
@@ -589,12 +619,16 @@ impl PickerView {
                             &repo_val,
                             field == FormField::Repo,
                             "/path/to/git/repo",
+                            FormField::Repo,
+                            cx,
                         ))
                         .child(render_form_field(
                             "SOURCE BRANCH",
                             &branch_val,
                             field == FormField::Branch,
                             "master",
+                            FormField::Branch,
+                            cx,
                         ))
                     }),
             )
@@ -668,6 +702,19 @@ impl PickerView {
     fn render_picker(&mut self, cx: &mut Context<Self>) -> Div {
         let filtered = self.filtered.clone();
         let selected = self.selected;
+        let items = &self.items;
+
+        let mut groups: Vec<(String, Vec<(usize, usize)>)> = Vec::new();
+        for (vi, &item_idx) in filtered.iter().enumerate() {
+            let project = &items[item_idx].project;
+            if let Some(last) = groups.last_mut() {
+                if &last.0 == project {
+                    last.1.push((vi, item_idx));
+                    continue;
+                }
+            }
+            groups.push((project.clone(), vec![(vi, item_idx)]));
+        }
 
         div()
             .key_context("Picker")
@@ -678,6 +725,7 @@ impl PickerView {
             .on_action(cx.listener(Self::on_prev))
             .on_action(cx.listener(Self::on_tab))
             .on_action(cx.listener(Self::on_tab_back))
+            .on_action(cx.listener(Self::on_open_create))
             .flex()
             .flex_col()
             .size_full()
@@ -690,6 +738,9 @@ impl PickerView {
                     .py(px(10.))
                     .border_b_1()
                     .border_color(border_color())
+                    .flex()
+                    .items_center()
+                    .justify_between()
                     .child(
                         div()
                             .flex()
@@ -698,46 +749,72 @@ impl PickerView {
                             .child(
                                 div()
                                     .text_color(accent())
-                                    .text_size(px(14.))
-                                    .child(format!("{} ", self.prompt)),
+                                    .text_size(px(16.))
+                                    .child("Select Workspace"),
                             )
                             .child(
                                 div()
-                                    .text_size(px(16.))
+                                    .text_size(px(14.))
+                                    .text_color(fg_dim())
                                     .child(if self.query.is_empty() {
-                                        "...".to_string()
+                                        String::new()
                                     } else {
                                         self.query.clone()
                                     }),
                             ),
+                    )
+                    .child(
+                        div()
+                            .id("create-btn")
+                            .px(px(8.))
+                            .py(px(2.))
+                            .rounded(px(4.))
+                            .bg(btn_bg())
+                            .text_color(btn_fg())
+                            .text_size(px(16.))
+                            .cursor_pointer()
+                            .hover(|s| s.bg(btn_hover()))
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(|view, _, window, _cx| {
+                                    let _ = view.tx.send(CREATE_SENTINEL.to_string());
+                                    window.remove_window();
+                                }),
+                            )
+                            .child("+"),
                     ),
             )
             .when(!self.freeform, |this: Div| {
-                this.child(
-                    div().flex().flex_col().overflow_y_hidden().children(
-                        filtered.iter().enumerate().map(|(vi, &item_idx)| {
-                            let item = self.items[item_idx].clone();
-                            let is_selected = vi == selected;
+                let mut list = div().flex().flex_col().overflow_y_hidden();
+                for (project, entries) in groups {
+                    list = list.child(
+                        div()
+                            .px(px(16.))
+                            .pt(px(10.))
+                            .pb(px(4.))
+                            .child(
+                                div()
+                                    .text_size(px(11.))
+                                    .text_color(fg_dim())
+                                    .child(project.to_uppercase()),
+                            ),
+                    );
+                    for (vi, item_idx) in entries {
+                        let item = items[item_idx].clone();
+                        let is_selected = vi == selected;
 
-                            let (dot, label) = if item.starts_with("● ") {
-                                (true, item[4..].to_string())
-                            } else if item.starts_with("  ") {
-                                (false, item[2..].to_string())
-                            } else {
-                                (false, item.clone())
-                            };
-
+                        list = list.child(
                             div()
                                 .id(ElementId::Name(format!("item-{vi}").into()))
                                 .px(px(16.))
-                                .py(px(6.))
+                                .py(px(4.))
                                 .bg(if is_selected { bg_selected() } else { bg() })
                                 .hover(|s| s.bg(bg_hover()))
                                 .cursor_pointer()
                                 .on_mouse_down(
                                     MouseButton::Left,
                                     cx.listener(move |view, _, window, _cx| {
-                                        let _ = view.tx.send(view.items[item_idx].clone());
+                                        let _ = view.tx.send(view.items[item_idx].name.clone());
                                         window.remove_window();
                                     }),
                                 )
@@ -751,19 +828,24 @@ impl PickerView {
                                                 .w(px(8.))
                                                 .h(px(8.))
                                                 .rounded(px(4.))
-                                                .when(dot, |s: Div| s.bg(active_dot()))
-                                                .when(!dot, |s: Div| s.bg(gpui::transparent_black())),
+                                                .when(item.active, |s: Div| s.bg(active_dot()))
+                                                .when(!item.active, |s: Div| {
+                                                    s.bg(gpui::transparent_black())
+                                                }),
                                         )
                                         .child(
                                             div()
                                                 .text_size(px(14.))
-                                                .when(is_selected, |s: Div| s.text_color(accent()))
-                                                .child(label),
+                                                .when(is_selected, |s: Div| {
+                                                    s.text_color(accent())
+                                                })
+                                                .child(item.name.clone()),
                                         ),
-                                )
-                        }),
-                    ),
-                )
+                                ),
+                        );
+                    }
+                }
+                this.child(list)
             })
             .on_key_down(cx.listener(|view, event: &KeyDownEvent, _window, cx| {
                 let key = &event.keystroke.key;

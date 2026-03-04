@@ -1,33 +1,35 @@
-# Lua Module: `workspaces.lua`
+# WM Integration
 
-At `~/.config/awesome/workspaces.lua`, imported in `rc.lua`.
+All WM logic lives in the Rust binary behind the `Adapter` trait
+(`src/wm.rs`). The old `workspaces.lua` module has been removed.
 
-## Functions
+## `AwesomeAdapter`
 
-| Function | Purpose |
-|----------|---------|
-| `show_picker(s)` | Menu of all workspaces |
-| `show_create(s)` | 3-step prompt |
-| `switch(name)` | Focus `P:<name>` tag |
-| `cycle_next()` | Cycle project tags |
-| `destroy_current()` | Dirty-check + remove |
-| `close_current()` | Keep worktree, kill clients |
-| `assign_client(c)` | Auto-assign Zed windows |
-| `ensure_tag(name)` | Find or create `P:` tag |
-| `get_active_names()` | `ws names` |
-| `get_all_names()` | `ws allnames` |
-| `get_dir(name)` | `ws dir` |
-| `get_repos()` | `ws repos` |
-| `get_branches(repo)` | `git branch -a` |
+Implements `Adapter` by piping Lua to `awesome-client`. Operations:
 
-## Client Assignment
+| Method | Lua Effect |
+|--------|------------|
+| `create_tag` | `awful.tag.add("P:<name>", {sharedtagindex=N, layout=…})` |
+| `delete_tag` | Find `P:<name>` tag and call `t:delete()` |
+| `switch_tag` | `sharedtags.viewonly(t, screen)` |
+| `kill_tag_clients` | Kill all clients on `P:<name>` tag |
+| `get_current_tag_name` | Write focused tag name to `/tmp/ws-current-tag` |
+| `restore_previous_tag` | `awful.tag.history.restore()` |
 
-Connected to `manage` signal. Matches Zed window titles
-against `P:` tag names to auto-move windows.
+## rc.lua Setup
+
+See `rc.lua.example` for a minimal integration. It provides:
+
+1. **Keybindings** — `Super+O/I/D/J/L` spawn `awesometree` commands
+2. **Window rules** — Float the picker/projects windows, no titlebar
+3. **Client assignment** — `manage` signal moves Zed windows to
+   matching `P:` tags by title
+4. **Autostart** — `awesometree up` + `awesometree daemon`
 
 ## Tag Convention
 
-Project tags use `P:` prefix. `sharedtagindex` starts at
-1000+ to avoid collision with static tags 1-9.
+Project tags use `P:` prefix (e.g. `P:feature-x`).
+`sharedtagindex` starts at 10+ to avoid collision with static
+tags 1–9. The `sharedtags` library handles multi-screen display.
 
-See: [ws CLI](ws-cli.md) | [Lifecycle](lifecycle.md)
+See: [Architecture](../architecture.md) | [Keybindings](../keybindings.md)

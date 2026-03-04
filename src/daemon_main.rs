@@ -1,7 +1,7 @@
 use awesometree::config;
 use awesometree::daemon::{self, DaemonCmd};
 use awesometree::notify;
-use awesometree::picker::{self, parse_create_result, PickerMode};
+use awesometree::picker::{self, parse_create_result, PickerItem, PickerMode, CREATE_SENTINEL};
 use awesometree::projects_ui;
 use awesometree::tray;
 use awesometree::wm::AwesomeAdapter;
@@ -65,6 +65,7 @@ fn main() {
             KeyBinding::new("up", picker::SelectPrev, None),
             KeyBinding::new("tab", picker::TabForward, None),
             KeyBinding::new("shift-tab", picker::TabBack, None),
+            KeyBinding::new("ctrl-n", picker::OpenCreate, None),
             KeyBinding::new("escape", projects_ui::Dismiss, None),
             KeyBinding::new("enter", projects_ui::ConfirmAction, None),
             KeyBinding::new("tab", projects_ui::NextField, None),
@@ -87,7 +88,8 @@ fn main() {
             while let Some(cmd) = rx.next().await {
                 match cmd {
                     DaemonCmd::Pick => {
-                        let _ = cx.update(|cx| do_pick(cx));
+                        let cmd_tx = fut_tx.clone();
+                        let _ = cx.update(|cx| do_pick(cx, cmd_tx));
                     }
                     DaemonCmd::Create => {
                         let _ = cx.update(|cx| do_create(cx));
@@ -114,18 +116,16 @@ extern "C" fn handle_signal(_sig: libc::c_int) {
     std::process::exit(0);
 }
 
-fn do_pick(cx: &mut App) {
+fn do_pick(cx: &mut App, cmd_tx: mpsc::UnboundedSender<DaemonCmd>) {
     let cfg = config::load_config().unwrap_or_default();
     let all_workspaces = cfg.all_workspaces();
 
-    let items: Vec<String> = all_workspaces
+    let items: Vec<PickerItem> = all_workspaces
         .iter()
-        .map(|ws| {
-            if ws.active {
-                format!("● {}", ws.name)
-            } else {
-                format!("  {}", ws.name)
-            }
+        .map(|ws| PickerItem {
+            name: ws.name.clone(),
+            project: ws.project.clone(),
+            active: ws.active,
         })
         .collect();
 
@@ -133,24 +133,22 @@ fn do_pick(cx: &mut App) {
 
     picker::open_picker_window(
         cx,
-        PickerMode::List {
-            items,
-            prompt: "workspace".into(),
-        },
+        PickerMode::List { items },
         tx,
     );
 
     notify::spawn_task("Open workspace", move || {
-        let selection = rx.recv().map_err(|_| "picker cancelled".to_string())?;
+        let Ok(selection) = rx.recv() else { return Ok(()) };
+
+        if selection == CREATE_SENTINEL {
+            let _ = cmd_tx.unbounded_send(DaemonCmd::Create);
+            return Ok(());
+        }
 
         let cfg = config::load_config().map_err(|e| format!("load config: {e}"))?;
         let all_workspaces = cfg.all_workspaces();
 
-        let name = selection
-            .strip_prefix("● ")
-            .or_else(|| selection.strip_prefix("  "))
-            .unwrap_or(&selection)
-            .to_string();
+        let name = selection;
 
         let is_active = all_workspaces.iter().any(|ws| ws.name == name && ws.active);
         let wm = Box::new(AwesomeAdapter::new());
@@ -187,7 +185,7 @@ fn do_create(cx: &mut App) {
     picker::open_picker_window(cx, PickerMode::CreateForm { projects: project_names }, tx);
 
     notify::spawn_task("Create workspace", move || {
-        let result_str = rx.recv().map_err(|_| "picker cancelled".to_string())?;
+        let Ok(result_str) = rx.recv() else { return Ok(()) };
 
         let result =
             parse_create_result(&result_str).ok_or_else(|| "invalid form result".to_string())?;
