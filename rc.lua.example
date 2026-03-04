@@ -1,0 +1,53 @@
+-- Minimal AwesomeWM integration for awesometree.
+-- Add this to your rc.lua after installing awesometree and awesometree-daemon to PATH.
+--
+-- This replaces workspaces.lua entirely. All logic lives in the Rust binary;
+-- AwesomeWM just binds keys and auto-assigns Zed clients.
+
+local awful = require("awful")
+local gears = require("gears")
+local sharedtags = require("sharedtags")
+
+-- Workspace keybindings (add to your globalkeys)
+local workspace_keys = gears.table.join(
+    awful.key({ modkey }, "o", function()
+        awful.spawn("awesometree pick")
+    end, {description = "pick workspace", group = "workspace"}),
+
+    awful.key({ modkey }, "i", function()
+        awful.spawn("awesometree create-interactive")
+    end, {description = "create workspace", group = "workspace"}),
+
+    awful.key({ modkey }, "d", function()
+        awful.spawn("awesometree destroy-current")
+    end, {description = "destroy current workspace", group = "workspace"}),
+
+    awful.key({ modkey }, "j", function()
+        awful.spawn("awesometree close")
+    end, {description = "close current workspace", group = "workspace"}),
+
+    awful.key({ modkey }, "l", function()
+        awful.spawn("awesometree cycle")
+    end, {description = "cycle workspaces", group = "workspace"})
+)
+
+-- Merge into your globalkeys:
+-- globalkeys = gears.table.join(globalkeys, workspace_keys)
+
+-- Auto-assign Zed windows to project tags
+client.connect_signal("manage", function(c)
+    if c.class == "dev.zed.Zed" or c.class == "Zed" or c.class == "zed" then
+        local title = c.name or ""
+        for _, t in ipairs(root.tags()) do
+            local pname = t.name:match("^P:(.+)$")
+            if pname and title:find(pname, 1, true) then
+                c:move_to_tag(t)
+                break
+            end
+        end
+    end
+end)
+
+-- Start all workspaces and daemon on login
+awful.spawn.with_shell("awesometree up")
+awful.spawn.with_shell("pgrep -x awesometree-dae || awesometree-daemon")

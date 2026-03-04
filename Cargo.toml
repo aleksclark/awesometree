@@ -1,0 +1,23 @@
+[package]
+name = "awesometree"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "awesometree"
+path = "src/main.rs"
+
+[[bin]]
+name = "awesometree-daemon"
+path = "src/daemon_main.rs"
+
+[dependencies]
+clap = { version = "4.5.60", features = ["derive"] }
+gpui = "0.2.2"
+image = { version = "0.25", default-features = false, features = ["png"] }
+libc = "0.2"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.149"
+toml = "1.0.3"
+tray = "0.1"
+tray-menu = "0.1"

@@ -1,0 +1,155 @@
+use std::process::Command;
+
+pub trait Adapter {
+    fn create_tag(&self, name: &str, index: i32, layout: &str) -> Result<(), String>;
+    fn delete_tag(&self, name: &str) -> Result<(), String>;
+    fn switch_tag(&self, name: &str) -> Result<(), String>;
+    fn kill_tag_clients(&self, name: &str) -> Result<(), String>;
+    fn eval(&self, lua: &str) -> Result<(), String>;
+    fn get_current_tag_name(&self) -> Result<Option<String>, String>;
+    fn restore_previous_tag(&self) -> Result<(), String>;
+}
+
+pub struct AwesomeAdapter;
+
+impl AwesomeAdapter {
+    pub fn new() -> Self {
+        Self
+    }
+
+    fn awesome_eval(&self, lua: &str) -> Result<(), String> {
+        let mut child = Command::new("awesome-client")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .map_err(|e| format!("spawn awesome-client: {e}"))?;
+        use std::io::Write;
+        if let Some(ref mut stdin) = child.stdin {
+            stdin
+                .write_all(lua.as_bytes())
+                .map_err(|e| format!("write to awesome-client: {e}"))?;
+        }
+        child.wait().map_err(|e| format!("awesome-client: {e}"))?;
+        Ok(())
+    }
+}
+
+fn layout_to_lua(layout: &str) -> &str {
+    match layout {
+        "fair" => "awful.layout.suit.fair",
+        "max" => "awful.layout.suit.max",
+        "floating" => "awful.layout.suit.floating",
+        _ => "awful.layout.suit.tile",
+    }
+}
+
+impl Adapter for AwesomeAdapter {
+    fn create_tag(&self, name: &str, index: i32, layout: &str) -> Result<(), String> {
+        let lua_layout = layout_to_lua(layout);
+        let lua = format!(
+            r#"
+local awful = require("awful")
+local sharedtags = require("sharedtags")
+local target_tag = nil
+for _, t in ipairs(root.tags()) do
+    if t.name == "P:{name}" then
+        target_tag = t
+        break
+    end
+end
+if not target_tag then
+    target_tag = awful.tag.add("P:{name}", {{
+        screen = awful.screen.focused(),
+        layout = {lua_layout},
+        sharedtagindex = {index},
+    }})
+end
+"#
+        );
+        self.awesome_eval(&lua)
+    }
+
+    fn delete_tag(&self, name: &str) -> Result<(), String> {
+        let lua = format!(
+            r#"
+for _, t in ipairs(root.tags()) do
+    if t.name == "P:{name}" then
+        t:delete()
+        break
+    end
+end
+"#
+        );
+        self.awesome_eval(&lua)
+    }
+
+    fn switch_tag(&self, name: &str) -> Result<(), String> {
+        let lua = format!(
+            r#"
+local awful = require("awful")
+local sharedtags = require("sharedtags")
+for _, t in ipairs(root.tags()) do
+    if t.name == "P:{name}" then
+        sharedtags.viewonly(t, awful.screen.focused())
+        break
+    end
+end
+"#
+        );
+        self.awesome_eval(&lua)
+    }
+
+    fn kill_tag_clients(&self, name: &str) -> Result<(), String> {
+        let lua = format!(
+            r#"
+for _, c in ipairs(client.get()) do
+    for _, t in ipairs(c:tags()) do
+        if t.name == "P:{name}" then
+            c:kill()
+            break
+        end
+    end
+end
+"#
+        );
+        self.awesome_eval(&lua)
+    }
+
+    fn eval(&self, lua: &str) -> Result<(), String> {
+        self.awesome_eval(lua)
+    }
+
+    fn get_current_tag_name(&self) -> Result<Option<String>, String> {
+        self.awesome_eval(
+            r#"
+local awful = require("awful")
+local s = awful.screen.focused()
+local tag = s.selected_tag
+if tag then
+    local f = io.open("/tmp/ws-current-tag", "w")
+    if f then
+        f:write(tag.name)
+        f:close()
+    end
+end
+"#,
+        )?;
+        let path = std::path::Path::new("/tmp/ws-current-tag");
+        if !path.exists() {
+            return Ok(None);
+        }
+        let data = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
+        let _ = std::fs::remove_file(path);
+        let tag_name = data.trim();
+        if let Some(ws_name) = tag_name.strip_prefix("P:") {
+            Ok(Some(ws_name.to_string()))
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn restore_previous_tag(&self) -> Result<(), String> {
+        self.awesome_eval(r#"require("awful").tag.history.restore()"#)
+    }
+}

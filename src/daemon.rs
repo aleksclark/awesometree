@@ -1,0 +1,71 @@
+use std::io::{BufRead, BufReader, Write};
+use std::os::unix::net::{UnixListener, UnixStream};
+use std::path::PathBuf;
+use std::sync::mpsc;
+
+pub const SOCK_PATH: &str = "/tmp/awesometree.sock";
+
+#[derive(Debug)]
+pub enum DaemonCmd {
+    Pick,
+    Create,
+    Reload,
+}
+
+pub fn send_command(cmd: &str) -> Result<String, String> {
+    let mut stream =
+        UnixStream::connect(SOCK_PATH).map_err(|e| format!("connect to daemon: {e}"))?;
+    stream
+        .write_all(format!("{cmd}\n").as_bytes())
+        .map_err(|e| format!("write to daemon: {e}"))?;
+    stream
+        .shutdown(std::net::Shutdown::Write)
+        .map_err(|e| format!("shutdown write: {e}"))?;
+    let mut response = String::new();
+    BufReader::new(&stream)
+        .read_line(&mut response)
+        .map_err(|e| format!("read from daemon: {e}"))?;
+    Ok(response.trim().to_string())
+}
+
+pub fn is_running() -> bool {
+    UnixStream::connect(SOCK_PATH).is_ok()
+}
+
+pub fn listen(tx: mpsc::Sender<DaemonCmd>) {
+    let sock = PathBuf::from(SOCK_PATH);
+    let _ = std::fs::remove_file(&sock);
+
+    let listener = UnixListener::bind(&sock).expect("failed to bind daemon socket");
+
+    for stream in listener.incoming().flatten() {
+        if let Some(cmd) = handle_client(stream, &tx) {
+            let _ = tx.send(cmd);
+        }
+    }
+}
+
+fn handle_client(stream: UnixStream, _tx: &mpsc::Sender<DaemonCmd>) -> Option<DaemonCmd> {
+    let mut reader = BufReader::new(&stream);
+    let mut line = String::new();
+    if reader.read_line(&mut line).is_err() {
+        return None;
+    }
+    let trimmed = line.trim();
+    let cmd = match trimmed {
+        "pick" => Some(DaemonCmd::Pick),
+        "create" => Some(DaemonCmd::Create),
+        "reload" => Some(DaemonCmd::Reload),
+        _ => None,
+    };
+
+    let mut writer = stream;
+    let response = if cmd.is_some() { "ok" } else { "unknown command" };
+    let _ = writer.write_all(format!("{response}\n").as_bytes());
+
+    cmd
+}
+
+pub fn cleanup() {
+    let _ = std::fs::remove_file(SOCK_PATH);
+}
