@@ -34,6 +34,18 @@ local workspace_keys = gears.table.join(
 -- Merge into your globalkeys:
 -- globalkeys = gears.table.join(globalkeys, workspace_keys)
 
+-- Picker window rule: floating, centered, no titlebar
+-- Add to your awful.rules.rules table:
+-- { rule = { class = "awesometree-picker" },
+--   properties = {
+--     floating = true,
+--     titlebars_enabled = false,
+--     placement = awful.placement.centered,
+--     skip_taskbar = true,
+--     ontop = true,
+--   }
+-- },
+
 -- Auto-assign Zed windows to project tags
 client.connect_signal("manage", function(c)
     if c.class == "dev.zed.Zed" or c.class == "Zed" or c.class == "zed" then
@@ -50,4 +62,4 @@ end)
 
 -- Start all workspaces and daemon on login
 awful.spawn.with_shell("awesometree up")
-awful.spawn.with_shell("pgrep -x awesometree-dae || awesometree-daemon")
+awful.spawn.with_shell("sleep 1; pgrep -x awesometree-dae || awesometree daemon")

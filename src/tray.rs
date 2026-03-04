@@ -1,9 +1,12 @@
 use std::process::Command;
+use std::time::Duration;
 use tray::dpi::PhysicalPosition;
 use tray::{Icon, TrayIconBuilder, TrayIconEvent, MouseButton, MouseButtonState};
 use tray_menu::{PopupMenu, TextEntry, Divider};
 
-pub fn run_tray(workspaces: Vec<(String, bool)>) {
+pub fn run_tray(_workspaces: Vec<(String, bool)>) {
+    gtk::init().expect("failed to init gtk");
+
     let icon_bytes = include_bytes!("../assets/tray-icon.png");
     let img = image::load_from_memory(icon_bytes)
         .expect("failed to load tray icon")
@@ -13,14 +16,14 @@ pub fn run_tray(workspaces: Vec<(String, bool)>) {
 
     let _tray = TrayIconBuilder::new()
         .with_icon(icon)
-        .with_tooltip("Workspaces")
+        .with_tooltip("awesometree")
         .build()
         .expect("failed to build tray icon");
 
     let receiver = TrayIconEvent::receiver();
     loop {
-        if let Ok(event) = receiver.recv() {
-            match event {
+        while let Ok(event) = receiver.try_recv() {
+            let position = match &event {
                 TrayIconEvent::Click {
                     button: MouseButton::Left,
                     button_state: MouseButtonState::Up,
@@ -32,53 +35,47 @@ pub fn run_tray(workspaces: Vec<(String, bool)>) {
                     button_state: MouseButtonState::Up,
                     position,
                     ..
-                } => {
-                    show_menu(&workspaces, position);
-                }
-                _ => {}
+                } => Some(*position),
+                _ => None,
+            };
+
+            if let Some(pos) = position {
+                show_menu(pos);
             }
         }
+        while gtk::events_pending() {
+            gtk::main_iteration();
+        }
+        std::thread::sleep(Duration::from_millis(16));
     }
 }
 
-fn show_menu(workspaces: &[(String, bool)], position: PhysicalPosition<f64>) {
+fn show_menu(position: PhysicalPosition<f64>) {
     let mut menu = PopupMenu::new();
-    menu.add(&TextEntry::of("pick", "Pick Workspace"));
     menu.add(&TextEntry::of("create", "Create Workspace"));
+    menu.add(&TextEntry::of("pick", "Open Workspace"));
     menu.add(&Divider);
-
-    for (name, active) in workspaces {
-        let label = if *active {
-            format!("● {name}")
-        } else {
-            format!("  {name}")
-        };
-        menu.add(&TextEntry::of(name.clone(), label));
-    }
-
+    menu.add(&TextEntry::of("projects", "Projects"));
     menu.add(&Divider);
-    menu.add(&TextEntry::of("quit", "Quit"));
+    menu.add(&TextEntry::of("restart", "Restart"));
+    menu.add(&TextEntry::of("exit", "Exit"));
 
     if let Some(id) = menu.popup(position) {
         match id.0.as_str() {
-            "pick" => {
-                let _ = Command::new("awesometree").arg("pick").spawn();
-            }
             "create" => {
                 let _ = Command::new("awesometree").arg("create-interactive").spawn();
             }
-            "quit" => std::process::exit(0),
-            ws_name => {
-                let is_active = workspaces
-                    .iter()
-                    .any(|(n, a)| n == ws_name && *a);
-                if is_active {
-                    let _ = Command::new("awesometree").args(["switch", ws_name]).output();
-                } else {
-                    let _ = Command::new("awesometree").args(["up", ws_name]).output();
-                    let _ = Command::new("awesometree").args(["switch", ws_name]).output();
-                }
+            "pick" => {
+                let _ = Command::new("awesometree").arg("pick").spawn();
             }
+            "projects" => {
+                let _ = Command::new("awesometree").arg("projects-ui").spawn();
+            }
+            "restart" => {
+                let _ = Command::new("awesometree").arg("restart-daemon").spawn();
+            }
+            "exit" => std::process::exit(0),
+            _ => {}
         }
     }
 }

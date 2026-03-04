@@ -1,12 +1,15 @@
 use awesometree::config;
 use awesometree::daemon::{self, DaemonCmd};
-use awesometree::picker::{run_picker, PickerMode};
+use awesometree::notify;
+use awesometree::picker::{self, parse_create_result, PickerMode};
+use awesometree::projects_ui;
 use awesometree::tray;
 use awesometree::wm::AwesomeAdapter;
 use awesometree::workspace::{Manager, UpOptions};
-use std::collections::HashSet;
-use std::path::PathBuf;
-use std::sync::mpsc;
+use futures_channel::mpsc;
+use futures_util::StreamExt;
+use gpui::*;
+use std::sync::mpsc as std_mpsc;
 use std::thread;
 
 extern crate libc;
@@ -19,23 +22,32 @@ fn main() {
 
     daemon::cleanup();
 
-    let (tx, rx) = mpsc::channel::<DaemonCmd>();
+    unsafe {
+        libc::signal(libc::SIGTERM, handle_signal as *const () as libc::sighandler_t);
+        libc::signal(libc::SIGINT, handle_signal as *const () as libc::sighandler_t);
+    }
 
-    let tx_sock = tx.clone();
+    let (fut_tx, fut_rx) = mpsc::unbounded::<DaemonCmd>();
+
+    let sock_tx = fut_tx.clone();
     thread::spawn(move || {
-        daemon::listen(tx_sock);
+        let (std_tx, std_rx) = std_mpsc::channel::<DaemonCmd>();
+        thread::spawn(move || {
+            daemon::listen(std_tx);
+        });
+        for cmd in std_rx {
+            if sock_tx.unbounded_send(cmd).is_err() {
+                break;
+            }
+        }
     });
 
     thread::spawn(|| {
         let cfg = config::load_config().unwrap_or_default();
-        let state = config::load_state().unwrap_or_default();
         let workspaces: Vec<(String, bool)> = cfg
-            .workspaces
+            .all_workspaces()
             .iter()
-            .map(|ws| {
-                let active = state.get(&ws.name).is_some_and(|s| s.active);
-                (ws.name.clone(), active)
-            })
+            .map(|ws| (ws.name.clone(), ws.active))
             .collect();
         if let Err(e) = std::panic::catch_unwind(|| {
             tray::run_tray(workspaces);
@@ -44,19 +56,55 @@ fn main() {
         }
     });
 
-    unsafe {
-        libc::signal(libc::SIGTERM, handle_signal as *const () as libc::sighandler_t);
-        libc::signal(libc::SIGINT, handle_signal as *const () as libc::sighandler_t);
-    }
+    let app = Application::new();
+    app.run(move |cx: &mut App| {
+        cx.bind_keys([
+            KeyBinding::new("escape", picker::Cancel, None),
+            KeyBinding::new("enter", picker::Confirm, None),
+            KeyBinding::new("down", picker::SelectNext, None),
+            KeyBinding::new("up", picker::SelectPrev, None),
+            KeyBinding::new("tab", picker::TabForward, None),
+            KeyBinding::new("shift-tab", picker::TabBack, None),
+            KeyBinding::new("escape", projects_ui::Dismiss, None),
+            KeyBinding::new("enter", projects_ui::ConfirmAction, None),
+            KeyBinding::new("tab", projects_ui::NextField, None),
+            KeyBinding::new("shift-tab", projects_ui::PrevField, None),
+        ]);
 
-    loop {
-        match rx.recv() {
-            Ok(DaemonCmd::Pick) => do_pick(),
-            Ok(DaemonCmd::Create) => do_create(),
-            Ok(DaemonCmd::Reload) => {}
-            Err(_) => break,
-        }
-    }
+        notify::open_sentinel_window(cx);
+
+        let mut error_rx = notify::setup_error_listener(cx);
+
+        cx.spawn(async move |cx: &mut AsyncApp| {
+            while let Some(msg) = error_rx.next().await {
+                let _ = cx.update(|cx| notify::show_error_window(cx, msg));
+            }
+        })
+        .detach();
+
+        cx.spawn(async move |cx: &mut AsyncApp| {
+            let mut rx = fut_rx;
+            while let Some(cmd) = rx.next().await {
+                match cmd {
+                    DaemonCmd::Pick => {
+                        let _ = cx.update(|cx| do_pick(cx));
+                    }
+                    DaemonCmd::Create => {
+                        let _ = cx.update(|cx| do_create(cx));
+                    }
+                    DaemonCmd::Projects => {
+                        let _ = cx.update(|cx| projects_ui::open_projects_window(cx));
+                    }
+                    DaemonCmd::Restart => {
+                        daemon::cleanup();
+                        std::process::exit(0);
+                    }
+                    DaemonCmd::Reload => {}
+                }
+            }
+        })
+        .detach();
+    });
 
     daemon::cleanup();
 }
@@ -66,137 +114,123 @@ extern "C" fn handle_signal(_sig: libc::c_int) {
     std::process::exit(0);
 }
 
-fn do_pick() {
+fn do_pick(cx: &mut App) {
     let cfg = config::load_config().unwrap_or_default();
-    let state = config::load_state().unwrap_or_default();
+    let all_workspaces = cfg.all_workspaces();
 
-    let all_names = cfg.all_names();
-    let active_names = cfg.active_names(&state);
-    let active_set: HashSet<&str> = active_names.iter().map(|s| s.as_str()).collect();
-
-    let items: Vec<String> = all_names
+    let items: Vec<String> = all_workspaces
         .iter()
-        .map(|n| {
-            if active_set.contains(n.as_str()) {
-                format!("● {n}")
+        .map(|ws| {
+            if ws.active {
+                format!("● {}", ws.name)
             } else {
-                format!("  {n}")
+                format!("  {}", ws.name)
             }
         })
         .collect();
 
-    let Some(selection) = run_picker(PickerMode::List {
-        items,
-        prompt: "workspace".into(),
-    }) else {
-        return;
-    };
+    let (tx, rx) = std_mpsc::channel::<String>();
 
-    let name = selection
-        .strip_prefix("● ")
-        .or_else(|| selection.strip_prefix("  "))
-        .unwrap_or(&selection);
+    picker::open_picker_window(
+        cx,
+        PickerMode::List {
+            items,
+            prompt: "workspace".into(),
+        },
+        tx,
+    );
 
-    let wm = Box::new(AwesomeAdapter::new());
+    notify::spawn_task("Open workspace", move || {
+        let selection = rx.recv().map_err(|_| "picker cancelled".to_string())?;
 
-    if active_set.contains(name) {
-        let mgr = Manager::new(&cfg, state, wm);
-        let _ = mgr.switch(name);
-    } else {
-        let ws = match cfg.find_workspace(name) {
-            Some(ws) => ws.clone(),
-            None => return,
+        let cfg = config::load_config().map_err(|e| format!("load config: {e}"))?;
+        let all_workspaces = cfg.all_workspaces();
+
+        let name = selection
+            .strip_prefix("● ")
+            .or_else(|| selection.strip_prefix("  "))
+            .unwrap_or(&selection)
+            .to_string();
+
+        let is_active = all_workspaces.iter().any(|ws| ws.name == name && ws.active);
+        let wm = Box::new(AwesomeAdapter::new());
+
+        if is_active {
+            let mgr = Manager::new(cfg, wm);
+            mgr.switch(&name).map_err(|e| format!("switch to {name}: {e}"))?;
+        } else {
+            let ws = cfg
+                .find_workspace(&name)
+                .ok_or_else(|| format!("workspace not found: {name}"))?;
+            let mut mgr = Manager::new(cfg, wm);
+            mgr.up(
+                &ws,
+                &UpOptions {
+                    create_tag: true,
+                    launch_apps: true,
+                },
+            )
+            .map_err(|e| format!("bring up {name}: {e}"))?;
+            mgr.switch(&name).map_err(|e| format!("switch to {name}: {e}"))?;
+        }
+
+        Ok(())
+    });
+}
+
+fn do_create(cx: &mut App) {
+    let cfg = config::load_config().unwrap_or_default();
+    let project_names = cfg.project_names();
+
+    let (tx, rx) = std_mpsc::channel::<String>();
+
+    picker::open_picker_window(cx, PickerMode::CreateForm { projects: project_names }, tx);
+
+    notify::spawn_task("Create workspace", move || {
+        let result_str = rx.recv().map_err(|_| "picker cancelled".to_string())?;
+
+        let result =
+            parse_create_result(&result_str).ok_or_else(|| "invalid form result".to_string())?;
+
+        let mut cfg = config::load_config().map_err(|e| format!("load config: {e}"))?;
+
+        if result.is_new_project {
+            cfg.add_project(&result.project, &result.repo_path, &result.branch);
+        }
+
+        let proj = cfg
+            .find_project(&result.project)
+            .ok_or_else(|| format!("project not found: {}", result.project))?
+            .clone();
+
+        cfg.append_workspace_to_project(&result.project, &result.name)?;
+        config::save_config(&cfg).map_err(|e| format!("save config: {e}"))?;
+
+        let ws = config::Workspace {
+            name: result.name.clone(),
+            project: proj.name.clone(),
+            repo: proj.repo.clone(),
+            branch: proj.branch.clone(),
+            gui: proj.gui.clone(),
+            layout: proj.layout.clone(),
+            active: false,
+            tag_index: 0,
+            dir: String::new(),
         };
-        let mut mgr = Manager::new(&cfg, state, wm);
-        let _ = mgr.up(
+
+        let wm = Box::new(AwesomeAdapter::new());
+        let mut mgr = Manager::new(cfg, wm);
+        mgr.up(
             &ws,
             &UpOptions {
                 create_tag: true,
                 launch_apps: true,
             },
-        );
-        let _ = mgr.switch(name);
-    }
-}
+        )
+        .map_err(|e| format!("bring up {}: {e}", result.name))?;
+        mgr.switch(&result.name)
+            .map_err(|e| format!("switch to {}: {e}", result.name))?;
 
-fn do_create() {
-    let cfg = config::load_config().unwrap_or_default();
-    let state = config::load_state().unwrap_or_default();
-
-    let Some(name) = run_picker(PickerMode::Freeform {
-        prompt: "workspace name".into(),
-    }) else {
-        return;
-    };
-
-    let repos = config::list_repos();
-    let mut repo_items: Vec<String> = repos
-        .iter()
-        .filter_map(|r| r.file_name().map(|n| n.to_string_lossy().into_owned()))
-        .collect();
-    if !cfg.defaults.repo.is_empty() {
-        repo_items.insert(0, cfg.defaults.repo.clone());
-    }
-
-    let repo_map: std::collections::HashMap<String, PathBuf> = repos
-        .iter()
-        .filter_map(|r| {
-            r.file_name()
-                .map(|n| (n.to_string_lossy().into_owned(), r.clone()))
-        })
-        .collect();
-
-    let Some(repo_sel) = run_picker(PickerMode::List {
-        items: repo_items,
-        prompt: "repo".into(),
-    }) else {
-        return;
-    };
-
-    let repo_path = repo_map
-        .get(&repo_sel)
-        .cloned()
-        .unwrap_or_else(|| PathBuf::from(&repo_sel));
-
-    let mut branch_items = config::list_branches(&repo_path);
-    if !cfg.defaults.branch.is_empty() {
-        branch_items.insert(0, cfg.defaults.branch.clone());
-    }
-
-    let Some(branch) = run_picker(PickerMode::List {
-        items: branch_items,
-        prompt: "branch".into(),
-    }) else {
-        return;
-    };
-
-    let abs_repo = std::fs::canonicalize(&repo_path)
-        .unwrap_or(repo_path)
-        .to_string_lossy()
-        .into_owned();
-
-    if let Err(e) = config::append_to_config(&name, &abs_repo, &branch) {
-        eprintln!("Error: {e}");
-        return;
-    }
-
-    let ws = config::Workspace {
-        name: name.clone(),
-        repo: abs_repo,
-        branch,
-        path: String::new(),
-        gui: vec![],
-        layout: String::new(),
-    };
-
-    let wm = Box::new(AwesomeAdapter::new());
-    let mut mgr = Manager::new(&cfg, state, wm);
-    let _ = mgr.up(
-        &ws,
-        &UpOptions {
-            create_tag: true,
-            launch_apps: true,
-        },
-    );
-    let _ = mgr.switch(&name);
+        Ok(())
+    });
 }

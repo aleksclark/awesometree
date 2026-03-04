@@ -9,6 +9,8 @@ pub const SOCK_PATH: &str = "/tmp/awesometree.sock";
 pub enum DaemonCmd {
     Pick,
     Create,
+    Projects,
+    Restart,
     Reload,
 }
 
@@ -55,6 +57,8 @@ fn handle_client(stream: UnixStream, _tx: &mpsc::Sender<DaemonCmd>) -> Option<Da
     let cmd = match trimmed {
         "pick" => Some(DaemonCmd::Pick),
         "create" => Some(DaemonCmd::Create),
+        "projects" => Some(DaemonCmd::Projects),
+        "restart" => Some(DaemonCmd::Restart),
         "reload" => Some(DaemonCmd::Reload),
         _ => None,
     };

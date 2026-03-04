@@ -1,56 +1,59 @@
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Serialize, Deserialize, Clone)]
 pub struct Config {
     #[serde(default)]
-    pub defaults: Defaults,
-    #[serde(default, rename = "workspace")]
-    pub workspaces: Vec<Workspace>,
+    pub projects: Vec<Project>,
 }
 
-#[derive(Debug, Default, Deserialize, Clone)]
-pub struct Defaults {
-    #[serde(default)]
-    pub repo: String,
-    #[serde(default)]
-    pub branch: String,
-}
-
-#[derive(Debug, Deserialize, Clone)]
-pub struct Workspace {
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct Project {
     pub name: String,
-    #[serde(default)]
     pub repo: String,
     #[serde(default)]
     pub branch: String,
     #[serde(default)]
-    pub path: String,
+    pub workspaces: Vec<WorkspaceEntry>,
     #[serde(default)]
     pub gui: Vec<String>,
     #[serde(default)]
     pub layout: String,
 }
 
-#[derive(Debug, Default, Serialize, Deserialize, Clone)]
-pub struct WorkspaceState {
-    pub tag_index: i32,
-    pub dir: String,
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct WorkspaceEntry {
+    pub name: String,
+    #[serde(default)]
     pub active: bool,
+    #[serde(default)]
+    pub tag_index: i32,
+    #[serde(default)]
+    pub dir: String,
 }
 
-pub type State = HashMap<String, WorkspaceState>;
+#[derive(Debug, Clone)]
+pub struct Workspace {
+    pub name: String,
+    pub project: String,
+    pub repo: String,
+    pub branch: String,
+    pub gui: Vec<String>,
+    pub layout: String,
+    pub active: bool,
+    pub tag_index: i32,
+    pub dir: String,
+}
 
 pub const TAG_OFFSET: i32 = 10;
 
-pub fn config_path() -> PathBuf {
-    dirs_home().join(".config/workspaces.toml")
+pub fn config_dir() -> PathBuf {
+    dirs_home().join(".config/awesometree")
 }
 
-pub fn state_path() -> PathBuf {
-    dirs_home().join(".local/state/workspaces.json")
+pub fn config_path() -> PathBuf {
+    config_dir().join("config.json")
 }
 
 pub fn worktree_base() -> PathBuf {
@@ -63,73 +66,138 @@ fn dirs_home() -> PathBuf {
 
 pub fn load_config() -> Result<Config, String> {
     let path = config_path();
-    let data = fs::read_to_string(&path).map_err(|e| format!("load config: {e}"))?;
-    toml::from_str(&data).map_err(|e| format!("parse config: {e}"))
-}
-
-pub fn load_state() -> Result<State, String> {
-    let path = state_path();
     if !path.exists() {
-        return Ok(HashMap::new());
+        return Ok(Config::default());
     }
-    let data = fs::read_to_string(&path).map_err(|e| format!("load state: {e}"))?;
-    serde_json::from_str(&data).map_err(|e| format!("parse state: {e}"))
+    let data = fs::read_to_string(&path).map_err(|e| format!("load config: {e}"))?;
+    serde_json::from_str(&data).map_err(|e| format!("parse config: {e}"))
 }
 
-pub fn save_state(state: &State) -> Result<(), String> {
-    let path = state_path();
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|e| format!("create state dir: {e}"))?;
-    }
-    let data = serde_json::to_string_pretty(state).map_err(|e| format!("serialize state: {e}"))?;
-    fs::write(&path, data).map_err(|e| format!("write state: {e}"))
+pub fn save_config(cfg: &Config) -> Result<(), String> {
+    let dir = config_dir();
+    fs::create_dir_all(&dir).map_err(|e| format!("create config dir: {e}"))?;
+    let data = serde_json::to_string_pretty(cfg).map_err(|e| format!("serialize config: {e}"))?;
+    fs::write(config_path(), data).map_err(|e| format!("write config: {e}"))
 }
 
 impl Config {
-    pub fn find_workspace(&self, name: &str) -> Option<&Workspace> {
-        self.workspaces.iter().find(|w| w.name == name)
+    pub fn all_workspaces(&self) -> Vec<Workspace> {
+        self.projects
+            .iter()
+            .flat_map(|p| {
+                p.workspaces.iter().map(move |ws| Workspace {
+                    name: ws.name.clone(),
+                    project: p.name.clone(),
+                    repo: p.repo.clone(),
+                    branch: p.branch.clone(),
+                    gui: p.gui.clone(),
+                    layout: p.layout.clone(),
+                    active: ws.active,
+                    tag_index: ws.tag_index,
+                    dir: ws.dir.clone(),
+                })
+            })
+            .collect()
+    }
+
+    pub fn find_workspace(&self, name: &str) -> Option<Workspace> {
+        self.all_workspaces().into_iter().find(|w| w.name == name)
+    }
+
+    pub fn find_project(&self, name: &str) -> Option<&Project> {
+        self.projects.iter().find(|p| p.name == name)
     }
 
     pub fn all_names(&self) -> Vec<String> {
-        self.workspaces.iter().map(|w| w.name.clone()).collect()
+        self.all_workspaces().iter().map(|w| w.name.clone()).collect()
     }
 
-    pub fn active_names(&self, state: &State) -> Vec<String> {
-        self.workspaces
+    pub fn active_names(&self) -> Vec<String> {
+        self.all_workspaces()
             .iter()
-            .filter(|w| state.get(&w.name).is_some_and(|s| s.active))
+            .filter(|w| w.active)
             .map(|w| w.name.clone())
             .collect()
+    }
+
+    pub fn project_names(&self) -> Vec<String> {
+        self.projects.iter().map(|p| p.name.clone()).collect()
+    }
+
+    pub fn set_workspace_active(&mut self, name: &str, active: bool, tag_index: i32, dir: &str) {
+        for p in &mut self.projects {
+            for ws in &mut p.workspaces {
+                if ws.name == name {
+                    ws.active = active;
+                    ws.tag_index = tag_index;
+                    ws.dir = dir.to_string();
+                    return;
+                }
+            }
+        }
+    }
+
+    pub fn set_workspace_inactive(&mut self, name: &str) {
+        for p in &mut self.projects {
+            for ws in &mut p.workspaces {
+                if ws.name == name {
+                    ws.active = false;
+                    ws.tag_index = 0;
+                    ws.dir.clear();
+                    return;
+                }
+            }
+        }
+    }
+
+    pub fn append_workspace_to_project(&mut self, project_name: &str, ws_name: &str) -> Result<(), String> {
+        for p in &mut self.projects {
+            if p.name == project_name {
+                p.workspaces.push(WorkspaceEntry {
+                    name: ws_name.to_string(),
+                    active: false,
+                    tag_index: 0,
+                    dir: String::new(),
+                });
+                return Ok(());
+            }
+        }
+        Err(format!("project not found: {project_name}"))
+    }
+
+    pub fn remove_workspace(&mut self, ws_name: &str) {
+        for p in &mut self.projects {
+            p.workspaces.retain(|ws| ws.name != ws_name);
+        }
+    }
+
+    pub fn add_project(&mut self, name: &str, repo: &str, branch: &str) {
+        self.projects.push(Project {
+            name: name.to_string(),
+            repo: repo.to_string(),
+            branch: branch.to_string(),
+            workspaces: vec![],
+            gui: vec![],
+            layout: String::new(),
+        });
     }
 }
 
 impl Workspace {
     pub fn resolve_dir(&self) -> PathBuf {
-        if !self.path.is_empty() {
-            return expand_home(&self.path);
-        }
         if !self.branch.is_empty() {
             let safe = self.name.replace('/', "-");
-            return worktree_base().join(safe);
+            return worktree_base().join(&self.project).join(safe);
         }
         std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
     }
 
-    pub fn resolve_repo(&self, defaults: &Defaults) -> String {
-        let r = if !self.repo.is_empty() {
-            &self.repo
-        } else {
-            &defaults.repo
-        };
-        expand_home(r).to_string_lossy().into_owned()
+    pub fn resolve_repo(&self) -> String {
+        expand_home(&self.repo).to_string_lossy().into_owned()
     }
 
-    pub fn resolve_branch(&self, defaults: &Defaults) -> String {
-        if !self.branch.is_empty() {
-            self.branch.clone()
-        } else {
-            defaults.branch.clone()
-        }
+    pub fn resolve_branch(&self) -> String {
+        self.branch.clone()
     }
 
     pub fn resolve_layout(&self) -> &str {
@@ -149,61 +217,26 @@ fn expand_home(p: &str) -> PathBuf {
     }
 }
 
-pub fn allocate_tag_index(name: &str, state: &State) -> i32 {
-    if let Some(s) = state.get(name) {
-        return s.tag_index;
+pub fn allocate_tag_index(name: &str, cfg: &Config) -> i32 {
+    for p in &cfg.projects {
+        for ws in &p.workspaces {
+            if ws.name == name && ws.tag_index > 0 {
+                return ws.tag_index;
+            }
+        }
     }
-    let used: std::collections::HashSet<i32> = state.values().map(|s| s.tag_index).collect();
+    let used: std::collections::HashSet<i32> = cfg
+        .projects
+        .iter()
+        .flat_map(|p| p.workspaces.iter())
+        .filter(|ws| ws.active)
+        .map(|ws| ws.tag_index)
+        .collect();
     let mut i = TAG_OFFSET;
     while used.contains(&i) {
         i += 1;
     }
     i
-}
-
-pub fn append_to_config(name: &str, repo: &str, branch: &str) -> Result<(), String> {
-    let path = config_path();
-    let entry = format!("\n[[workspace]]\nname = \"{name}\"\nrepo = \"{repo}\"\nbranch = \"{branch}\"\n");
-    let mut data = fs::read_to_string(&path).unwrap_or_default();
-    data.push_str(&entry);
-    fs::write(&path, data).map_err(|e| format!("write config: {e}"))
-}
-
-pub fn remove_from_config(name: &str) -> Result<(), String> {
-    let path = config_path();
-    let data = fs::read_to_string(&path).map_err(|e| format!("read config: {e}"))?;
-    let lines: Vec<&str> = data.split('\n').collect();
-    let mut out: Vec<&str> = Vec::new();
-    let mut skip = false;
-    let target = format!("name = \"{name}\"");
-
-    for line in &lines {
-        let trimmed = line.trim();
-        if trimmed == "[[workspace]]" {
-            skip = false;
-            out.push(line);
-            continue;
-        }
-        if skip {
-            continue;
-        }
-        if trimmed == target {
-            while out.last().is_some_and(|l| {
-                let t = l.trim();
-                t == "[[workspace]]" || t.is_empty()
-            }) {
-                out.pop();
-            }
-            skip = true;
-            continue;
-        }
-        out.push(line);
-    }
-    while out.last().is_some_and(|l| l.trim().is_empty()) {
-        out.pop();
-    }
-    let result = out.join("\n") + "\n";
-    fs::write(&path, result).map_err(|e| format!("write config: {e}"))
 }
 
 pub fn list_repos() -> Vec<PathBuf> {
