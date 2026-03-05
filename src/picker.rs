@@ -1,3 +1,4 @@
+use crate::text_input::{TextInput, TextInputEvent};
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 use std::sync::mpsc;
@@ -28,6 +29,8 @@ pub struct CreateFormResult {
 }
 
 pub fn open_picker_window(cx: &mut App, mode: PickerMode, tx: mpsc::Sender<String>) {
+    crate::text_input::bind_text_input_keys(cx);
+
     let bounds = Bounds::centered(None, size(px(500.), px(420.)), cx);
     cx.open_window(
         WindowOptions {
@@ -50,6 +53,7 @@ pub fn run_picker(mode: PickerMode) -> Option<String> {
 
     let app = Application::new();
     app.run(move |cx: &mut App| {
+        crate::text_input::bind_text_input_keys(cx);
         cx.bind_keys([
             KeyBinding::new("escape", Cancel, None),
             KeyBinding::new("enter", Confirm, None),
@@ -93,15 +97,15 @@ enum FormField {
 struct PickerView {
     items: Vec<PickerItem>,
     filtered: Vec<usize>,
-    query: String,
+    query: Entity<TextInput>,
     selected: usize,
     freeform: bool,
     is_form: bool,
     form_field: FormField,
-    form_name: String,
-    form_project: String,
-    form_repo: String,
-    form_branch: String,
+    form_name: Entity<TextInput>,
+    form_project: Entity<TextInput>,
+    form_repo: Entity<TextInput>,
+    form_branch: Entity<TextInput>,
     projects: Vec<String>,
     project_filtered: Vec<usize>,
     project_selected: usize,
@@ -117,21 +121,39 @@ impl PickerView {
         cx: &mut Context<Self>,
     ) -> Self {
         let focus = cx.focus_handle();
+        let query = cx.new(|cx| TextInput::new("type to filter...", cx));
+        let form_name = cx.new(|cx| TextInput::new("e.g. aleks/my-feature", cx));
+        let form_project = cx.new(|cx| TextInput::new("select or type new name", cx));
+        let form_repo = cx.new(|cx| TextInput::new("/path/to/git/repo", cx));
+        let form_branch = cx.new(|cx| TextInput::new("master", cx));
+
+        cx.subscribe_in(&query, _window, |view, _input, _event: &TextInputEvent, _window, cx| {
+            view.filter(cx);
+            cx.notify();
+        })
+        .detach();
+
+        cx.subscribe_in(&form_project, _window, |view, _input, _event: &TextInputEvent, _window, cx| {
+            view.filter_projects(cx);
+            cx.notify();
+        })
+        .detach();
+
         match mode {
             PickerMode::List { items } => {
                 let filtered = (0..items.len()).collect();
                 Self {
                     items,
                     filtered,
-                    query: String::new(),
+                    query,
                     selected: 0,
                     freeform: false,
                     is_form: false,
                     form_field: FormField::Name,
-                    form_name: String::new(),
-                    form_project: String::new(),
-                    form_repo: String::new(),
-                    form_branch: String::new(),
+                    form_name,
+                    form_project,
+                    form_repo,
+                    form_branch,
                     projects: vec![],
                     project_filtered: vec![],
                     project_selected: 0,
@@ -142,15 +164,15 @@ impl PickerView {
             PickerMode::Freeform { prompt: _ } => Self {
                 items: vec![],
                 filtered: vec![],
-                query: String::new(),
+                query,
                 selected: 0,
                 freeform: true,
                 is_form: false,
                 form_field: FormField::Name,
-                form_name: String::new(),
-                form_project: String::new(),
-                form_repo: String::new(),
-                form_branch: String::new(),
+                form_name,
+                form_project,
+                form_repo,
+                form_branch,
                 projects: vec![],
                 project_filtered: vec![],
                 project_selected: 0,
@@ -162,15 +184,15 @@ impl PickerView {
                 Self {
                     items: vec![],
                     filtered: vec![],
-                    query: String::new(),
+                    query,
                     selected: 0,
                     freeform: false,
                     is_form: true,
                     form_field: FormField::Name,
-                    form_name: String::new(),
-                    form_project: String::new(),
-                    form_repo: String::new(),
-                    form_branch: String::new(),
+                    form_name,
+                    form_project,
+                    form_repo,
+                    form_branch,
                     projects,
                     project_filtered,
                     project_selected: 0,
@@ -181,13 +203,31 @@ impl PickerView {
         }
     }
 
-    fn is_new_project(&self) -> bool {
-        !self.form_project.is_empty()
-            && !self.projects.iter().any(|p| p == &self.form_project)
+    fn read_field(&self, field: FormField, cx: &App) -> String {
+        match field {
+            FormField::Name => self.form_name.read(cx).value().to_string(),
+            FormField::Project => self.form_project.read(cx).value().to_string(),
+            FormField::Repo => self.form_repo.read(cx).value().to_string(),
+            FormField::Branch => self.form_branch.read(cx).value().to_string(),
+        }
     }
 
-    fn filter(&mut self) {
-        let q = self.query.to_lowercase();
+    fn active_field_entity(&self) -> &Entity<TextInput> {
+        match self.form_field {
+            FormField::Name => &self.form_name,
+            FormField::Project => &self.form_project,
+            FormField::Repo => &self.form_repo,
+            FormField::Branch => &self.form_branch,
+        }
+    }
+
+    fn is_new_project(&self, cx: &App) -> bool {
+        let project = self.form_project.read(cx).value().to_string();
+        !project.is_empty() && !self.projects.iter().any(|p| p == &project)
+    }
+
+    fn filter(&mut self, cx: &App) {
+        let q = self.query.read(cx).value().to_lowercase();
         if q.is_empty() {
             self.filtered = (0..self.items.len()).collect();
         } else {
@@ -202,8 +242,8 @@ impl PickerView {
         self.selected = 0;
     }
 
-    fn filter_projects(&mut self) {
-        let q = self.form_project.to_lowercase();
+    fn filter_projects(&mut self, cx: &App) {
+        let q = self.form_project.read(cx).value().to_lowercase();
         if q.is_empty() {
             self.project_filtered = (0..self.projects.len()).collect();
         } else {
@@ -218,35 +258,11 @@ impl PickerView {
         self.project_selected = 0;
     }
 
-    fn push_char_to_field(&mut self, ch: char) {
-        match self.form_field {
-            FormField::Name => self.form_name.push(ch),
-            FormField::Project => {
-                self.form_project.push(ch);
-                self.filter_projects();
-            }
-            FormField::Repo => self.form_repo.push(ch),
-            FormField::Branch => self.form_branch.push(ch),
-        }
-    }
-
-    fn pop_char_from_field(&mut self) {
-        match self.form_field {
-            FormField::Name => { self.form_name.pop(); }
-            FormField::Project => {
-                self.form_project.pop();
-                self.filter_projects();
-            }
-            FormField::Repo => { self.form_repo.pop(); }
-            FormField::Branch => { self.form_branch.pop(); }
-        }
-    }
-
-    fn next_form_field(&self) -> FormField {
+    fn next_form_field(&self, cx: &App) -> FormField {
         match self.form_field {
             FormField::Name => FormField::Project,
             FormField::Project => {
-                if self.is_new_project() {
+                if self.is_new_project(cx) {
                     FormField::Repo
                 } else {
                     FormField::Name
@@ -257,10 +273,10 @@ impl PickerView {
         }
     }
 
-    fn prev_form_field(&self) -> FormField {
+    fn prev_form_field(&self, cx: &App) -> FormField {
         match self.form_field {
             FormField::Name => {
-                if self.is_new_project() {
+                if self.is_new_project(cx) {
                     FormField::Branch
                 } else {
                     FormField::Project
@@ -272,44 +288,58 @@ impl PickerView {
         }
     }
 
+    fn focus_active_field(&self, window: &mut Window, cx: &App) {
+        window.focus(&self.active_field_entity().read(cx).focus_handle(cx));
+    }
+
     fn on_cancel(&mut self, _: &Cancel, window: &mut Window, _cx: &mut Context<Self>) {
         window.remove_window();
     }
 
     fn on_confirm(&mut self, _: &Confirm, window: &mut Window, cx: &mut Context<Self>) {
         if self.is_form {
+            let project_val = self.read_field(FormField::Project, cx);
             if self.form_field == FormField::Project && !self.project_filtered.is_empty() {
                 let idx = self.project_filtered[self.project_selected];
-                self.form_project = self.projects[idx].clone();
-                self.form_field = self.next_form_field();
+                self.form_project.update(cx, |input, cx| {
+                    input.set_value(&self.projects[idx], cx);
+                });
+                self.form_field = self.next_form_field(cx);
+                self.focus_active_field(window, cx);
                 cx.notify();
                 return;
             }
-            if self.form_name.is_empty() {
+            let name_val = self.read_field(FormField::Name, cx);
+            if name_val.is_empty() {
                 self.form_field = FormField::Name;
+                self.focus_active_field(window, cx);
                 cx.notify();
                 return;
             }
-            if self.form_project.is_empty() {
+            if project_val.is_empty() {
                 self.form_field = FormField::Project;
+                self.focus_active_field(window, cx);
                 cx.notify();
                 return;
             }
-            if self.is_new_project() && self.form_repo.is_empty() {
+            let repo_val = self.read_field(FormField::Repo, cx);
+            if self.is_new_project(cx) && repo_val.is_empty() {
                 self.form_field = FormField::Repo;
+                self.focus_active_field(window, cx);
                 cx.notify();
                 return;
             }
-            self.submit_form(window);
+            self.submit_form(window, cx);
             return;
         }
 
+        let query_val = self.query.read(cx).value().to_string();
         let value = if self.freeform {
-            if self.query.is_empty() {
+            if query_val.is_empty() {
                 window.remove_window();
                 return;
             }
-            self.query.clone()
+            query_val
         } else if let Some(&idx) = self.filtered.get(self.selected) {
             self.items[idx].name.clone()
         } else {
@@ -320,18 +350,22 @@ impl PickerView {
         window.remove_window();
     }
 
-    fn submit_form(&mut self, window: &mut Window) {
-        let is_new = self.is_new_project();
-        let branch = if self.form_branch.is_empty() {
+    fn submit_form(&mut self, window: &mut Window, cx: &App) {
+        let is_new = self.is_new_project(cx);
+        let name = self.read_field(FormField::Name, cx);
+        let project = self.read_field(FormField::Project, cx);
+        let repo = self.read_field(FormField::Repo, cx);
+        let branch_val = self.read_field(FormField::Branch, cx);
+        let branch = if branch_val.is_empty() {
             "master".to_string()
         } else {
-            self.form_branch.clone()
+            branch_val
         };
         let result = format!(
             "{}\0{}\0{}\0{}\0{}",
-            self.form_name,
-            self.form_project,
-            self.form_repo,
+            name,
+            project,
+            repo,
             branch,
             if is_new { "1" } else { "0" },
         );
@@ -370,9 +404,10 @@ impl PickerView {
         }
     }
 
-    fn on_tab(&mut self, _: &TabForward, _window: &mut Window, cx: &mut Context<Self>) {
+    fn on_tab(&mut self, _: &TabForward, window: &mut Window, cx: &mut Context<Self>) {
         if self.is_form {
-            self.form_field = self.next_form_field();
+            self.form_field = self.next_form_field(cx);
+            self.focus_active_field(window, cx);
             cx.notify();
         } else if !self.filtered.is_empty() {
             self.selected = (self.selected + 1) % self.filtered.len();
@@ -380,9 +415,10 @@ impl PickerView {
         }
     }
 
-    fn on_tab_back(&mut self, _: &TabBack, _window: &mut Window, cx: &mut Context<Self>) {
+    fn on_tab_back(&mut self, _: &TabBack, window: &mut Window, cx: &mut Context<Self>) {
         if self.is_form {
-            self.form_field = self.prev_form_field();
+            self.form_field = self.prev_form_field(cx);
+            self.focus_active_field(window, cx);
             cx.notify();
         }
     }
@@ -410,19 +446,20 @@ fn new_badge_fg() -> Rgba { rgba(0x1e1e2eff) }
 
 fn render_form_field(
     label: &str,
-    value: &str,
+    input: &Entity<TextInput>,
     focused: bool,
-    placeholder: &str,
     field: FormField,
     cx: &mut Context<'_, PickerView>,
 ) -> Stateful<Div> {
+    let input_entity = input.clone();
     div()
         .id(ElementId::Name(format!("field-{label}").into()))
-        .cursor_pointer()
+        .cursor(CursorStyle::IBeam)
         .on_mouse_down(
             MouseButton::Left,
-            cx.listener(move |view, _, _, cx| {
+            cx.listener(move |view, _, window, cx| {
                 view.form_field = field;
+                window.focus(&input_entity.read(cx).focus_handle(cx));
                 cx.notify();
             }),
         )
@@ -443,18 +480,10 @@ fn render_form_field(
                 .border_1()
                 .border_color(if focused { border_focus() } else { border_color() })
                 .bg(bg_hover())
-                .child(
-                    div()
-                        .text_size(px(14.))
-                        .text_color(if value.is_empty() { fg_dim() } else { fg() })
-                        .child(if value.is_empty() {
-                            placeholder.to_string()
-                        } else if focused {
-                            format!("{value}_")
-                        } else {
-                            value.to_string()
-                        }),
-                ),
+                .text_size(px(14.))
+                .text_color(fg())
+                .font_family("monospace")
+                .child(input.clone()),
         )
 }
 
@@ -485,11 +514,14 @@ fn render_dropdown_items(
                 .cursor_pointer()
                 .on_mouse_down(
                     MouseButton::Left,
-                    cx.listener(move |view, _, _, cx| {
+                    cx.listener(move |view, _, window, cx| {
                         match field {
                             FormField::Project => {
-                                view.form_project = item_for_click.clone();
+                                view.form_project.update(cx, |input, cx| {
+                                    input.set_value(&item_for_click, cx);
+                                });
                                 view.form_field = FormField::Name;
+                                view.focus_active_field(window, cx);
                             }
                             _ => {}
                         }
@@ -521,11 +553,10 @@ impl PickerView {
         let project_selected = self.project_selected;
         let projects = self.projects.clone();
         let field = self.form_field;
-        let name_val = self.form_name.clone();
-        let project_val = self.form_project.clone();
-        let repo_val = self.form_repo.clone();
-        let branch_val = self.form_branch.clone();
-        let is_new = self.is_new_project();
+        let name_val = self.read_field(FormField::Name, cx);
+        let project_val = self.read_field(FormField::Project, cx);
+        let repo_val = self.read_field(FormField::Repo, cx);
+        let is_new = self.is_new_project(cx);
         let can_create = !name_val.is_empty()
             && !project_val.is_empty()
             && (!is_new || !repo_val.is_empty());
@@ -583,9 +614,8 @@ impl PickerView {
                     .gap(px(12.))
                     .child(render_form_field(
                         "NAME",
-                        &name_val,
+                        &self.form_name,
                         field == FormField::Name,
-                        "e.g. aleks/my-feature",
                         FormField::Name,
                         cx,
                     ))
@@ -596,9 +626,8 @@ impl PickerView {
                             .gap(px(4.))
                             .child(render_form_field(
                                 "PROJECT",
-                                &project_val,
+                                &self.form_project,
                                 field == FormField::Project,
-                                "select or type new name",
                                 FormField::Project,
                                 cx,
                             ))
@@ -616,17 +645,15 @@ impl PickerView {
                     .when(is_new, |this: Div| {
                         this.child(render_form_field(
                             "REPO PATH",
-                            &repo_val,
+                            &self.form_repo,
                             field == FormField::Repo,
-                            "/path/to/git/repo",
                             FormField::Repo,
                             cx,
                         ))
                         .child(render_form_field(
                             "SOURCE BRANCH",
-                            &branch_val,
+                            &self.form_branch,
                             field == FormField::Branch,
-                            "master",
                             FormField::Branch,
                             cx,
                         ))
@@ -666,14 +693,17 @@ impl PickerView {
                             .on_mouse_down(
                                 MouseButton::Left,
                                 cx.listener(|view, _, window, cx| {
-                                    let is_new = view.is_new_project();
-                                    let can_create = !view.form_name.is_empty()
-                                        && !view.form_project.is_empty()
-                                        && (!is_new || !view.form_repo.is_empty());
+                                    let is_new = view.is_new_project(cx);
+                                    let name = view.read_field(FormField::Name, cx);
+                                    let project = view.read_field(FormField::Project, cx);
+                                    let repo = view.read_field(FormField::Repo, cx);
+                                    let can_create = !name.is_empty()
+                                        && !project.is_empty()
+                                        && (!is_new || !repo.is_empty());
                                     if !can_create {
                                         return;
                                     }
-                                    view.submit_form(window);
+                                    view.submit_form(window, cx);
                                     cx.notify();
                                 }),
                             )
@@ -684,19 +714,6 @@ impl PickerView {
                             ),
                     ),
             )
-            .on_key_down(cx.listener(|view, event: &KeyDownEvent, _window, cx| {
-                let key = &event.keystroke.key;
-                if key.len() == 1 && !event.keystroke.modifiers.control {
-                    let ch = key.chars().next().unwrap();
-                    if ch.is_alphanumeric() || ch == '/' || ch == '-' || ch == '_' || ch == '.' {
-                        view.push_char_to_field(ch);
-                        cx.notify();
-                    }
-                } else if key == "backspace" {
-                    view.pop_char_from_field();
-                    cx.notify();
-                }
-            }))
     }
 
     fn render_picker(&mut self, cx: &mut Context<Self>) -> Div {
@@ -755,12 +772,9 @@ impl PickerView {
                             .child(
                                 div()
                                     .text_size(px(14.))
-                                    .text_color(fg_dim())
-                                    .child(if self.query.is_empty() {
-                                        String::new()
-                                    } else {
-                                        self.query.clone()
-                                    }),
+                                    .text_color(fg())
+                                    .flex_1()
+                                    .child(self.query.clone()),
                             ),
                     )
                     .child(
@@ -847,21 +861,6 @@ impl PickerView {
                 }
                 this.child(list)
             })
-            .on_key_down(cx.listener(|view, event: &KeyDownEvent, _window, cx| {
-                let key = &event.keystroke.key;
-                if key.len() == 1 && !event.keystroke.modifiers.control {
-                    let ch = key.chars().next().unwrap();
-                    if ch.is_alphanumeric() || ch == '/' || ch == '-' || ch == '_' || ch == ' ' || ch == '.' {
-                        view.query.push(ch);
-                        view.filter();
-                        cx.notify();
-                    }
-                } else if key == "backspace" {
-                    view.query.pop();
-                    view.filter();
-                    cx.notify();
-                }
-            }))
     }
 }
 

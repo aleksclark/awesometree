@@ -58,6 +58,7 @@ fn main() {
 
     let app = Application::new();
     app.run(move |cx: &mut App| {
+        awesometree::text_input::bind_text_input_keys(cx);
         cx.bind_keys([
             KeyBinding::new("escape", picker::Cancel, None),
             KeyBinding::new("enter", picker::Confirm, None),

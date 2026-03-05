@@ -1,9 +1,12 @@
 use crate::config::{self, Config, Project};
+use crate::text_input::TextInput;
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 
 pub fn open_projects_window(cx: &mut App) {
     let cfg = config::load_config().unwrap_or_default();
+
+    crate::text_input::bind_text_input_keys(cx);
 
     let bounds = Bounds::centered(None, size(px(700.), px(500.)), cx);
     cx.open_window(
@@ -24,6 +27,7 @@ pub fn run_projects_ui() {
 
     let app = Application::new();
     app.run(move |cx: &mut App| {
+        crate::text_input::bind_text_input_keys(cx);
         cx.bind_keys([
             KeyBinding::new("escape", Dismiss, None),
             KeyBinding::new("enter", ConfirmAction, None),
@@ -79,9 +83,9 @@ enum FormField {
 struct ProjectsView {
     config: Config,
     mode: Mode,
-    form_name: String,
-    form_repo: String,
-    form_branch: String,
+    form_name: Entity<TextInput>,
+    form_repo: Entity<TextInput>,
+    form_branch: Entity<TextInput>,
     form_field: FormField,
     focus: FocusHandle,
 }
@@ -91,95 +95,103 @@ impl ProjectsView {
         Self {
             config,
             mode: Mode::List,
-            form_name: String::new(),
-            form_repo: String::new(),
-            form_branch: String::new(),
+            form_name: cx.new(|cx| TextInput::new("e.g. curri", cx)),
+            form_repo: cx.new(|cx| TextInput::new("/path/to/git/repo", cx)),
+            form_branch: cx.new(|cx| TextInput::new("master", cx)),
             form_field: FormField::Name,
             focus: cx.focus_handle(),
         }
     }
 
-    fn clear_form(&mut self) {
-        self.form_name.clear();
-        self.form_repo.clear();
-        self.form_branch.clear();
-        self.form_field = FormField::Name;
+    fn active_field_entity(&self) -> &Entity<TextInput> {
+        match self.form_field {
+            FormField::Name => &self.form_name,
+            FormField::Repo => &self.form_repo,
+            FormField::Branch => &self.form_branch,
+        }
     }
 
-    fn start_add(&mut self) {
-        self.clear_form();
+    fn focus_active_field(&self, window: &mut Window, cx: &App) {
+        window.focus(&self.active_field_entity().read(cx).focus_handle(cx));
+    }
+
+    fn read_field(&self, field: FormField, cx: &App) -> String {
+        match field {
+            FormField::Name => self.form_name.read(cx).value().to_string(),
+            FormField::Repo => self.form_repo.read(cx).value().to_string(),
+            FormField::Branch => self.form_branch.read(cx).value().to_string(),
+        }
+    }
+
+    fn clear_form(&self, cx: &mut Context<Self>) {
+        self.form_name.update(cx, |input, cx| input.clear(cx));
+        self.form_repo.update(cx, |input, cx| input.clear(cx));
+        self.form_branch.update(cx, |input, cx| input.clear(cx));
+    }
+
+    fn start_add(&mut self, cx: &mut Context<Self>) {
+        self.clear_form(cx);
+        self.form_field = FormField::Name;
         self.mode = Mode::Adding;
     }
 
-    fn start_edit(&mut self, idx: usize) {
+    fn start_edit(&mut self, idx: usize, cx: &mut Context<Self>) {
         let p = &self.config.projects[idx];
-        self.form_name = p.name.clone();
-        self.form_repo = p.repo.clone();
-        self.form_branch = p.branch.clone();
+        self.form_name.update(cx, |input, icx| input.set_value(&p.name, icx));
+        self.form_repo.update(cx, |input, icx| input.set_value(&p.repo, icx));
+        self.form_branch.update(cx, |input, icx| input.set_value(&p.branch, icx));
         self.form_field = FormField::Name;
         self.mode = Mode::Editing(idx);
     }
 
-    fn save_form(&mut self) {
+    fn save_form(&mut self, cx: &mut Context<Self>) {
+        let name = self.read_field(FormField::Name, cx);
+        let repo = self.read_field(FormField::Repo, cx);
+        let branch_val = self.read_field(FormField::Branch, cx);
+
         match self.mode {
             Mode::Adding => {
-                if self.form_name.is_empty() || self.form_repo.is_empty() {
+                if name.is_empty() || repo.is_empty() {
                     return;
                 }
-                let branch = if self.form_branch.is_empty() {
+                let branch = if branch_val.is_empty() {
                     "master".to_string()
                 } else {
-                    self.form_branch.clone()
+                    branch_val
                 };
-                self.config.add_project(&self.form_name, &self.form_repo, &branch);
+                self.config.add_project(&name, &repo, &branch);
                 let _ = config::save_config(&self.config);
                 self.mode = Mode::List;
-                self.clear_form();
+                self.clear_form(cx);
             }
             Mode::Editing(idx) => {
-                if self.form_name.is_empty() || self.form_repo.is_empty() {
+                if name.is_empty() || repo.is_empty() {
                     return;
                 }
                 let p = &mut self.config.projects[idx];
-                p.name = self.form_name.clone();
-                p.repo = self.form_repo.clone();
-                p.branch = if self.form_branch.is_empty() {
+                p.name = name;
+                p.repo = repo;
+                p.branch = if branch_val.is_empty() {
                     "master".to_string()
                 } else {
-                    self.form_branch.clone()
+                    branch_val
                 };
                 let _ = config::save_config(&self.config);
                 self.mode = Mode::List;
-                self.clear_form();
+                self.clear_form(cx);
             }
             Mode::List => {}
         }
     }
 
-    fn delete_project(&mut self, idx: usize) {
+    fn delete_project(&mut self, idx: usize, cx: &mut Context<Self>) {
         self.config.projects.remove(idx);
         let _ = config::save_config(&self.config);
         if let Mode::Editing(ei) = self.mode {
             if ei == idx {
                 self.mode = Mode::List;
-                self.clear_form();
+                self.clear_form(cx);
             }
-        }
-    }
-
-    fn push_char(&mut self, ch: char) {
-        match self.form_field {
-            FormField::Name => self.form_name.push(ch),
-            FormField::Repo => self.form_repo.push(ch),
-            FormField::Branch => self.form_branch.push(ch),
-        }
-    }
-
-    fn pop_char(&mut self) {
-        match self.form_field {
-            FormField::Name => { self.form_name.pop(); }
-            FormField::Repo => { self.form_repo.pop(); }
-            FormField::Branch => { self.form_branch.pop(); }
         }
     }
 
@@ -188,7 +200,7 @@ impl ProjectsView {
             Mode::List => window.remove_window(),
             _ => {
                 self.mode = Mode::List;
-                self.clear_form();
+                self.clear_form(cx);
                 cx.notify();
             }
         }
@@ -196,36 +208,55 @@ impl ProjectsView {
 
     fn on_confirm(&mut self, _: &ConfirmAction, _window: &mut Window, cx: &mut Context<Self>) {
         if self.mode != Mode::List {
-            self.save_form();
+            self.save_form(cx);
             cx.notify();
         }
     }
 
-    fn on_next_field(&mut self, _: &NextField, _window: &mut Window, cx: &mut Context<Self>) {
+    fn on_next_field(&mut self, _: &NextField, window: &mut Window, cx: &mut Context<Self>) {
         if self.mode != Mode::List {
             self.form_field = match self.form_field {
                 FormField::Name => FormField::Repo,
                 FormField::Repo => FormField::Branch,
                 FormField::Branch => FormField::Name,
             };
+            self.focus_active_field(window, cx);
             cx.notify();
         }
     }
 
-    fn on_prev_field(&mut self, _: &PrevField, _window: &mut Window, cx: &mut Context<Self>) {
+    fn on_prev_field(&mut self, _: &PrevField, window: &mut Window, cx: &mut Context<Self>) {
         if self.mode != Mode::List {
             self.form_field = match self.form_field {
                 FormField::Name => FormField::Branch,
                 FormField::Repo => FormField::Name,
                 FormField::Branch => FormField::Repo,
             };
+            self.focus_active_field(window, cx);
             cx.notify();
         }
     }
 }
 
-fn render_field(label: &str, value: &str, focused: bool, placeholder: &str) -> Div {
+fn render_field(
+    label: &str,
+    input: &Entity<TextInput>,
+    focused: bool,
+    field: FormField,
+    cx: &mut Context<'_, ProjectsView>,
+) -> Stateful<Div> {
+    let input_entity = input.clone();
     div()
+        .id(ElementId::Name(format!("field-{label}").into()))
+        .cursor(CursorStyle::IBeam)
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(move |view, _, window, cx| {
+                view.form_field = field;
+                window.focus(&input_entity.read(cx).focus_handle(cx));
+                cx.notify();
+            }),
+        )
         .flex()
         .flex_col()
         .gap(px(4.))
@@ -243,18 +274,10 @@ fn render_field(label: &str, value: &str, focused: bool, placeholder: &str) -> D
                 .border_1()
                 .border_color(if focused { border_focus() } else { border_color() })
                 .bg(bg_hover())
-                .child(
-                    div()
-                        .text_size(px(14.))
-                        .text_color(if value.is_empty() { fg_dim() } else { fg() })
-                        .child(if value.is_empty() {
-                            placeholder.to_string()
-                        } else if focused {
-                            format!("{value}_")
-                        } else {
-                            value.to_string()
-                        }),
-                ),
+                .text_size(px(14.))
+                .text_color(fg())
+                .font_family("monospace")
+                .child(input.clone()),
         )
 }
 
@@ -269,9 +292,8 @@ impl Render for ProjectsView {
             .collect();
 
         let mode = self.mode;
-        let form_name = self.form_name.clone();
-        let form_repo = self.form_repo.clone();
-        let form_branch = self.form_branch.clone();
+        let form_name = self.read_field(FormField::Name, cx);
+        let form_repo = self.read_field(FormField::Repo, cx);
         let field = self.form_field;
         let can_save = !form_name.is_empty() && !form_repo.is_empty();
 
@@ -317,7 +339,7 @@ impl Render for ProjectsView {
                                 .on_mouse_down(
                                     MouseButton::Left,
                                     cx.listener(|view, _, _, cx| {
-                                        view.start_add();
+                                        view.start_add(cx);
                                         cx.notify();
                                     }),
                                 )
@@ -352,21 +374,24 @@ impl Render for ProjectsView {
                                 )
                                 .child(render_field(
                                     "NAME",
-                                    &form_name,
+                                    &self.form_name,
                                     field == FormField::Name,
-                                    "e.g. curri",
+                                    FormField::Name,
+                                    cx,
                                 ))
                                 .child(render_field(
                                     "REPO PATH",
-                                    &form_repo,
+                                    &self.form_repo,
                                     field == FormField::Repo,
-                                    "/path/to/git/repo",
+                                    FormField::Repo,
+                                    cx,
                                 ))
                                 .child(render_field(
                                     "SOURCE BRANCH",
-                                    &form_branch,
+                                    &self.form_branch,
                                     field == FormField::Branch,
-                                    "master",
+                                    FormField::Branch,
+                                    cx,
                                 ))
                                 .child(
                                     div()
@@ -391,7 +416,7 @@ impl Render for ProjectsView {
                                                 .on_mouse_down(
                                                     MouseButton::Left,
                                                     cx.listener(|view, _, _, cx| {
-                                                        view.save_form();
+                                                        view.save_form(cx);
                                                         cx.notify();
                                                     }),
                                                 )
@@ -411,7 +436,7 @@ impl Render for ProjectsView {
                                                     MouseButton::Left,
                                                     cx.listener(|view, _, _, cx| {
                                                         view.mode = Mode::List;
-                                                        view.clear_form();
+                                                        view.clear_form(cx);
                                                         cx.notify();
                                                     }),
                                                 )
@@ -479,7 +504,7 @@ impl Render for ProjectsView {
                                                 .on_mouse_down(
                                                     MouseButton::Left,
                                                     cx.listener(move |view, _, _, cx| {
-                                                        view.start_edit(idx);
+                                                        view.start_edit(idx, cx);
                                                         cx.notify();
                                                     }),
                                                 )
@@ -498,7 +523,7 @@ impl Render for ProjectsView {
                                                 .on_mouse_down(
                                                     MouseButton::Left,
                                                     cx.listener(move |view, _, _, cx| {
-                                                        view.delete_project(idx);
+                                                        view.delete_project(idx, cx);
                                                         cx.notify();
                                                     }),
                                                 )
@@ -536,22 +561,6 @@ impl Render for ProjectsView {
                             .child("Esc to close  ·  Tab to switch fields  ·  Enter to save"),
                     ),
             )
-            .on_key_down(cx.listener(|view, event: &KeyDownEvent, _window, cx| {
-                if view.mode == Mode::List {
-                    return;
-                }
-                let key = &event.keystroke.key;
-                if key.len() == 1 && !event.keystroke.modifiers.control {
-                    let ch = key.chars().next().unwrap();
-                    if ch.is_alphanumeric() || ch == '/' || ch == '-' || ch == '_' || ch == '.' || ch == '~' {
-                        view.push_char(ch);
-                        cx.notify();
-                    }
-                } else if key == "backspace" {
-                    view.pop_char();
-                    cx.notify();
-                }
-            }))
     }
 }
 
