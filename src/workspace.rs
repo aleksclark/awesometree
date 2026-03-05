@@ -201,7 +201,12 @@ impl Manager {
 pub fn resolve_dir(ws_name: &str, project: &Project) -> PathBuf {
     if project.branch.is_some() {
         let safe = ws_name.replace('/', "-");
-        interop::worktree_base().join(&project.name).join(safe)
+        let ext = project.awesometree_ext();
+        let base = match &ext.worktree_dir {
+            Some(dir) => interop::expand_home(dir),
+            None => interop::worktree_base().join(&project.name),
+        };
+        base.join(safe)
     } else {
         project
             .repo_path()
