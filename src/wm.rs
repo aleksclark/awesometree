@@ -1,10 +1,18 @@
 use std::process::Command;
 
+pub fn tag_name(project: &str, workspace: &str) -> String {
+    format!("{project}:{workspace}")
+}
+
+pub fn parse_tag_name(tag: &str) -> Option<(&str, &str)> {
+    tag.split_once(':')
+}
+
 pub trait Adapter {
-    fn create_tag(&self, name: &str, index: i32, layout: &str) -> Result<(), String>;
-    fn delete_tag(&self, name: &str) -> Result<(), String>;
-    fn switch_tag(&self, name: &str) -> Result<(), String>;
-    fn kill_tag_clients(&self, name: &str) -> Result<(), String>;
+    fn create_tag(&self, tag: &str, index: i32, layout: &str) -> Result<(), String>;
+    fn delete_tag(&self, tag: &str) -> Result<(), String>;
+    fn switch_tag(&self, tag: &str) -> Result<(), String>;
+    fn kill_tag_clients(&self, tag: &str) -> Result<(), String>;
     fn eval(&self, lua: &str) -> Result<(), String>;
     fn get_current_tag_name(&self) -> Result<Option<String>, String>;
     fn restore_previous_tag(&self) -> Result<(), String>;
@@ -45,7 +53,7 @@ fn layout_to_lua(layout: &str) -> &str {
 }
 
 impl Adapter for AwesomeAdapter {
-    fn create_tag(&self, name: &str, index: i32, layout: &str) -> Result<(), String> {
+    fn create_tag(&self, tag: &str, index: i32, layout: &str) -> Result<(), String> {
         let lua_layout = layout_to_lua(layout);
         let lua = format!(
             r#"
@@ -53,13 +61,13 @@ local awful = require("awful")
 local sharedtags = require("sharedtags")
 local target_tag = nil
 for _, t in ipairs(root.tags()) do
-    if t.name == "P:{name}" then
+    if t.name == "{tag}" then
         target_tag = t
         break
     end
 end
 if not target_tag then
-    target_tag = awful.tag.add("P:{name}", {{
+    target_tag = awful.tag.add("{tag}", {{
         screen = awful.screen.focused(),
         layout = {lua_layout},
         sharedtagindex = {index},
@@ -70,12 +78,30 @@ end
         self.awesome_eval(&lua)
     }
 
-    fn delete_tag(&self, name: &str) -> Result<(), String> {
+    fn delete_tag(&self, tag: &str) -> Result<(), String> {
         let lua = format!(
             r#"
+local awful = require("awful")
 for _, t in ipairs(root.tags()) do
-    if t.name == "P:{name}" then
-        t:delete()
+    if t.name == "{tag}" then
+        if t.selected then
+            awful.tag.history.restore()
+        end
+        local clients = t:clients()
+        for _, c in ipairs(clients) do
+            c:kill()
+        end
+        local function try_delete()
+            if #t:clients() == 0 then
+                t:delete()
+            else
+                require("gears.timer").start_new(0.2, function()
+                    try_delete()
+                    return false
+                end)
+            end
+        end
+        try_delete()
         break
     end
 end
@@ -84,13 +110,13 @@ end
         self.awesome_eval(&lua)
     }
 
-    fn switch_tag(&self, name: &str) -> Result<(), String> {
+    fn switch_tag(&self, tag: &str) -> Result<(), String> {
         let lua = format!(
             r#"
 local awful = require("awful")
 local sharedtags = require("sharedtags")
 for _, t in ipairs(root.tags()) do
-    if t.name == "P:{name}" then
+    if t.name == "{tag}" then
         sharedtags.viewonly(t, awful.screen.focused())
         break
     end
@@ -100,12 +126,12 @@ end
         self.awesome_eval(&lua)
     }
 
-    fn kill_tag_clients(&self, name: &str) -> Result<(), String> {
+    fn kill_tag_clients(&self, tag: &str) -> Result<(), String> {
         let lua = format!(
             r#"
 for _, c in ipairs(client.get()) do
     for _, t in ipairs(c:tags()) do
-        if t.name == "P:{name}" then
+        if t.name == "{tag}" then
             c:kill()
             break
         end
@@ -141,9 +167,9 @@ end
         }
         let data = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
         let _ = std::fs::remove_file(path);
-        let tag_name = data.trim();
-        if let Some(ws_name) = tag_name.strip_prefix("P:") {
-            Ok(Some(ws_name.to_string()))
+        let raw = data.trim();
+        if parse_tag_name(raw).is_some() {
+            Ok(Some(raw.to_string()))
         } else {
             Ok(None)
         }

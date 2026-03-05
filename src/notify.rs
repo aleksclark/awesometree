@@ -201,3 +201,159 @@ where
         }
     });
 }
+
+static PROGRESS_TX: OnceLock<mpsc::UnboundedSender<ProgressMsg>> = OnceLock::new();
+
+pub enum ProgressMsg {
+    Open { title: String },
+    Update(String),
+    Done,
+    Error(String),
+}
+
+pub struct ProgressHandle;
+
+impl ProgressHandle {
+    pub fn update(&self, msg: impl Into<String>) {
+        if let Some(tx) = PROGRESS_TX.get() {
+            let _ = tx.unbounded_send(ProgressMsg::Update(msg.into()));
+        }
+    }
+
+    pub fn done(self) {
+        if let Some(tx) = PROGRESS_TX.get() {
+            let _ = tx.unbounded_send(ProgressMsg::Done);
+        }
+    }
+
+    pub fn error(self, msg: impl Into<String>) {
+        if let Some(tx) = PROGRESS_TX.get() {
+            let _ = tx.unbounded_send(ProgressMsg::Error(msg.into()));
+        }
+    }
+}
+
+pub fn open_progress(title: impl Into<String>) -> ProgressHandle {
+    if let Some(tx) = PROGRESS_TX.get() {
+        let _ = tx.unbounded_send(ProgressMsg::Open {
+            title: title.into(),
+        });
+    }
+    ProgressHandle
+}
+
+pub fn setup_progress_listener(_cx: &mut App) -> mpsc::UnboundedReceiver<ProgressMsg> {
+    let (tx, rx) = mpsc::unbounded::<ProgressMsg>();
+    let _ = PROGRESS_TX.set(tx);
+    rx
+}
+
+pub struct ProgressView {
+    title: String,
+    status: String,
+    focus: FocusHandle,
+}
+
+impl ProgressView {
+    fn new(title: String, cx: &mut Context<Self>) -> Self {
+        Self {
+            title,
+            status: String::new(),
+            focus: cx.focus_handle(),
+        }
+    }
+}
+
+impl Render for ProgressView {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .key_context("Progress")
+            .track_focus(&self.focus)
+            .flex()
+            .flex_col()
+            .size_full()
+            .bg(bg())
+            .text_color(fg())
+            .font_family("monospace")
+            .child(
+                div()
+                    .px(px(20.))
+                    .py(px(14.))
+                    .border_b_1()
+                    .border_color(border_color())
+                    .child(
+                        div()
+                            .text_size(px(16.))
+                            .text_color(rgba(0x89b4faff))
+                            .child(self.title.clone()),
+                    ),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .px(px(20.))
+                    .py(px(16.))
+                    .child(
+                        div()
+                            .text_size(px(13.))
+                            .text_color(fg_dim())
+                            .child(if self.status.is_empty() {
+                                "Starting...".to_string()
+                            } else {
+                                self.status.clone()
+                            }),
+                    ),
+            )
+            .child(
+                div()
+                    .px(px(20.))
+                    .py(px(10.))
+                    .border_t_1()
+                    .border_color(border_color())
+                    .child(
+                        div()
+                            .text_size(px(11.))
+                            .text_color(fg_dim())
+                            .child("Please wait..."),
+                    ),
+            )
+    }
+}
+
+impl Focusable for ProgressView {
+    fn focus_handle(&self, _: &App) -> FocusHandle {
+        self.focus.clone()
+    }
+}
+
+pub fn show_progress_window(cx: &mut App, title: String) -> Option<WindowHandle<ProgressView>> {
+    let bounds = Bounds::centered(None, size(px(450.), px(180.)), cx);
+    cx.open_window(
+        WindowOptions {
+            window_bounds: Some(WindowBounds::Windowed(bounds)),
+            titlebar: None,
+            app_id: Some("awesometree-progress".into()),
+            window_decorations: Some(WindowDecorations::Server),
+            ..Default::default()
+        },
+        move |_window, cx| cx.new(move |cx| ProgressView::new(title, cx)),
+    )
+    .ok()
+}
+
+pub fn update_progress_window(
+    handle: &WindowHandle<ProgressView>,
+    status: String,
+    cx: &mut App,
+) {
+    let _ = handle.update(cx, |view: &mut ProgressView, _window, cx| {
+        view.status = status;
+        cx.notify();
+    });
+}
+
+pub fn close_progress_window(handle: &WindowHandle<ProgressView>, cx: &mut App) {
+    let _ = handle.update(cx, |_view: &mut ProgressView, window, _cx| {
+        window.remove_window();
+    });
+}

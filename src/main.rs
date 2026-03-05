@@ -1,7 +1,7 @@
 use awesometree::daemon;
 use awesometree::interop::{self, Project};
 use awesometree::state;
-use awesometree::wm::{Adapter, AwesomeAdapter};
+use awesometree::wm::{self, Adapter, AwesomeAdapter};
 use awesometree::workspace::{DownOptions, Manager, UpOptions};
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
@@ -240,7 +240,7 @@ fn cmd_destroy(name: String, no_tag: bool) {
 
 fn cmd_destroy_current() {
     let wm = AwesomeAdapter::new();
-    let name = wm
+    let tag_full = wm
         .get_current_tag_name()
         .unwrap_or_else(|e| {
             eprintln!("{e}");
@@ -250,6 +250,11 @@ fn cmd_destroy_current() {
             eprintln!("Not a project workspace");
             process::exit(1);
         });
+    let (_project, name) = wm::parse_tag_name(&tag_full).unwrap_or_else(|| {
+        eprintln!("Not a project workspace");
+        process::exit(1);
+    });
+    let name = name.to_string();
     let mut mgr = make_manager();
     if let Ok(true) = mgr.is_dirty(&name) {
         eprintln!("Cannot destroy {name}: uncommitted changes");
@@ -268,7 +273,7 @@ fn cmd_destroy_current() {
 
 fn cmd_close() {
     let wm = AwesomeAdapter::new();
-    let name = wm
+    let tag_full = wm
         .get_current_tag_name()
         .unwrap_or_else(|e| {
             eprintln!("{e}");
@@ -278,6 +283,11 @@ fn cmd_close() {
             eprintln!("Not a project workspace");
             process::exit(1);
         });
+    let (_project, name) = wm::parse_tag_name(&tag_full).unwrap_or_else(|| {
+        eprintln!("Not a project workspace");
+        process::exit(1);
+    });
+    let name = name.to_string();
     let _ = wm.restore_previous_tag();
     let mut mgr = make_manager();
     let opts = DownOptions {
@@ -298,7 +308,8 @@ fn cmd_cycle() {
     }
     let wm = AwesomeAdapter::new();
     let current = wm.get_current_tag_name().ok().flatten();
-    let next_idx = match &current {
+    let current_ws = current.as_deref().and_then(wm::parse_tag_name).map(|(_, ws)| ws);
+    let next_idx = match current_ws {
         Some(name) => {
             let pos = active.iter().position(|n| n == name).unwrap_or(0);
             (pos + 1) % active.len()
@@ -321,7 +332,7 @@ fn cmd_list() {
         for (ws_name, ws) in st.workspaces_for_project(&proj.name) {
             let status = if ws.active { "UP" } else { "  " };
             let tag = if ws.active {
-                format!(" [tag P:{}]", ws_name)
+                format!(" [tag {}:{}]", ws.project, ws_name)
             } else {
                 String::new()
             };
@@ -331,11 +342,10 @@ fn cmd_list() {
 }
 
 fn cmd_switch(name: &str) {
-    let st = state::load().unwrap_or_default();
-    match st.workspace(name) {
+    let mgr = make_manager();
+    match mgr.state.workspace(name) {
         Some(ws) if ws.active => {
-            let wm = AwesomeAdapter::new();
-            if let Err(e) = wm.switch_tag(name) {
+            if let Err(e) = mgr.switch(name) {
                 eprintln!("Error: {e}");
                 process::exit(1);
             }

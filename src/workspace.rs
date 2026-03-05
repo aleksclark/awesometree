@@ -1,6 +1,6 @@
 use crate::interop::{self, AwesometreeExt, Project};
 use crate::state::{self, Store};
-use crate::wm::Adapter;
+use crate::wm::{self, Adapter};
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -71,7 +71,8 @@ impl Manager {
         };
 
         if opts.create_tag {
-            self.wm.create_tag(ws_name, tag_idx, layout)?;
+            let tag = wm::tag_name(&project.name, ws_name);
+            self.wm.create_tag(&tag, tag_idx, layout)?;
         }
 
         if opts.launch_apps {
@@ -105,12 +106,14 @@ impl Manager {
         let rw = self.resolve_workspace(ws_name)?;
 
         if opts.manage_tag {
-            let _ = self.wm.kill_tag_clients(ws_name);
-            let _ = self.wm.delete_tag(ws_name);
+            let tag = wm::tag_name(&rw.project.name, ws_name);
+            let _ = self.wm.kill_tag_clients(&tag);
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            let _ = self.wm.delete_tag(&tag);
         }
 
         if !opts.keep_worktree {
-            remove_worktree(&rw.project, &rw.dir);
+            remove_worktree(&rw.project, &rw.dir)?;
         }
 
         self.state.set_inactive(ws_name);
@@ -118,7 +121,9 @@ impl Manager {
     }
 
     pub fn switch(&self, name: &str) -> Result<(), String> {
-        self.wm.switch_tag(name)
+        let rw = self.resolve_workspace(name)?;
+        let tag = wm::tag_name(&rw.project.name, name);
+        self.wm.switch_tag(&tag)
     }
 
     pub fn is_dirty(&self, ws_name: &str) -> Result<bool, String> {
@@ -204,7 +209,7 @@ pub fn resolve_dir(ws_name: &str, project: &Project) -> PathBuf {
     }
 }
 
-fn ensure_worktree(ws_name: &str, project: &Project, dir: &PathBuf) -> Result<(), String> {
+pub fn ensure_worktree(ws_name: &str, project: &Project, dir: &PathBuf) -> Result<(), String> {
     let branch = match &project.branch {
         Some(b) => b,
         None => return Ok(()),
@@ -265,13 +270,13 @@ fn ensure_worktree(ws_name: &str, project: &Project, dir: &PathBuf) -> Result<()
     Ok(())
 }
 
-fn remove_worktree(project: &Project, dir: &PathBuf) {
+fn remove_worktree(project: &Project, dir: &PathBuf) -> Result<(), String> {
     if project.branch.is_none() {
-        return;
+        return Ok(());
     }
     if let Some(repo) = project.repo_path() {
         if dir.exists() {
-            let _ = Command::new("git")
+            let output = Command::new("git")
                 .args([
                     "-C",
                     &repo.to_string_lossy(),
@@ -279,7 +284,13 @@ fn remove_worktree(project: &Project, dir: &PathBuf) {
                     "remove",
                     &dir.to_string_lossy(),
                 ])
-                .output();
+                .output()
+                .map_err(|e| format!("git worktree remove: {e}"))?;
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+                return Err(format!("git worktree remove failed: {stderr}"));
+            }
         }
     }
+    Ok(())
 }

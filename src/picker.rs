@@ -11,6 +11,7 @@ pub struct PickerItem {
 }
 
 pub const CREATE_SENTINEL: &str = "\0CREATE";
+pub const DESTROY_PREFIX: &str = "\0DESTROY\0";
 
 pub enum PickerMode {
     List { items: Vec<PickerItem> },
@@ -42,7 +43,11 @@ pub fn open_picker_window(cx: &mut App, mode: PickerMode, tx: mpsc::Sender<Strin
         },
         move |window, cx| {
             let tx = tx.clone();
-            cx.new(move |cx| PickerView::new(mode, tx, window, cx))
+            cx.new(move |cx| {
+                let view = PickerView::new(mode, tx, window, cx);
+                view.focus_initial_on_open(window, cx);
+                view
+            })
         },
     )
     .ok();
@@ -84,7 +89,7 @@ pub fn parse_create_result(s: &str) -> Option<CreateFormResult> {
     }
 }
 
-actions!(ws_picker, [Cancel, Confirm, SelectNext, SelectPrev, TabForward, TabBack, OpenCreate]);
+actions!(ws_picker, [Cancel, Confirm, SelectNext, SelectPrev, TabForward, TabBack, OpenCreate, DestroySelected]);
 
 #[derive(Clone, Copy, PartialEq)]
 enum FormField {
@@ -292,6 +297,14 @@ impl PickerView {
         window.focus(&self.active_field_entity().read(cx).focus_handle(cx));
     }
 
+    fn focus_initial_on_open(&self, window: &mut Window, cx: &Context<Self>) {
+        if self.is_form {
+            window.focus(&self.active_field_entity().read(cx).focus_handle(cx));
+        } else {
+            window.focus(&self.query.read(cx).focus_handle(cx));
+        }
+    }
+
     fn on_cancel(&mut self, _: &Cancel, window: &mut Window, _cx: &mut Context<Self>) {
         window.remove_window();
     }
@@ -426,6 +439,17 @@ impl PickerView {
     fn on_open_create(&mut self, _: &OpenCreate, window: &mut Window, _cx: &mut Context<Self>) {
         let _ = self.tx.send(CREATE_SENTINEL.to_string());
         window.remove_window();
+    }
+
+    fn on_destroy_selected(&mut self, _: &DestroySelected, window: &mut Window, _cx: &mut Context<Self>) {
+        if self.is_form || self.freeform {
+            return;
+        }
+        if let Some(&idx) = self.filtered.get(self.selected) {
+            let name = self.items[idx].name.clone();
+            let _ = self.tx.send(format!("{DESTROY_PREFIX}{name}"));
+            window.remove_window();
+        }
     }
 }
 
@@ -743,6 +767,7 @@ impl PickerView {
             .on_action(cx.listener(Self::on_tab))
             .on_action(cx.listener(Self::on_tab_back))
             .on_action(cx.listener(Self::on_open_create))
+            .on_action(cx.listener(Self::on_destroy_selected))
             .flex()
             .flex_col()
             .size_full()
@@ -799,7 +824,7 @@ impl PickerView {
                     ),
             )
             .when(!self.freeform, |this: Div| {
-                let mut list = div().flex().flex_col().overflow_y_hidden();
+                let mut list = div().flex().flex_col().flex_1().overflow_y_hidden();
                 for (project, entries) in groups {
                     list = list.child(
                         div()
@@ -861,6 +886,19 @@ impl PickerView {
                 }
                 this.child(list)
             })
+            .child(
+                div()
+                    .px(px(12.))
+                    .py(px(8.))
+                    .border_t_1()
+                    .border_color(border_color())
+                    .child(
+                        div()
+                            .text_size(px(11.))
+                            .text_color(fg_dim())
+                            .child("↑↓ navigate  ·  Enter open  ·  Ctrl+N create  ·  Ctrl+D destroy  ·  Esc close"),
+                    ),
+            )
     }
 }
 
