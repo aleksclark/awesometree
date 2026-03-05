@@ -10,6 +10,7 @@ pub enum DaemonCmd {
     Pick,
     Create,
     Projects,
+    LaunchAgent,
     Restart,
     Reload,
 }
@@ -58,6 +59,7 @@ fn handle_client(stream: UnixStream, _tx: &mpsc::Sender<DaemonCmd>) -> Option<Da
         "pick" => Some(DaemonCmd::Pick),
         "create" => Some(DaemonCmd::Create),
         "projects" => Some(DaemonCmd::Projects),
+        "launch-agent" => Some(DaemonCmd::LaunchAgent),
         "restart" => Some(DaemonCmd::Restart),
         "reload" => Some(DaemonCmd::Reload),
         _ => None,

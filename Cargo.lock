@@ -550,6 +550,7 @@ dependencies = [
  "clap",
  "futures-channel",
  "futures-util",
+ "glob",
  "gpui",
  "gtk",
  "image",

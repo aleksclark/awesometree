@@ -1,5 +1,6 @@
-use awesometree::config::{self, Config};
 use awesometree::daemon;
+use awesometree::interop::{self, Project};
+use awesometree::state;
 use awesometree::wm::{Adapter, AwesomeAdapter};
 use awesometree::workspace::{DownOptions, Manager, UpOptions};
 use clap::{Parser, Subcommand};
@@ -52,6 +53,16 @@ enum Commands {
     Pick,
     #[command(name = "create-interactive")]
     CreateInteractive,
+    #[command(subcommand, name = "project")]
+    Project(ProjectCmd),
+    #[command(subcommand)]
+    Context(ContextCmd),
+    #[command(name = "launch-agent")]
+    LaunchAgent {
+        workspace: String,
+        #[arg(long, default_value = "claude")]
+        agent: String,
+    },
     Repos,
     Names,
     Allnames,
@@ -61,87 +72,116 @@ enum Commands {
     ProjectsUi,
     #[command(name = "restart-daemon")]
     RestartDaemon,
-    Edit,
+    Edit { name: String },
     Daemon,
+}
+
+#[derive(Subcommand)]
+enum ProjectCmd {
+    List,
+    Show { name: String },
+    Create {
+        name: String,
+        #[arg(long)]
+        repo: String,
+        #[arg(long, default_value = "master")]
+        branch: String,
+    },
+    Edit { name: String },
+    Delete { name: String },
+}
+
+#[derive(Subcommand)]
+enum ContextCmd {
+    List { project: String },
+    Add { project: String, file: String },
+    Edit { project: String, file: String },
+    Rm { project: String, file: String },
+    Bundle { project: String },
 }
 
 fn main() {
     let cli = Cli::parse();
-    let cfg = config::load_config().unwrap_or_else(|e| {
-        eprintln!("Error: {e}");
-        process::exit(1);
-    });
 
     match cli.command {
         Commands::Up {
             name,
             no_tag,
             no_launch,
-        } => cmd_up(cfg, name, no_tag, no_launch),
+        } => cmd_up(name, no_tag, no_launch),
         Commands::Down {
             name,
             no_tag,
             keep_worktree,
-        } => cmd_down(cfg, name, no_tag, keep_worktree),
+        } => cmd_down(name, no_tag, keep_worktree),
         Commands::Create {
             name,
             project,
             no_tag,
             no_launch,
-        } => cmd_create(cfg, name, project, no_tag, no_launch),
-        Commands::Destroy { name, no_tag } => cmd_destroy(cfg, name, no_tag),
-        Commands::DestroyCurrent => cmd_destroy_current(cfg),
-        Commands::Close => cmd_close(cfg),
-        Commands::Cycle => cmd_cycle(cfg),
-        Commands::List => cmd_list(&cfg),
-        Commands::Switch { name } => cmd_switch(&cfg, &name),
+        } => cmd_create(name, project, no_tag, no_launch),
+        Commands::Destroy { name, no_tag } => cmd_destroy(name, no_tag),
+        Commands::DestroyCurrent => cmd_destroy_current(),
+        Commands::Close => cmd_close(),
+        Commands::Cycle => cmd_cycle(),
+        Commands::List => cmd_list(),
+        Commands::Switch { name } => cmd_switch(&name),
         Commands::Pick => cmd_pick(),
         Commands::CreateInteractive => cmd_create_interactive(),
+        Commands::Project(sub) => cmd_project(sub),
+        Commands::Context(sub) => cmd_context(sub),
+        Commands::LaunchAgent { workspace, agent } => cmd_launch_agent(&workspace, &agent),
         Commands::Repos => cmd_repos(),
-        Commands::Names => cmd_names(&cfg),
-        Commands::Allnames => cmd_allnames(&cfg),
-        Commands::Dir { name } => cmd_dir(&cfg, &name),
-        Commands::Projects => cmd_projects(&cfg),
+        Commands::Names => cmd_names(),
+        Commands::Allnames => cmd_allnames(),
+        Commands::Dir { name } => cmd_dir(&name),
+        Commands::Projects => cmd_projects(),
         Commands::ProjectsUi => cmd_projects_ui(),
         Commands::RestartDaemon => cmd_restart_daemon(),
-        Commands::Edit => cmd_edit(),
+        Commands::Edit { name } => cmd_edit(&name),
         Commands::Daemon => cmd_daemon(),
     }
 }
 
-fn make_manager(cfg: Config) -> Manager {
-    Manager::new(cfg, Box::new(AwesomeAdapter::new()))
+fn make_manager() -> Manager {
+    let st = state::load().unwrap_or_else(|e| {
+        eprintln!("Error: {e}");
+        process::exit(1);
+    });
+    Manager::new(st, Box::new(AwesomeAdapter::new()))
 }
 
-fn cmd_up(cfg: Config, name: Option<String>, no_tag: bool, no_launch: bool) {
+fn cmd_up(name: Option<String>, no_tag: bool, no_launch: bool) {
+    let mut mgr = make_manager();
     match name {
         Some(n) => {
-            let ws = cfg.find_workspace(&n).unwrap_or_else(|| {
-                eprintln!("Workspace not found: {n}");
+            let rw = mgr.resolve_workspace(&n).unwrap_or_else(|e| {
+                eprintln!("Error: {e}");
                 process::exit(1);
             });
-            let mut mgr = make_manager(cfg);
             let opts = UpOptions {
                 create_tag: !no_tag,
                 launch_apps: !no_launch,
             };
-            if let Err(e) = mgr.up(&ws, &opts) {
+            if let Err(e) = mgr.up(&n, &rw.project, &opts) {
                 eprintln!("Error: {e}");
             }
         }
         None => {
-            let active_ws: Vec<_> = cfg
-                .all_workspaces()
-                .into_iter()
-                .filter(|ws| ws.active)
-                .collect();
-            let mut mgr = make_manager(cfg);
-            for ws in &active_ws {
+            let active: Vec<_> = mgr.state.active_names();
+            for name in active {
+                let rw = match mgr.resolve_workspace(&name) {
+                    Ok(rw) => rw,
+                    Err(e) => {
+                        eprintln!("Error: {e}");
+                        continue;
+                    }
+                };
                 let opts = UpOptions {
                     create_tag: true,
                     launch_apps: false,
                 };
-                if let Err(e) = mgr.up(ws, &opts) {
+                if let Err(e) = mgr.up(&name, &rw.project, &opts) {
                     eprintln!("Error: {e}");
                 }
             }
@@ -149,86 +189,56 @@ fn cmd_up(cfg: Config, name: Option<String>, no_tag: bool, no_launch: bool) {
     }
 }
 
-fn cmd_down(cfg: Config, name: Option<String>, no_tag: bool, keep_worktree: bool) {
+fn cmd_down(name: Option<String>, no_tag: bool, keep_worktree: bool) {
     let opts = DownOptions {
         manage_tag: !no_tag,
         keep_worktree,
     };
-    let workspaces = match &name {
-        Some(n) => {
-            let ws = cfg.find_workspace(n).unwrap_or_else(|| {
-                eprintln!("Workspace not found: {n}");
-                process::exit(1);
-            });
-            vec![ws]
-        }
-        None => cfg.all_workspaces(),
+    let mut mgr = make_manager();
+    let names = match name {
+        Some(n) => vec![n],
+        None => mgr.state.all_names(),
     };
-    let mut mgr = make_manager(cfg);
-    for ws in &workspaces {
-        if let Err(e) = mgr.down(ws, &opts) {
+    for n in &names {
+        if let Err(e) = mgr.down(n, &opts) {
             eprintln!("Error: {e}");
         }
     }
 }
 
-fn cmd_create(mut cfg: Config, name: String, project: String, no_tag: bool, no_launch: bool) {
-    if cfg.find_workspace(&name).is_some() {
+fn cmd_create(name: String, project_name: String, no_tag: bool, no_launch: bool) {
+    let mut mgr = make_manager();
+    if mgr.state.workspace(&name).is_some() {
         eprintln!("Workspace already exists: {name}");
         process::exit(1);
     }
-    let proj = cfg.find_project(&project).unwrap_or_else(|| {
-        eprintln!("Project not found: {project}");
-        process::exit(1);
-    });
-    let ws = config::Workspace {
-        name: name.clone(),
-        project: project.clone(),
-        repo: proj.repo.clone(),
-        branch: proj.branch.clone(),
-        gui: proj.gui.clone(),
-        layout: proj.layout.clone(),
-        active: false,
-        tag_index: 0,
-        dir: String::new(),
-    };
-    cfg.append_workspace_to_project(&project, &name).unwrap_or_else(|e| {
+    let proj = interop::load(&project_name).unwrap_or_else(|e| {
         eprintln!("Error: {e}");
         process::exit(1);
     });
-    let mut mgr = make_manager(cfg);
     let opts = UpOptions {
         create_tag: !no_tag,
         launch_apps: !no_launch,
     };
-    if let Err(e) = mgr.up(&ws, &opts) {
+    if let Err(e) = mgr.up(&name, &proj, &opts) {
         eprintln!("Error: {e}");
         process::exit(1);
     }
 }
 
-fn cmd_destroy(cfg: Config, name: String, no_tag: bool) {
-    let ws = cfg.find_workspace(&name).unwrap_or_else(|| {
-        eprintln!("Workspace not found: {name}");
-        process::exit(1);
-    });
-    let mut mgr = make_manager(cfg);
+fn cmd_destroy(name: String, no_tag: bool) {
+    let mut mgr = make_manager();
     let opts = DownOptions {
         manage_tag: !no_tag,
         keep_worktree: false,
     };
-    if let Err(e) = mgr.down(&ws, &opts) {
-        eprintln!("Error: {e}");
-        process::exit(1);
-    }
-    mgr.config.remove_workspace(&name);
-    if let Err(e) = config::save_config(&mgr.config) {
+    if let Err(e) = mgr.destroy(&name, &opts) {
         eprintln!("Error: {e}");
         process::exit(1);
     }
 }
 
-fn cmd_destroy_current(cfg: Config) {
+fn cmd_destroy_current() {
     let wm = AwesomeAdapter::new();
     let name = wm
         .get_current_tag_name()
@@ -240,12 +250,8 @@ fn cmd_destroy_current(cfg: Config) {
             eprintln!("Not a project workspace");
             process::exit(1);
         });
-    let ws = cfg.find_workspace(&name).unwrap_or_else(|| {
-        eprintln!("Workspace not found: {name}");
-        process::exit(1);
-    });
-    let mut mgr = make_manager(cfg);
-    if let Ok(true) = mgr.is_dirty(&ws) {
+    let mut mgr = make_manager();
+    if let Ok(true) = mgr.is_dirty(&name) {
         eprintln!("Cannot destroy {name}: uncommitted changes");
         process::exit(1);
     }
@@ -254,18 +260,13 @@ fn cmd_destroy_current(cfg: Config) {
         manage_tag: true,
         keep_worktree: false,
     };
-    if let Err(e) = mgr.down(&ws, &opts) {
-        eprintln!("Error: {e}");
-        process::exit(1);
-    }
-    mgr.config.remove_workspace(&name);
-    if let Err(e) = config::save_config(&mgr.config) {
+    if let Err(e) = mgr.destroy(&name, &opts) {
         eprintln!("Error: {e}");
         process::exit(1);
     }
 }
 
-fn cmd_close(cfg: Config) {
+fn cmd_close() {
     let wm = AwesomeAdapter::new();
     let name = wm
         .get_current_tag_name()
@@ -277,24 +278,21 @@ fn cmd_close(cfg: Config) {
             eprintln!("Not a project workspace");
             process::exit(1);
         });
-    let ws = cfg.find_workspace(&name).unwrap_or_else(|| {
-        eprintln!("Workspace not found: {name}");
-        process::exit(1);
-    });
     let _ = wm.restore_previous_tag();
-    let mut mgr = make_manager(cfg);
+    let mut mgr = make_manager();
     let opts = DownOptions {
         manage_tag: true,
         keep_worktree: true,
     };
-    if let Err(e) = mgr.down(&ws, &opts) {
+    if let Err(e) = mgr.down(&name, &opts) {
         eprintln!("Error: {e}");
         process::exit(1);
     }
 }
 
-fn cmd_cycle(cfg: Config) {
-    let active = cfg.active_names();
+fn cmd_cycle() {
+    let mgr = make_manager();
+    let active = mgr.state.active_names();
     if active.is_empty() {
         return;
     }
@@ -307,35 +305,45 @@ fn cmd_cycle(cfg: Config) {
         }
         None => 0,
     };
-    let mgr = make_manager(cfg);
     let _ = mgr.switch(&active[next_idx]);
 }
 
-fn cmd_list(cfg: &Config) {
-    for proj in &cfg.projects {
-        println!("{}  ({}  branch:{})", proj.name, proj.repo, proj.branch);
-        for ws in &proj.workspaces {
+fn cmd_list() {
+    let projects = interop::list().unwrap_or_default();
+    let st = state::load().unwrap_or_default();
+    for proj in &projects {
+        println!(
+            "{}  ({}  branch:{})",
+            proj.name,
+            proj.repo.as_deref().unwrap_or(""),
+            proj.branch_or_default()
+        );
+        for (ws_name, ws) in st.workspaces_for_project(&proj.name) {
             let status = if ws.active { "UP" } else { "  " };
             let tag = if ws.active {
-                format!(" [tag P:{}]", ws.name)
+                format!(" [tag P:{}]", ws_name)
             } else {
                 String::new()
             };
-            println!("    [{status}] {}{tag}", ws.name);
+            println!("    [{status}] {ws_name}{tag}");
         }
     }
 }
 
-fn cmd_switch(cfg: &Config, name: &str) {
-    let ws = cfg.find_workspace(name);
-    if !ws.is_some_and(|w| w.active) {
-        eprintln!("Workspace not active: {name}");
-        process::exit(1);
-    }
-    let wm = AwesomeAdapter::new();
-    if let Err(e) = wm.switch_tag(name) {
-        eprintln!("Error: {e}");
-        process::exit(1);
+fn cmd_switch(name: &str) {
+    let st = state::load().unwrap_or_default();
+    match st.workspace(name) {
+        Some(ws) if ws.active => {
+            let wm = AwesomeAdapter::new();
+            if let Err(e) = wm.switch_tag(name) {
+                eprintln!("Error: {e}");
+                process::exit(1);
+            }
+        }
+        _ => {
+            eprintln!("Workspace not active: {name}");
+            process::exit(1);
+        }
     }
 }
 
@@ -363,42 +371,182 @@ fn cmd_create_interactive() {
     }
 }
 
+fn cmd_project(sub: ProjectCmd) {
+    match sub {
+        ProjectCmd::List => {
+            for proj in interop::list().unwrap_or_default() {
+                println!("{}", proj.name);
+            }
+        }
+        ProjectCmd::Show { name } => {
+            let proj = interop::load(&name).unwrap_or_else(|e| {
+                eprintln!("Error: {e}");
+                process::exit(1);
+            });
+            let json = serde_json::to_string_pretty(&proj).unwrap();
+            println!("{json}");
+        }
+        ProjectCmd::Create {
+            name,
+            repo,
+            branch,
+        } => {
+            if interop::load(&name).is_ok() {
+                eprintln!("Project already exists: {name}");
+                process::exit(1);
+            }
+            let proj = Project {
+                schema: Some(
+                    "https://project-interop.dev/schemas/v1/project.schema.json".into(),
+                ),
+                version: "1".into(),
+                name: name.clone(),
+                repo: Some(repo),
+                branch: Some(branch),
+                ..Default::default()
+            };
+            interop::save(&proj).unwrap_or_else(|e| {
+                eprintln!("Error: {e}");
+                process::exit(1);
+            });
+            println!("Created project: {name}");
+        }
+        ProjectCmd::Edit { name } => {
+            let path = interop::projects_dir().join(format!("{name}.project.json"));
+            if !path.exists() {
+                eprintln!("Project not found: {name}");
+                process::exit(1);
+            }
+            let editor = std::env::var("EDITOR").unwrap_or_else(|_| "nano".into());
+            let _ = process::Command::new(editor).arg(&path).status();
+        }
+        ProjectCmd::Delete { name } => {
+            interop::delete(&name).unwrap_or_else(|e| {
+                eprintln!("Error: {e}");
+                process::exit(1);
+            });
+            println!("Deleted project: {name}");
+        }
+    }
+}
+
+fn cmd_context(sub: ContextCmd) {
+    match sub {
+        ContextCmd::List { project } => {
+            let dir = interop::context_dir(&project);
+            if !dir.exists() {
+                return;
+            }
+            let entries = std::fs::read_dir(&dir).unwrap_or_else(|e| {
+                eprintln!("Error: {e}");
+                process::exit(1);
+            });
+            for entry in entries.flatten() {
+                println!("{}", entry.file_name().to_string_lossy());
+            }
+        }
+        ContextCmd::Add { project, file } => {
+            let dir = interop::context_dir(&project);
+            std::fs::create_dir_all(&dir).unwrap_or_else(|e| {
+                eprintln!("Error: {e}");
+                process::exit(1);
+            });
+            let src = PathBuf::from(&file);
+            let dest = dir.join(src.file_name().unwrap_or(src.as_ref()));
+            std::fs::copy(&src, &dest).unwrap_or_else(|e| {
+                eprintln!("Error copying {file}: {e}");
+                process::exit(1);
+            });
+            println!(
+                "Added {} to {project} context",
+                dest.file_name().unwrap().to_string_lossy()
+            );
+        }
+        ContextCmd::Edit { project, file } => {
+            let path = interop::context_dir(&project).join(&file);
+            if !path.exists() {
+                eprintln!("Context file not found: {file}");
+                process::exit(1);
+            }
+            let editor = std::env::var("EDITOR").unwrap_or_else(|_| "nano".into());
+            let _ = process::Command::new(editor).arg(&path).status();
+        }
+        ContextCmd::Rm { project, file } => {
+            let path = interop::context_dir(&project).join(&file);
+            std::fs::remove_file(&path).unwrap_or_else(|e| {
+                eprintln!("Error: {e}");
+                process::exit(1);
+            });
+            println!("Removed {file} from {project} context");
+        }
+        ContextCmd::Bundle { project } => {
+            let proj = interop::load(&project).unwrap_or_else(|e| {
+                eprintln!("Error: {e}");
+                process::exit(1);
+            });
+            let bundle = interop::assemble_context_bundle(&proj).unwrap_or_else(|e| {
+                eprintln!("Error: {e}");
+                process::exit(1);
+            });
+            for (path, content) in &bundle {
+                println!("--- {path} ---");
+                println!("{content}");
+            }
+        }
+    }
+}
+
+fn cmd_launch_agent(workspace: &str, agent: &str) {
+    let mgr = make_manager();
+    if let Err(e) = mgr.launch_agent(workspace, agent) {
+        eprintln!("Error: {e}");
+        process::exit(1);
+    }
+}
+
 fn cmd_repos() {
-    for r in config::list_repos() {
+    for r in interop::list_repos() {
         println!("{}", r.display());
     }
 }
 
-fn cmd_names(cfg: &Config) {
-    for n in cfg.active_names() {
+fn cmd_names() {
+    let st = state::load().unwrap_or_default();
+    for n in st.active_names() {
         println!("{n}");
     }
 }
 
-fn cmd_allnames(cfg: &Config) {
-    for n in cfg.all_names() {
+fn cmd_allnames() {
+    let st = state::load().unwrap_or_default();
+    for n in st.all_names() {
         println!("{n}");
     }
 }
 
-fn cmd_dir(cfg: &Config, name: &str) {
-    let ws = cfg.find_workspace(name).unwrap_or_else(|| {
-        eprintln!("Workspace not found: {name}");
+fn cmd_dir(name: &str) {
+    let mgr = make_manager();
+    let rw = mgr.resolve_workspace(name).unwrap_or_else(|e| {
+        eprintln!("Error: {e}");
         process::exit(1);
     });
-    println!("{}", ws.resolve_dir().display());
+    println!("{}", rw.dir.display());
 }
 
-fn cmd_projects(cfg: &Config) {
-    for p in &cfg.projects {
-        println!("{}", p.name);
+fn cmd_projects() {
+    for proj in interop::list().unwrap_or_default() {
+        println!("{}", proj.name);
     }
 }
 
-fn cmd_edit() {
+fn cmd_edit(name: &str) {
+    let path = interop::projects_dir().join(format!("{name}.project.json"));
+    if !path.exists() {
+        eprintln!("Project not found: {name}");
+        process::exit(1);
+    }
     let editor = std::env::var("EDITOR").unwrap_or_else(|_| "nano".into());
-    let path = config::config_path();
-    let _ = process::Command::new(editor).arg(path).status();
+    let _ = process::Command::new(editor).arg(&path).status();
 }
 
 fn cmd_projects_ui() {
@@ -435,7 +583,9 @@ fn cmd_daemon() {
         .unwrap_or_else(|| PathBuf::from("awesometree-daemon"));
     let log = std::fs::File::create("/tmp/awesometree-daemon.log")
         .unwrap_or_else(|_| std::fs::File::open("/dev/null").unwrap());
-    let log_err = log.try_clone().unwrap_or_else(|_| std::fs::File::open("/dev/null").unwrap());
+    let log_err = log
+        .try_clone()
+        .unwrap_or_else(|_| std::fs::File::open("/dev/null").unwrap());
     let _ = process::Command::new("setsid")
         .arg("--fork")
         .arg(&exe)
