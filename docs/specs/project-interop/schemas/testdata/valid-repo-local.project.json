@@ -1,0 +1,12 @@
+{
+  "version": "1",
+  "name": "acme-api",
+  "context": {
+    "repoIncludes": [
+      "AGENTS.md",
+      "docs/architecture.md",
+      "docs/data-model.md",
+      "docs/api-reference.md"
+    ]
+  }
+}

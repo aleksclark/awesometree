@@ -22,16 +22,25 @@ avoid collision with integration-specific tools.
 
 ### 2.1 Tool Definitions
 
+When served at a **project-scoped URL** (`{base}/mcp/{project-name}`),
+tools that would otherwise require a `name` parameter to identify the
+project MUST treat it as OPTIONAL, defaulting to the project bound by
+the URL path.
+
 | Tool | Parameters | Description |
 |------|-----------|-------------|
 | `project_list` | `{}` | List all project names and summaries. |
-| `project_get` | `{name}` | Return the fully merged project definition. |
+| `project_get` | `{name?}` | Return the fully merged project definition. |
 | `project_create` | `{name, repo?, branch?}` | Create a new project definition in the user-level store. |
-| `project_update` | `{name, patch}` | Apply a JSON merge patch (RFC 7396) to the project definition. |
-| `project_delete` | `{name}` | Delete the project definition from the user-level store. |
-| `project_tools` | `{name, role?}` | Return the resolved tool manifest (after allow/deny/role filtering). |
-| `project_context` | `{name, role?}` | Return the assembled context bundle. |
-| `project_defaults` | `{name, toolName}` | Return the resolved default arguments for a specific tool. |
+| `project_update` | `{name?, patch}` | Apply a JSON merge patch (RFC 7396) to the project definition. |
+| `project_delete` | `{name?}` | Delete the project definition from the user-level store. |
+| `project_tools` | `{name?, role?}` | Return the resolved tool manifest (after allow/deny/role filtering). |
+| `project_context` | `{name?, query?, path?, role?}` | Search and retrieve the assembled context bundle. See [RFC-0003 §6](rfc-0003-context-distribution.md#6-tool-based-context-progressive-disclosure). |
+| `project_defaults` | `{name?, toolName}` | Return the resolved default arguments for a specific tool. |
+
+Parameters marked with `?` are OPTIONAL when the tool is served at a
+project-scoped URL. When served at a global endpoint, `name` is
+REQUIRED for project-specific tools.
 
 ### 2.2 Tool Semantics
 
@@ -206,12 +215,19 @@ MCP tools defined in [Section 2](#2-mcp-tools).
 
 A tool proxy that supports project scoping SHOULD:
 
-1. Accept a `project` parameter (or header, or session context) that
-   identifies the active project
+1. Determine the active project from the URL path segment
+   (`{base}/mcp/{project-name}`). See
+   [RFC-0002 §7.1](rfc-0002-tool-scoping.md#71-url-based-project-scoping).
 2. Load and merge the project definition
 3. Filter `tools/list` responses per RFC-0002
 4. Inject default arguments per RFC-0002 §6
 5. Optionally enforce `deny` rules on `tools/call`
+6. Expose `project_context` as a searchable tool for progressive
+   disclosure (RFC-0003 §6)
+
+The proxy MUST NOT require a `project` parameter, header, or session
+metadata to identify the active project. The URL path is the sole
+mechanism.
 
 ### 6.2 Agent Host Integration
 

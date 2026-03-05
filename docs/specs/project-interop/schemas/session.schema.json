@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://project-interop.dev/schemas/v1/session.schema.json",
+  "title": "Project Interop Agent Session",
+  "description": "A runtime binding of one agent to one project. See RFC-0004 §4.",
+  "type": "object",
+  "required": ["id", "agent", "started", "status"],
+  "additionalProperties": false,
+  "properties": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Unique session identifier. SHOULD be a ULID or UUID."
+    },
+    "agent": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Identifier of the agent (model name, host name, etc.)."
+    },
+    "role": {
+      "type": "string",
+      "description": "Role name from the project definition, or empty string for no role."
+    },
+    "started": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO 8601 timestamp of session start."
+    },
+    "status": {
+      "type": "string",
+      "enum": ["active", "idle", "completed", "failed"],
+      "description": "Current session status."
+    },
+    "workingOn": {
+      "type": "string",
+      "description": "Human-readable description of current task."
+    },
+    "heartbeat": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO 8601 timestamp of last activity."
+    }
+  }
+}

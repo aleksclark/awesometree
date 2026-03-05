@@ -65,7 +65,7 @@ following precedence:
 {
   "<server-id>": {
     "transport": "http",
-    "url": "http://localhost:3847/mcp"
+    "url": "http://localhost:3847/mcp/{project}"
   },
   "<server-id>": {
     "transport": "stdio",
@@ -78,10 +78,34 @@ following precedence:
 | Field | Type | REQUIRED | Description |
 |-------|------|----------|-------------|
 | `transport` | `string` | REQUIRED | `"http"` or `"stdio"`. |
-| `url` | `string` | REQUIRED for `http` | Server URL. |
+| `url` | `string` | REQUIRED for `http` | Server URL. MAY contain `{project}` template variable. |
 | `command` | `string` | REQUIRED for `stdio` | Executable path. |
 | `args` | `string[]` | OPTIONAL | Command-line arguments. |
 | `env` | `object` | OPTIONAL | Environment variables. Values MAY use `${VAR}` or `${VAR:-default}` expansion. |
+
+### 3.3 URL Template Variable
+
+When the `url` field contains the literal string `{project}`, workspace
+managers MUST expand it to the active project name before connecting.
+The expanded URL determines which project the MCP server scopes to.
+
+For example, given:
+```json
+{
+  "my-proxy": {
+    "transport": "http",
+    "url": "http://localhost:3847/mcp/{project}"
+  }
+}
+```
+
+A workspace manager launching agents for the `acme-api` project MUST
+connect to `http://localhost:3847/mcp/acme-api`.
+
+The `{project}` variable is expanded by the **workspace manager** at
+launch time, not by the proxy or the agent. If `{project}` is absent
+from the URL, the server is not project-scoped and tool scoping is the
+responsibility of the agent host.
 
 Implementations MUST NOT start stdio servers or connect to HTTP servers
 that are not referenced by at least one project definition or the server
@@ -191,25 +215,45 @@ An agent calling `github_list_issues` with `{"owner": "other", "state": "open"}`
 
 ## 7. Tool Proxy Responsibilities
 
-### 7.1 Filtering
+### 7.1 URL-Based Project Scoping
 
-A tool proxy that is project-aware SHOULD filter its tool listing
-(`tools/list` response) to only include tools that are PERMITTED for
-the active project. This reduces context usage for agents that rely on
-tool discovery.
+A project-aware tool proxy MUST determine the active project from the
+URL path segment. The proxy MUST serve project-scoped MCP endpoints at:
+
+```
+{base}/mcp/{project-name}
+```
+
+Where `{project-name}` is the project identifier matching the `name`
+field of a project definition. The same MCP server instance at that path
+MUST apply tool scoping rules for that project.
+
+The proxy MUST NOT require the agent to pass a project identifier via
+tool parameters, HTTP headers, or session metadata. The URL path is the
+sole mechanism for project binding.
+
+If the proxy receives a request for an unknown project name, it SHOULD
+return an MCP error with a descriptive message.
+
+### 7.2 Filtering
+
+A project-aware tool proxy SHOULD filter its tool listing (`tools/list`
+response) to only include tools that are PERMITTED for the active
+project (as determined by the URL path). This reduces context usage for
+agents that rely on tool discovery.
 
 A tool proxy that is NOT project-aware MAY ignore tool scoping entirely.
 In this case, the **agent host** is responsible for applying the
 resolution algorithm before presenting tools to the agent.
 
-### 7.2 Default Injection
+### 7.3 Default Injection
 
 Default argument injection MAY be performed by the tool proxy, the agent
 host, or any middleware in the call chain. Exactly one component in the
 chain MUST perform injection; implementations MUST NOT apply defaults
 more than once.
 
-### 7.3 Enforcement
+### 7.4 Enforcement
 
 Enforcement of `deny` rules is RECOMMENDED at the tool proxy level but
 MAY be implemented at the agent host level instead. If both layers

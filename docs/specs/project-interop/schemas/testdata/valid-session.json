@@ -1,0 +1,9 @@
+{
+  "id": "sess_01JK8EXAMPLE",
+  "agent": "claude-opus-4",
+  "role": "implementer",
+  "started": "2026-03-03T10:00:00Z",
+  "status": "active",
+  "workingOn": "Implement rate limiter in pkg/ratelimit",
+  "heartbeat": "2026-03-03T10:05:00Z"
+}

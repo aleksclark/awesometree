@@ -41,9 +41,9 @@ the section relevant to their use case.
 
 | Document | Audience | Summary |
 |----------|----------|---------|
-| [RFC-0001: Project Definition](rfc-0001-project-definition.md) | All implementors | File format, discovery, schema, merging rules. |
-| [RFC-0002: Tool Scoping](rfc-0002-tool-scoping.md) | Tool proxy implementors | Allow/deny lists, default arguments, resolution algorithm. |
-| [RFC-0003: Context Distribution](rfc-0003-context-distribution.md) | Agent host implementors | Context store, assembly layers, MCP resource protocol. |
+| [RFC-0001: Project Definition](rfc-0001-project-definition.md) | All implementors | File format, discovery, schema, launch config, merging rules. |
+| [RFC-0002: Tool Scoping](rfc-0002-tool-scoping.md) | Tool proxy implementors | Allow/deny lists, default arguments, URL-scoped endpoints, resolution algorithm. |
+| [RFC-0003: Context Distribution](rfc-0003-context-distribution.md) | Agent host implementors | Proxy-mediated context delivery, progressive disclosure, MCP resource protocol. |
 | [RFC-0004: Multi-Agent Coordination](rfc-0004-multi-agent.md) | Orchestrator implementors | Roles, sessions, shared state. Status: **future**. |
 | [RFC-0005: Programmatic API](rfc-0005-api.md) | Tooling authors | MCP tools, MCP resources, filesystem conventions. |
 
@@ -67,7 +67,7 @@ This spec is designed to compose with, not replace, existing conventions:
 
 | Convention | Relationship |
 |---|---|
-| **AGENTS.md / CLAUDE.md** | Referenced via `context.repoIncludes`. Not replaced. |
+| **AGENTS.md / CLAUDE.md** | Bypassed by launch prompt. Content MAY be served through the proxy via `context.repoIncludes`. |
 | **`.mcp.json` / `.vscode/mcp.json`** | Servers defined there are referenceable in `tools`. Scoping is additive. |
 | **`devcontainer.json`** | Orthogonal. Defines the environment; this spec defines agent config within it. |
 | **`mise.toml` / `.tool-versions`** | Orthogonal. Build-time tool versions, not agent-time tool access. |

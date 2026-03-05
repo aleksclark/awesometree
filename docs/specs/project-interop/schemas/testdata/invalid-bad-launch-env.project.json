@@ -1,0 +1,10 @@
+{
+  "$schema": "https://project-interop.dev/schemas/v1/project.schema.json",
+  "version": "1",
+  "name": "bad-launch",
+  "launch": {
+    "env": {
+      "KEY": 42
+    }
+  }
+}

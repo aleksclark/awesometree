@@ -1,0 +1,172 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://project-interop.dev/schemas/v1/project.schema.json",
+  "title": "Project Interop Definition",
+  "description": "A project definition that binds source repositories, tool access policies, context files, and agent coordination metadata. See RFC-0001.",
+  "type": "object",
+  "required": ["version", "name"],
+  "additionalProperties": true,
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "Schema URL for validation tooling."
+    },
+    "version": {
+      "type": "string",
+      "const": "1",
+      "description": "Schema version. MUST be \"1\"."
+    },
+    "name": {
+      "type": "string",
+      "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._-]*$",
+      "minLength": 1,
+      "maxLength": 128,
+      "description": "Unique project identifier."
+    },
+    "repo": {
+      "type": "string",
+      "description": "Path to source repository. ~/  is expanded to $HOME."
+    },
+    "branch": {
+      "type": "string",
+      "description": "Default branch for new worktrees or checkouts."
+    },
+    "tools": {
+      "$ref": "#/$defs/toolsObject",
+      "description": "Tool scoping rules keyed by server identifier. See RFC-0002."
+    },
+    "context": {
+      "$ref": "#/$defs/contextObject",
+      "description": "Context file configuration. See RFC-0003."
+    },
+    "agents": {
+      "$ref": "#/$defs/agentsObject",
+      "description": "Multi-agent coordination configuration. See RFC-0004."
+    },
+    "launch": {
+      "$ref": "#/$defs/launchObject",
+      "description": "Agent launch configuration. See RFC-0001 §4.5."
+    },
+    "extensions": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object"
+      },
+      "description": "Implementation-specific data keyed by reverse domain notation."
+    }
+  },
+  "$defs": {
+    "toolsObject": {
+      "type": "object",
+      "description": "Tool scoping rules keyed by MCP server identifier.",
+      "additionalProperties": {
+        "$ref": "#/$defs/serverScopingRule"
+      }
+    },
+    "serverScopingRule": {
+      "type": "object",
+      "description": "Scoping rule for a single MCP server.",
+      "additionalProperties": false,
+      "properties": {
+        "allow": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Glob patterns of tool names to permit."
+        },
+        "deny": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Glob patterns of tool names to forbid. Deny takes precedence over allow."
+        },
+        "defaults": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "description": "Default arguments keyed by tool name glob pattern."
+        }
+      }
+    },
+    "contextObject": {
+      "type": "object",
+      "description": "Context file configuration.",
+      "additionalProperties": false,
+      "properties": {
+        "files": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Paths relative to the project's context store directory."
+        },
+        "repoIncludes": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Paths relative to the repository root. Glob patterns supported."
+        },
+        "maxBytes": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Advisory limit on total assembled context size in bytes."
+        }
+      }
+    },
+    "agentsObject": {
+      "type": "object",
+      "description": "Multi-agent coordination configuration.",
+      "additionalProperties": false,
+      "properties": {
+        "maxConcurrent": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Maximum number of simultaneous agent sessions. Advisory."
+        },
+        "roles": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/roleDefinition"
+          },
+          "description": "Named role definitions."
+        }
+      }
+    },
+    "launchObject": {
+      "type": "object",
+      "description": "Agent launch configuration controlling prompt injection and environment.",
+      "additionalProperties": false,
+      "properties": {
+        "prompt": {
+          "type": "string",
+          "description": "Inline prompt text injected at agent launch."
+        },
+        "promptFile": {
+          "type": "string",
+          "description": "Path to a prompt file, relative to the context store."
+        },
+        "env": {
+          "type": "object",
+          "additionalProperties": { "type": "string" },
+          "description": "Environment variables set in the agent process."
+        }
+      }
+    },
+    "roleDefinition": {
+      "type": "object",
+      "description": "A named role that scopes tool access and context for an agent.",
+      "additionalProperties": false,
+      "properties": {
+        "description": {
+          "type": "string",
+          "description": "Human-readable description of the role's purpose."
+        },
+        "toolOverrides": {
+          "$ref": "#/$defs/toolsObject",
+          "description": "Per-server tool scoping overrides applied on top of project-level rules."
+        },
+        "contextOverrides": {
+          "$ref": "#/$defs/contextObject",
+          "description": "Context configuration overrides applied on top of project-level context."
+        }
+      }
+    }
+  }
+}

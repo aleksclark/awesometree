@@ -1,0 +1,7 @@
+{
+  "version": "1",
+  "name": "bad-context",
+  "context": {
+    "maxBytes": -100
+  }
+}

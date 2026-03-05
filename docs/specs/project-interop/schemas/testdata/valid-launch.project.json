@@ -1,0 +1,12 @@
+{
+  "$schema": "https://project-interop.dev/schemas/v1/project.schema.json",
+  "version": "1",
+  "name": "launch-test",
+  "launch": {
+    "prompt": "You are working on launch-test. Use project_context for context.",
+    "promptFile": "custom-prompt.md",
+    "env": {
+      "PROJECT_NAME": "launch-test"
+    }
+  }
+}

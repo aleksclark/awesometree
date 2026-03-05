@@ -11,6 +11,15 @@ This is a complete, annotated example of a project definition file.
   "repo": "~/work/acme-api",
   "branch": "main",
 
+  // Launch configuration: controls how agents are bootstrapped
+  "launch": {
+    "prompt": "You are working on the acme-api project. Do NOT read AGENTS.md or other convention files directly. Instead, use the project_context tool to retrieve project context and the search tool to discover available operations. Start by calling project_context with no arguments to see what context is available.",
+    "env": {
+      "PROJECT_NAME": "acme-api",
+      "PROJECT_ENV": "development"
+    }
+  },
+
   "tools": {
     // Scoping for an MCP tool proxy (registered in servers.json)
     "my-proxy": {
@@ -92,12 +101,15 @@ This is a complete, annotated example of a project definition file.
 
 ## Server Registry
 
+The server registry uses `{project}` as a template variable in the URL.
+Workspace managers expand this to the project name at launch time.
+
 ```jsonc
 // ~/.config/project-interop/servers.json
 {
   "my-proxy": {
     "transport": "http",
-    "url": "http://localhost:3847/mcp"
+    "url": "http://localhost:3847/mcp/{project}"
   },
   "filesystem": {
     "transport": "stdio",
@@ -106,6 +118,10 @@ This is a complete, annotated example of a project definition file.
   }
 }
 ```
+
+When launching agents for `acme-api`, the workspace manager expands the
+URL to `http://localhost:3847/mcp/acme-api`. The proxy at that endpoint
+applies tool scoping and serves context for the `acme-api` project.
 
 ## Context Store
 
@@ -138,3 +154,35 @@ This is a complete, annotated example of a project definition file.
 This repo-local file adds `docs/api-reference.md` to the context
 includes. After merging (RFC-0001 §5), the assembled `repoIncludes`
 contains all four files.
+
+## Launch Flow Example
+
+A workspace manager launching an agent on `acme-api` performs these
+steps:
+
+```
+1. Read ~/.config/project-interop/projects/acme-api.project.json
+2. Resolve server URLs:
+   "http://localhost:3847/mcp/{project}" → "http://localhost:3847/mcp/acme-api"
+3. Set environment variables from launch.env:
+   PROJECT_NAME=acme-api PROJECT_ENV=development
+4. Inject launch.prompt via the agent host's system prompt mechanism
+5. Start the agent host, pointing it at the expanded MCP URL
+```
+
+### Claude Code
+
+```bash
+claude --append-system-prompt "You are working on the acme-api project. ..." \
+       --mcp-server http://localhost:3847/mcp/acme-api
+```
+
+### Codex / Generic CLI Agent
+
+```bash
+PROJECT_NAME=acme-api PROJECT_ENV=development \
+  codex --system-prompt "You are working on the acme-api project. ..."
+```
+
+The launch prompt is the same across all agent hosts — only the
+injection mechanism differs.

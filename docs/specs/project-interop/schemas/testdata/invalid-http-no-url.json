@@ -1,0 +1,5 @@
+{
+  "bad-server": {
+    "transport": "http"
+  }
+}

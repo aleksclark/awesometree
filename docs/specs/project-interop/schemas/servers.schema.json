@@ -1,0 +1,61 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://project-interop.dev/schemas/v1/servers.schema.json",
+  "title": "Project Interop Server Registry",
+  "description": "Registry of MCP servers referenced by project tool scoping rules. See RFC-0002 §3.",
+  "type": "object",
+  "additionalProperties": {
+    "$ref": "#/$defs/serverEntry"
+  },
+  "$defs": {
+    "serverEntry": {
+      "type": "object",
+      "required": ["transport"],
+      "description": "An MCP server connection definition.",
+      "properties": {
+        "transport": {
+          "type": "string",
+          "enum": ["http", "stdio"],
+          "description": "Transport protocol. \"http\" for HTTP/SSE, \"stdio\" for subprocess."
+        },
+        "url": {
+          "type": "string",
+          "format": "uri",
+          "description": "Server URL. REQUIRED when transport is \"http\"."
+        },
+        "command": {
+          "type": "string",
+          "description": "Executable path. REQUIRED when transport is \"stdio\"."
+        },
+        "args": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Command-line arguments for stdio transport."
+        },
+        "env": {
+          "type": "object",
+          "additionalProperties": { "type": "string" },
+          "description": "Environment variables. Values MAY use ${VAR} or ${VAR:-default} expansion."
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "transport": { "const": "http" } }
+          },
+          "then": {
+            "required": ["url"]
+          }
+        },
+        {
+          "if": {
+            "properties": { "transport": { "const": "stdio" } }
+          },
+          "then": {
+            "required": ["command"]
+          }
+        }
+      ]
+    }
+  }
+}

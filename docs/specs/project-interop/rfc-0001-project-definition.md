@@ -94,6 +94,7 @@ application-specific config formats.
   "name": "myproject",
   "repo": "~/work/myproject",
   "branch": "main",
+  "launch": {},
   "tools": {},
   "context": {},
   "agents": {},
@@ -110,6 +111,7 @@ application-specific config formats.
 | `name` | `string` | REQUIRED | Unique project identifier. MUST match `^[a-zA-Z0-9][a-zA-Z0-9._-]*$`. |
 | `repo` | `string` | OPTIONAL | Path to source repository. `~/` MUST be expanded to `$HOME`. |
 | `branch` | `string` | OPTIONAL | Default branch for new worktrees or checkouts. |
+| `launch` | `object` | OPTIONAL | Agent launch configuration. See [Section 4.5](#45-launch-configuration). |
 | `tools` | `object` | OPTIONAL | Tool scoping rules. See [RFC-0002](rfc-0002-tool-scoping.md). |
 | `context` | `object` | OPTIONAL | Context file configuration. See [RFC-0003](rfc-0003-context-distribution.md). |
 | `agents` | `object` | OPTIONAL | Multi-agent configuration. See [RFC-0004](rfc-0004-multi-agent.md). |
@@ -134,6 +136,41 @@ When `repo` is present:
   contains a `.git` directory (or is otherwise recognizable as a
   repository) before performing repository operations
 
+### 4.5 Launch Configuration
+
+The `launch` object controls how agents are bootstrapped when they
+start work on a project. It allows the project definition to specify
+the system prompt or append-prompt that the workspace manager passes to
+the agent host at launch time.
+
+```json
+{
+  "launch": {
+    "prompt": "You are working on the acme-api project. Do NOT read AGENTS.md. Instead, use the project_context tool to retrieve project context, and the search tool to discover available operations.",
+    "promptFile": "launch-prompt.md",
+    "env": {
+      "PROJECT_NAME": "acme-api"
+    }
+  }
+}
+```
+
+| Field | Type | REQUIRED | Description |
+|-------|------|----------|-------------|
+| `prompt` | `string` | OPTIONAL | Inline prompt text injected at agent launch. |
+| `promptFile` | `string` | OPTIONAL | Path to a prompt file, relative to the context store. |
+| `env` | `object` | OPTIONAL | Environment variables set in the agent process. Values are strings. |
+
+If both `prompt` and `promptFile` are present, the implementation MUST
+concatenate them (`prompt` first, then the contents of `promptFile`,
+separated by a newline).
+
+The launch prompt is the mechanism by which a project definition
+instructs agents to query the tool proxy for context rather than
+reading static convention files. See
+[RFC-0003 §2](rfc-0003-context-distribution.md#2-context-delivery-model)
+for the rationale.
+
 ## 5. Merging
 
 When a project definition exists at multiple discovery locations,
@@ -150,6 +187,9 @@ wins):
 - **Scalar fields** (`name`, `repo`, `branch`): higher-precedence value
   wins. The `name` field MUST NOT differ between layers; if it does,
   the implementation MUST reject the merge and report an error.
+- **`launch`**: `prompt` and `promptFile` from higher-precedence layer
+  win (replace, not concatenate). `env` objects are merged with
+  higher-precedence values winning per key.
 - **`tools`**: merged per server key. Within a server, `allow` and
   `deny` arrays are concatenated (not replaced). `defaults` objects are
   merged with higher-precedence values winning per pattern key.
