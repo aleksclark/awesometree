@@ -1,4 +1,5 @@
 use crate::interop::{self, AwesometreeExt, Project};
+use crate::log as dlog;
 use crate::state::{self, Store};
 use crate::wm::{self, Adapter};
 use std::path::PathBuf;
@@ -72,6 +73,7 @@ impl Manager {
 
         if opts.create_tag {
             let tag = wm::tag_name(&project.name, ws_name);
+            dlog::log(format!("Creating tag: {tag} (index: {tag_idx}, layout: {layout})"));
             self.wm.create_tag(&tag, tag_idx, layout)?;
         }
 
@@ -85,6 +87,7 @@ impl Manager {
 
             for app_cmd in &apps {
                 let expanded = interop::interpolate(app_cmd, &project.name, &dir_str);
+                dlog::log(format!("Launching app: {expanded}"));
                 let _ = Command::new("sh")
                     .args(["-c", &expanded])
                     .current_dir(&dir)
@@ -107,8 +110,10 @@ impl Manager {
 
         if opts.manage_tag {
             let tag = wm::tag_name(&rw.project.name, ws_name);
+            dlog::log(format!("Killing clients on tag: {tag}"));
             let _ = self.wm.kill_tag_clients(&tag);
             std::thread::sleep(std::time::Duration::from_millis(300));
+            dlog::log(format!("Deleting tag: {tag}"));
             let _ = self.wm.delete_tag(&tag);
         }
 
@@ -123,6 +128,7 @@ impl Manager {
     pub fn switch(&self, name: &str) -> Result<(), String> {
         let rw = self.resolve_workspace(name)?;
         let tag = wm::tag_name(&rw.project.name, name);
+        dlog::log(format!("Switching to tag: {tag}"));
         self.wm.switch_tag(&tag)
     }
 
@@ -201,7 +207,12 @@ impl Manager {
 pub fn resolve_dir(ws_name: &str, project: &Project) -> PathBuf {
     if project.branch.is_some() {
         let safe = ws_name.replace('/', "-");
-        interop::worktree_base().join(&project.name).join(safe)
+        let ext = project.awesometree_ext();
+        let base = match &ext.worktree_dir {
+            Some(dir) => interop::expand_home(dir),
+            None => interop::worktree_base().join(&project.name),
+        };
+        base.join(safe)
     } else {
         project
             .repo_path()
@@ -226,8 +237,13 @@ pub fn ensure_worktree(ws_name: &str, project: &Project, dir: &PathBuf) -> Resul
         return Err(format!("repo not found: {repo_str}"));
     }
 
-    let base = interop::worktree_base();
-    std::fs::create_dir_all(&base).map_err(|e| format!("create worktree base: {e}"))?;
+    if let Some(parent) = dir.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("create worktree dir: {e}"))?;
+    }
+
+    let _ = Command::new("git")
+        .args(["-C", &repo_str, "worktree", "prune"])
+        .output();
 
     let _ = Command::new("git")
         .args(["-C", &repo_str, "fetch", "origin", branch])

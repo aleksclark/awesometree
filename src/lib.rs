@@ -8,3 +8,4 @@ pub mod text_input;
 pub mod tray;
 pub mod daemon;
 pub mod notify;
+pub mod log;

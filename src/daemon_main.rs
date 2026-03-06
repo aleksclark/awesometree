@@ -1,5 +1,6 @@
 use awesometree::daemon::{self, DaemonCmd};
 use awesometree::interop;
+use awesometree::log as dlog;
 use awesometree::notify;
 use awesometree::picker::{self, parse_create_result, PickerItem, PickerMode, CREATE_SENTINEL, DESTROY_PREFIX};
 use awesometree::projects_ui;
@@ -58,6 +59,8 @@ fn main() {
         }
     });
 
+    dlog::log("Daemon starting");
+
     let app = Application::new();
     app.run(move |cx: &mut App| {
         awesometree::text_input::bind_text_input_keys(cx);
@@ -78,8 +81,16 @@ fn main() {
 
         notify::open_sentinel_window(cx);
 
+        let mut log_rx = dlog::setup_log_listener(cx);
         let mut error_rx = notify::setup_error_listener(cx);
         let mut progress_rx = notify::setup_progress_listener(cx);
+
+        cx.spawn(async move |cx: &mut AsyncApp| {
+            while let Some(()) = log_rx.next().await {
+                let _ = cx.update(|cx| dlog::show_log_window(cx));
+            }
+        })
+        .detach();
 
         cx.spawn(async move |cx: &mut AsyncApp| {
             while let Some(msg) = error_rx.next().await {
@@ -138,21 +149,28 @@ fn main() {
             while let Some(cmd) = rx.next().await {
                 match cmd {
                     DaemonCmd::Pick => {
+                        dlog::log("Picker opened");
                         let cmd_tx = fut_tx.clone();
                         let _ = cx.update(|cx| do_pick(cx, cmd_tx));
                     }
                     DaemonCmd::Create => {
+                        dlog::log("Create form opened");
                         let _ = cx.update(|cx| do_create(cx));
                     }
                     DaemonCmd::Projects => {
+                        dlog::log("Projects UI opened");
                         let _ = cx.update(|cx| projects_ui::open_projects_window(cx));
                     }
                     DaemonCmd::LaunchAgent => {}
                     DaemonCmd::Restart => {
+                        dlog::log("Daemon restarting");
                         daemon::cleanup();
                         std::process::exit(0);
                     }
                     DaemonCmd::Reload => {}
+                    DaemonCmd::Logs => {
+                        let _ = cx.update(|cx| dlog::show_log_window(cx));
+                    }
                 }
             }
         })
@@ -193,14 +211,19 @@ fn do_pick(cx: &mut App, cmd_tx: mpsc::UnboundedSender<DaemonCmd>) {
     );
 
     notify::spawn_task("Open workspace", move || {
-        let Ok(selection) = rx.recv() else { return Ok(()) };
+        let Ok(selection) = rx.recv() else {
+            dlog::log("Picker dismissed");
+            return Ok(());
+        };
 
         if selection == CREATE_SENTINEL {
+            dlog::log("Picker: switching to create form");
             let _ = cmd_tx.unbounded_send(DaemonCmd::Create);
             return Ok(());
         }
 
         if let Some(ws_name) = selection.strip_prefix(DESTROY_PREFIX) {
+            dlog::log(format!("Picker: destroying workspace {ws_name}"));
             return do_destroy_workspace(ws_name);
         }
 
@@ -212,12 +235,14 @@ fn do_pick(cx: &mut App, cmd_tx: mpsc::UnboundedSender<DaemonCmd>) {
         let wm = Box::new(AwesomeAdapter::new());
 
         if is_active {
+            dlog::log(format!("Switching to active workspace: {name}"));
             let mgr = Manager::new(st, wm);
             mgr.switch(&name).map_err(|e| format!("switch to {name}: {e}"))?;
         } else {
             let project_name = ws
                 .map(|w| w.project.clone())
                 .ok_or_else(|| format!("workspace not found: {name}"))?;
+            dlog::log(format!("Bringing up workspace: {name} (project: {project_name})"));
             let project = interop::load(&project_name)
                 .map_err(|e| format!("load project: {e}"))?;
             let mut mgr = Manager::new(st, wm);
@@ -246,7 +271,10 @@ fn do_create(cx: &mut App) {
     picker::open_picker_window(cx, PickerMode::CreateForm { projects: project_names }, tx);
 
     thread::spawn(move || {
-        let Ok(result_str) = rx.recv() else { return };
+        let Ok(result_str) = rx.recv() else {
+            dlog::log("Create form dismissed");
+            return;
+        };
 
         let result = match parse_create_result(&result_str) {
             Some(r) => r,
@@ -256,9 +284,15 @@ fn do_create(cx: &mut App) {
             }
         };
 
+        dlog::log(format!(
+            "Creating workspace: {} (project: {}, repo: {}, branch: {})",
+            result.name, result.project, result.repo_path, result.branch
+        ));
+
         let progress = notify::open_progress("Creating Workspace");
 
         if result.is_new_project {
+            dlog::log(format!("Creating new project: {}", result.project));
             progress.update(format!("Saving project {}...", result.project));
             let proj = interop::Project {
                 schema: Some(
@@ -285,6 +319,7 @@ fn do_create(cx: &mut App) {
         };
 
         let dir = ws::resolve_dir(&result.name, &project);
+        dlog::log(format!("Creating worktree at {}", dir.display()));
         progress.update(format!(
             "Creating worktree in {}...",
             dir.display()
@@ -324,21 +359,25 @@ fn do_create(cx: &mut App) {
             return;
         }
 
+        dlog::log(format!("Workspace {} created and switched to", result.name));
         progress.done();
     });
 }
 
 fn do_destroy_workspace(ws_name: &str) -> Result<(), String> {
+    dlog::log(format!("Destroying workspace: {ws_name}"));
     let st = state::load().map_err(|e| format!("load state: {e}"))?;
     let wm = Box::new(AwesomeAdapter::new());
     let mut mgr = Manager::new(st, wm);
 
     if let Ok(true) = mgr.is_dirty(ws_name) {
+        dlog::log(format!("Destroy blocked: {ws_name} has uncommitted changes"));
         return Err(format!(
             "Cannot destroy {ws_name}: uncommitted changes.\nCommit or stash your changes first."
         ));
     }
 
+    dlog::log(format!("Restoring previous tag before destroying {ws_name}"));
     let _ = mgr.wm.restore_previous_tag();
 
     mgr.destroy(
@@ -348,5 +387,7 @@ fn do_destroy_workspace(ws_name: &str) -> Result<(), String> {
             keep_worktree: false,
         },
     )
-    .map_err(|e| format!("destroy {ws_name}: {e}"))
+    .map_err(|e| format!("destroy {ws_name}: {e}"))?;
+    dlog::log(format!("Workspace {ws_name} destroyed"));
+    Ok(())
 }

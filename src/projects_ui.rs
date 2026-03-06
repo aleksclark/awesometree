@@ -1,4 +1,5 @@
 use crate::interop::{self, Project};
+use crate::log as dlog;
 use crate::text_input::TextInput;
 use gpui::prelude::FluentBuilder;
 use gpui::*;
@@ -78,6 +79,7 @@ enum FormField {
     Name,
     Repo,
     Branch,
+    WorktreeDir,
     LaunchPrompt,
     McpUrl,
     App(usize),
@@ -89,6 +91,7 @@ struct ProjectsView {
     form_name: Entity<TextInput>,
     form_repo: Entity<TextInput>,
     form_branch: Entity<TextInput>,
+    form_worktree_dir: Entity<TextInput>,
     form_launch_prompt: Entity<TextInput>,
     form_mcp_url: Entity<TextInput>,
     form_apps: Vec<Entity<TextInput>>,
@@ -104,6 +107,7 @@ impl ProjectsView {
             form_name: cx.new(|cx| TextInput::new("e.g. curri", cx)),
             form_repo: cx.new(|cx| TextInput::new("/path/to/git/repo", cx)),
             form_branch: cx.new(|cx| TextInput::new("master", cx)),
+            form_worktree_dir: cx.new(|cx| TextInput::new("~/worktrees/project-name (default)", cx)),
             form_launch_prompt: cx.new(|cx| TextInput::new("system prompt for agent", cx)),
             form_mcp_url: cx.new(|cx| TextInput::new("http://localhost:8080/{project}", cx)),
             form_apps: vec![],
@@ -117,6 +121,7 @@ impl ProjectsView {
             FormField::Name => Some(&self.form_name),
             FormField::Repo => Some(&self.form_repo),
             FormField::Branch => Some(&self.form_branch),
+            FormField::WorktreeDir => Some(&self.form_worktree_dir),
             FormField::LaunchPrompt => Some(&self.form_launch_prompt),
             FormField::McpUrl => Some(&self.form_mcp_url),
             FormField::App(i) => self.form_apps.get(i),
@@ -134,6 +139,7 @@ impl ProjectsView {
             FormField::Name => self.form_name.read(cx).value().to_string(),
             FormField::Repo => self.form_repo.read(cx).value().to_string(),
             FormField::Branch => self.form_branch.read(cx).value().to_string(),
+            FormField::WorktreeDir => self.form_worktree_dir.read(cx).value().to_string(),
             FormField::LaunchPrompt => self.form_launch_prompt.read(cx).value().to_string(),
             FormField::McpUrl => self.form_mcp_url.read(cx).value().to_string(),
             FormField::App(i) => self
@@ -148,6 +154,7 @@ impl ProjectsView {
         self.form_name.update(cx, |input, cx| input.clear(cx));
         self.form_repo.update(cx, |input, cx| input.clear(cx));
         self.form_branch.update(cx, |input, cx| input.clear(cx));
+        self.form_worktree_dir.update(cx, |input, cx| input.clear(cx));
         self.form_launch_prompt.update(cx, |input, cx| input.clear(cx));
         self.form_mcp_url.update(cx, |input, cx| input.clear(cx));
         self.form_apps.clear();
@@ -179,6 +186,9 @@ impl ProjectsView {
             );
         });
         let ext = p.awesometree_ext();
+        self.form_worktree_dir.update(cx, |input, icx| {
+            input.set_value(ext.worktree_dir.as_deref().unwrap_or(""), icx);
+        });
         self.form_mcp_url.update(cx, |input, icx| {
             input.set_value(ext.mcp.as_deref().unwrap_or(""), icx);
         });
@@ -199,6 +209,7 @@ impl ProjectsView {
         let name = self.read_field(FormField::Name, cx);
         let repo = self.read_field(FormField::Repo, cx);
         let branch_val = self.read_field(FormField::Branch, cx);
+        let worktree_dir = self.read_field(FormField::WorktreeDir, cx);
         let launch_prompt = self.read_field(FormField::LaunchPrompt, cx);
         let mcp_url = self.read_field(FormField::McpUrl, cx);
         let apps = self.read_apps(cx);
@@ -208,6 +219,7 @@ impl ProjectsView {
                 if name.is_empty() || repo.is_empty() {
                     return;
                 }
+                dlog::log(format!("Adding project: {name}"));
                 let branch = if branch_val.is_empty() {
                     "master".to_string()
                 } else {
@@ -234,6 +246,9 @@ impl ProjectsView {
                     if !mcp_url.is_empty() {
                         ext.mcp = Some(mcp_url);
                     }
+                    if !worktree_dir.is_empty() {
+                        ext.worktree_dir = Some(worktree_dir);
+                    }
                     ext.apps = clean_apps(&apps);
                     proj.set_awesometree_ext(&ext);
                 }
@@ -246,6 +261,7 @@ impl ProjectsView {
                 if name.is_empty() || repo.is_empty() {
                     return;
                 }
+                dlog::log(format!("Editing project: {name}"));
                 let p = &mut self.projects[idx];
                 p.name = name;
                 p.repo = Some(repo);
@@ -268,6 +284,11 @@ impl ProjectsView {
                 } else {
                     ext.mcp = Some(mcp_url);
                 }
+                if worktree_dir.is_empty() {
+                    ext.worktree_dir = None;
+                } else {
+                    ext.worktree_dir = Some(worktree_dir);
+                }
                 ext.apps = clean_apps(&apps);
                 p.set_awesometree_ext(&ext);
                 let _ = interop::save(p);
@@ -287,6 +308,7 @@ impl ProjectsView {
 
     fn delete_project(&mut self, idx: usize, cx: &mut Context<Self>) {
         let name = self.projects[idx].name.clone();
+        dlog::log(format!("Deleting project: {name}"));
         let _ = interop::delete(&name);
         self.projects.remove(idx);
         if let Mode::Editing(ei) = self.mode {
@@ -337,7 +359,8 @@ impl ProjectsView {
         match self.form_field {
             FormField::Name => FormField::Repo,
             FormField::Repo => FormField::Branch,
-            FormField::Branch => FormField::LaunchPrompt,
+            FormField::Branch => FormField::WorktreeDir,
+            FormField::WorktreeDir => FormField::LaunchPrompt,
             FormField::LaunchPrompt => FormField::McpUrl,
             FormField::McpUrl => {
                 if self.form_apps.is_empty() {
@@ -367,7 +390,8 @@ impl ProjectsView {
             }
             FormField::Repo => FormField::Name,
             FormField::Branch => FormField::Repo,
-            FormField::LaunchPrompt => FormField::Branch,
+            FormField::WorktreeDir => FormField::Branch,
+            FormField::LaunchPrompt => FormField::WorktreeDir,
             FormField::McpUrl => FormField::LaunchPrompt,
             FormField::App(i) => {
                 if i > 0 {
@@ -672,6 +696,13 @@ impl Render for ProjectsView {
                                     cx,
                                 ))
                                 .child(render_field(
+                                    "WORKTREE DIR",
+                                    &self.form_worktree_dir,
+                                    field == FormField::WorktreeDir,
+                                    FormField::WorktreeDir,
+                                    cx,
+                                ))
+                                .child(render_field(
                                     "LAUNCH PROMPT",
                                     &self.form_launch_prompt,
                                     field == FormField::LaunchPrompt,
@@ -742,6 +773,7 @@ impl Render for ProjectsView {
                         this.children(projects.into_iter().map(|(idx, proj)| {
                             let ext = proj.awesometree_ext();
                             let mcp_label = ext.mcp.as_deref().unwrap_or("");
+                            let worktree_label = ext.worktree_dir.as_deref().unwrap_or("");
                             let apps_count = ext.apps.len();
 
                             div()
@@ -775,6 +807,14 @@ impl Render for ProjectsView {
                                                     proj.branch_or_default()
                                                 )),
                                         )
+                                        .when(!worktree_label.is_empty(), |s: Div| {
+                                            s.child(
+                                                div()
+                                                    .text_size(px(11.))
+                                                    .text_color(fg_dim())
+                                                    .child(format!("worktrees: {worktree_label}")),
+                                            )
+                                        })
                                         .when(!mcp_label.is_empty(), |s: Div| {
                                             s.child(
                                                 div()
