@@ -13,6 +13,7 @@ pub enum DaemonCmd {
     LaunchAgent,
     Restart,
     Reload,
+    Logs,
 }
 
 pub fn send_command(cmd: &str) -> Result<String, String> {
@@ -62,6 +63,7 @@ fn handle_client(stream: UnixStream, _tx: &mpsc::Sender<DaemonCmd>) -> Option<Da
         "launch-agent" => Some(DaemonCmd::LaunchAgent),
         "restart" => Some(DaemonCmd::Restart),
         "reload" => Some(DaemonCmd::Reload),
+        "logs" => Some(DaemonCmd::Logs),
         _ => None,
     };
 

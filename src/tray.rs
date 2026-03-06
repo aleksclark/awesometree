@@ -56,6 +56,7 @@ fn show_menu(position: PhysicalPosition<f64>) {
     menu.add(&TextEntry::of("pick", "Open Workspace"));
     menu.add(&Divider);
     menu.add(&TextEntry::of("projects", "Projects"));
+    menu.add(&TextEntry::of("logs", "Logs"));
     menu.add(&Divider);
     menu.add(&TextEntry::of("restart", "Restart"));
     menu.add(&TextEntry::of("exit", "Exit"));
@@ -70,6 +71,9 @@ fn show_menu(position: PhysicalPosition<f64>) {
             }
             "projects" => {
                 let _ = Command::new("awesometree").arg("projects-ui").spawn();
+            }
+            "logs" => {
+                crate::log::request_log_window();
             }
             "restart" => {
                 let _ = Command::new("awesometree").arg("restart-daemon").spawn();

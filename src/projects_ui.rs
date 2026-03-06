@@ -1,4 +1,5 @@
 use crate::interop::{self, Project};
+use crate::log as dlog;
 use crate::text_input::TextInput;
 use gpui::prelude::FluentBuilder;
 use gpui::*;
@@ -218,6 +219,7 @@ impl ProjectsView {
                 if name.is_empty() || repo.is_empty() {
                     return;
                 }
+                dlog::log(format!("Adding project: {name}"));
                 let branch = if branch_val.is_empty() {
                     "master".to_string()
                 } else {
@@ -259,6 +261,7 @@ impl ProjectsView {
                 if name.is_empty() || repo.is_empty() {
                     return;
                 }
+                dlog::log(format!("Editing project: {name}"));
                 let p = &mut self.projects[idx];
                 p.name = name;
                 p.repo = Some(repo);
@@ -305,6 +308,7 @@ impl ProjectsView {
 
     fn delete_project(&mut self, idx: usize, cx: &mut Context<Self>) {
         let name = self.projects[idx].name.clone();
+        dlog::log(format!("Deleting project: {name}"));
         let _ = interop::delete(&name);
         self.projects.remove(idx);
         if let Mode::Editing(ei) = self.mode {
