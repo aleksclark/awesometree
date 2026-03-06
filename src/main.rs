@@ -238,7 +238,7 @@ fn cmd_destroy(name: String, no_tag: bool) {
     }
 }
 
-fn cmd_destroy_current() {
+fn resolve_current_workspace() -> (AwesomeAdapter, String) {
     let wm = AwesomeAdapter::new();
     let tag_full = wm
         .get_current_tag_name()
@@ -254,7 +254,11 @@ fn cmd_destroy_current() {
         eprintln!("Not a project workspace");
         process::exit(1);
     });
-    let name = name.to_string();
+    (wm, name.to_string())
+}
+
+fn cmd_destroy_current() {
+    let (wm, name) = resolve_current_workspace();
     let mut mgr = make_manager();
     if let Ok(true) = mgr.is_dirty(&name) {
         eprintln!("Cannot destroy {name}: uncommitted changes");
@@ -272,22 +276,7 @@ fn cmd_destroy_current() {
 }
 
 fn cmd_close() {
-    let wm = AwesomeAdapter::new();
-    let tag_full = wm
-        .get_current_tag_name()
-        .unwrap_or_else(|e| {
-            eprintln!("{e}");
-            process::exit(1);
-        })
-        .unwrap_or_else(|| {
-            eprintln!("Not a project workspace");
-            process::exit(1);
-        });
-    let (_project, name) = wm::parse_tag_name(&tag_full).unwrap_or_else(|| {
-        eprintln!("Not a project workspace");
-        process::exit(1);
-    });
-    let name = name.to_string();
+    let (wm, name) = resolve_current_workspace();
     let _ = wm.restore_previous_tag();
     let mut mgr = make_manager();
     let opts = DownOptions {
@@ -357,9 +346,9 @@ fn cmd_switch(name: &str) {
     }
 }
 
-fn cmd_pick() {
+fn send_daemon_cmd(cmd: &str) {
     if daemon::is_running() {
-        match daemon::send_command("pick") {
+        match daemon::send_command(cmd) {
             Ok(_) => {}
             Err(e) => eprintln!("Error: {e}"),
         }
@@ -369,16 +358,12 @@ fn cmd_pick() {
     }
 }
 
+fn cmd_pick() {
+    send_daemon_cmd("pick");
+}
+
 fn cmd_create_interactive() {
-    if daemon::is_running() {
-        match daemon::send_command("create") {
-            Ok(_) => {}
-            Err(e) => eprintln!("Error: {e}"),
-        }
-    } else {
-        eprintln!("awesometree-daemon is not running");
-        process::exit(1);
-    }
+    send_daemon_cmd("create");
 }
 
 fn cmd_project(sub: ProjectCmd) {
@@ -405,16 +390,7 @@ fn cmd_project(sub: ProjectCmd) {
                 eprintln!("Project already exists: {name}");
                 process::exit(1);
             }
-            let proj = Project {
-                schema: Some(
-                    "https://project-interop.dev/schemas/v1/project.schema.json".into(),
-                ),
-                version: "1".into(),
-                name: name.clone(),
-                repo: Some(repo),
-                branch: Some(branch),
-                ..Default::default()
-            };
+            let proj = Project::new(&name, repo, branch);
             interop::save(&proj).unwrap_or_else(|e| {
                 eprintln!("Error: {e}");
                 process::exit(1);
@@ -544,31 +520,15 @@ fn cmd_dir(name: &str) {
 }
 
 fn cmd_projects() {
-    for proj in interop::list().unwrap_or_default() {
-        println!("{}", proj.name);
-    }
+    cmd_project(ProjectCmd::List);
 }
 
 fn cmd_edit(name: &str) {
-    let path = interop::projects_dir().join(format!("{name}.project.json"));
-    if !path.exists() {
-        eprintln!("Project not found: {name}");
-        process::exit(1);
-    }
-    let editor = std::env::var("EDITOR").unwrap_or_else(|_| "nano".into());
-    let _ = process::Command::new(editor).arg(&path).status();
+    cmd_project(ProjectCmd::Edit { name: name.to_string() });
 }
 
 fn cmd_projects_ui() {
-    if daemon::is_running() {
-        match daemon::send_command("projects") {
-            Ok(_) => {}
-            Err(e) => eprintln!("Error: {e}"),
-        }
-    } else {
-        eprintln!("awesometree-daemon is not running");
-        process::exit(1);
-    }
+    send_daemon_cmd("projects");
 }
 
 fn cmd_restart_daemon() {

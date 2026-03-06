@@ -55,17 +55,7 @@ fn handle_client(stream: UnixStream, _tx: &mpsc::Sender<DaemonCmd>) -> Option<Da
     if reader.read_line(&mut line).is_err() {
         return None;
     }
-    let trimmed = line.trim();
-    let cmd = match trimmed {
-        "pick" => Some(DaemonCmd::Pick),
-        "create" => Some(DaemonCmd::Create),
-        "projects" => Some(DaemonCmd::Projects),
-        "launch-agent" => Some(DaemonCmd::LaunchAgent),
-        "restart" => Some(DaemonCmd::Restart),
-        "reload" => Some(DaemonCmd::Reload),
-        "logs" => Some(DaemonCmd::Logs),
-        _ => None,
-    };
+    let cmd = parse_command(line.trim());
 
     let mut writer = stream;
     let response = if cmd.is_some() { "ok" } else { "unknown command" };
@@ -74,6 +64,80 @@ fn handle_client(stream: UnixStream, _tx: &mpsc::Sender<DaemonCmd>) -> Option<Da
     cmd
 }
 
+pub fn parse_command(input: &str) -> Option<DaemonCmd> {
+    match input {
+        "pick" => Some(DaemonCmd::Pick),
+        "create" => Some(DaemonCmd::Create),
+        "projects" => Some(DaemonCmd::Projects),
+        "launch-agent" => Some(DaemonCmd::LaunchAgent),
+        "restart" => Some(DaemonCmd::Restart),
+        "reload" => Some(DaemonCmd::Reload),
+        "logs" => Some(DaemonCmd::Logs),
+        _ => None,
+    }
+}
+
 pub fn cleanup() {
     let _ = std::fs::remove_file(SOCK_PATH);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_command_pick() {
+        assert!(matches!(parse_command("pick"), Some(DaemonCmd::Pick)));
+    }
+
+    #[test]
+    fn parse_command_create() {
+        assert!(matches!(parse_command("create"), Some(DaemonCmd::Create)));
+    }
+
+    #[test]
+    fn parse_command_projects() {
+        assert!(matches!(parse_command("projects"), Some(DaemonCmd::Projects)));
+    }
+
+    #[test]
+    fn parse_command_launch_agent() {
+        assert!(matches!(parse_command("launch-agent"), Some(DaemonCmd::LaunchAgent)));
+    }
+
+    #[test]
+    fn parse_command_restart() {
+        assert!(matches!(parse_command("restart"), Some(DaemonCmd::Restart)));
+    }
+
+    #[test]
+    fn parse_command_reload() {
+        assert!(matches!(parse_command("reload"), Some(DaemonCmd::Reload)));
+    }
+
+    #[test]
+    fn parse_command_logs() {
+        assert!(matches!(parse_command("logs"), Some(DaemonCmd::Logs)));
+    }
+
+    #[test]
+    fn parse_command_unknown() {
+        assert!(parse_command("unknown").is_none());
+    }
+
+    #[test]
+    fn parse_command_empty() {
+        assert!(parse_command("").is_none());
+    }
+
+    #[test]
+    fn parse_command_case_sensitive() {
+        assert!(parse_command("Pick").is_none());
+        assert!(parse_command("PICK").is_none());
+    }
+
+    #[test]
+    fn sock_path_is_tmp() {
+        assert!(SOCK_PATH.starts_with("/tmp/"));
+    }
 }

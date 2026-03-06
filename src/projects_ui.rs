@@ -1,6 +1,8 @@
 use crate::interop::{self, Project};
 use crate::log as dlog;
 use crate::text_input::TextInput;
+use crate::theme;
+use crate::ui_helpers;
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 
@@ -53,19 +55,19 @@ pub fn run_projects_ui() {
 
 actions!(projects_ui, [Dismiss, ConfirmAction, NextField, PrevField]);
 
-fn bg() -> Rgba { rgba(0x1e1e2eff) }
-fn bg_hover() -> Rgba { rgba(0x313244ff) }
-fn bg_selected() -> Rgba { rgba(0x45475aff) }
-fn fg() -> Rgba { rgba(0xcdd6f4ff) }
-fn fg_dim() -> Rgba { rgba(0x6c7086ff) }
-fn accent() -> Rgba { rgba(0x89b4faff) }
-fn border_color() -> Rgba { rgba(0x313244ff) }
-fn border_focus() -> Rgba { rgba(0x89b4faff) }
-fn btn_bg() -> Rgba { rgba(0x89b4faff) }
-fn btn_fg() -> Rgba { rgba(0x1e1e2eff) }
-fn btn_hover() -> Rgba { rgba(0xb4d0fbff) }
-fn danger() -> Rgba { rgba(0xf38ba8ff) }
-fn success() -> Rgba { rgba(0xa6e3a1ff) }
+fn bg() -> Rgba { theme::bg() }
+fn bg_hover() -> Rgba { theme::bg_hover() }
+fn bg_selected() -> Rgba { theme::bg_selected() }
+fn fg() -> Rgba { theme::fg() }
+fn fg_dim() -> Rgba { theme::fg_dim() }
+fn accent() -> Rgba { theme::accent() }
+fn border_color() -> Rgba { theme::border_color() }
+fn border_focus() -> Rgba { theme::border_focus() }
+fn btn_bg() -> Rgba { theme::btn_bg() }
+fn btn_fg() -> Rgba { theme::btn_fg() }
+fn btn_hover() -> Rgba { theme::btn_hover() }
+fn danger() -> Rgba { theme::danger() }
+fn success() -> Rgba { theme::success() }
 
 #[derive(Clone, Copy, PartialEq)]
 enum Mode {
@@ -225,16 +227,7 @@ impl ProjectsView {
                 } else {
                     branch_val
                 };
-                let mut proj = Project {
-                    schema: Some(
-                        "https://project-interop.dev/schemas/v1/project.schema.json".into(),
-                    ),
-                    version: "1".into(),
-                    name,
-                    repo: Some(repo),
-                    branch: Some(branch),
-                    ..Default::default()
-                };
+                let mut proj = Project::new(&name, &repo, &branch);
                 if !launch_prompt.is_empty() {
                     proj.launch = Some(interop::Launch {
                         prompt: Some(launch_prompt),
@@ -435,39 +428,10 @@ fn render_field(
     cx: &mut Context<'_, ProjectsView>,
 ) -> Stateful<Div> {
     let input_entity = input.clone();
-    div()
-        .id(ElementId::Name(format!("field-{label}").into()))
-        .cursor(CursorStyle::IBeam)
-        .on_mouse_down(
-            MouseButton::Left,
-            cx.listener(move |view, _, window, cx| {
-                view.form_field = field;
-                window.focus(&input_entity.read(cx).focus_handle(cx));
-                cx.notify();
-            }),
-        )
-        .flex()
-        .flex_col()
-        .gap(px(4.))
-        .child(
-            div()
-                .text_size(px(12.))
-                .text_color(if focused { accent() } else { fg_dim() })
-                .child(label.to_string()),
-        )
-        .child(
-            div()
-                .px(px(10.))
-                .py(px(6.))
-                .rounded(px(4.))
-                .border_1()
-                .border_color(if focused { border_focus() } else { border_color() })
-                .bg(bg_hover())
-                .text_size(px(14.))
-                .text_color(fg())
-                .font_family("monospace")
-                .child(input.clone()),
-        )
+    ui_helpers::render_form_field(label, input, focused, move |view: &mut ProjectsView, window, cx| {
+        view.form_field = field;
+        window.focus(&input_entity.read(cx).focus_handle(cx));
+    }, cx)
 }
 
 fn render_apps_section(

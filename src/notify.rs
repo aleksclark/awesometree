@@ -1,3 +1,4 @@
+use crate::theme;
 use futures_channel::mpsc;
 use gpui::*;
 use std::sync::OnceLock;
@@ -5,14 +6,14 @@ use std::thread;
 
 static ERROR_TX: OnceLock<mpsc::UnboundedSender<String>> = OnceLock::new();
 
-fn bg() -> Rgba { rgba(0x1e1e2eff) }
-fn fg() -> Rgba { rgba(0xcdd6f4ff) }
-fn fg_dim() -> Rgba { rgba(0x6c7086ff) }
-fn border_color() -> Rgba { rgba(0x313244ff) }
-fn danger() -> Rgba { rgba(0xf38ba8ff) }
-fn btn_bg() -> Rgba { rgba(0x89b4faff) }
-fn btn_fg() -> Rgba { rgba(0x1e1e2eff) }
-fn btn_hover() -> Rgba { rgba(0xb4d0fbff) }
+fn bg() -> Rgba { theme::bg() }
+fn fg() -> Rgba { theme::fg() }
+fn fg_dim() -> Rgba { theme::fg_dim() }
+fn border_color() -> Rgba { theme::border_color() }
+fn danger() -> Rgba { theme::danger() }
+fn btn_bg() -> Rgba { theme::btn_bg() }
+fn btn_fg() -> Rgba { theme::btn_fg() }
+fn btn_hover() -> Rgba { theme::btn_hover() }
 
 actions!(notify, [DismissError]);
 
@@ -284,7 +285,7 @@ impl Render for ProgressView {
                     .child(
                         div()
                             .text_size(px(16.))
-                            .text_color(rgba(0x89b4faff))
+                            .text_color(theme::accent())
                             .child(self.title.clone()),
                     ),
             )
