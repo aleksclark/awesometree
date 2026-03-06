@@ -1,3 +1,4 @@
+use crate::paths;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
@@ -23,8 +24,7 @@ pub struct WorkspaceState {
 pub const TAG_OFFSET: i32 = 10;
 
 fn state_dir() -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
-    PathBuf::from(home).join(".config/awesometree")
+    paths::home_dir().join(".config/awesometree")
 }
 
 fn state_path() -> PathBuf {
@@ -126,5 +126,169 @@ impl Store {
             i += 1;
         }
         i
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_store() -> Store {
+        Store::default()
+    }
+
+    #[test]
+    fn empty_store() {
+        let s = make_store();
+        assert!(s.workspace("foo").is_none());
+        assert!(s.active_names().is_empty());
+        assert!(s.all_names().is_empty());
+    }
+
+    #[test]
+    fn set_active_creates_workspace() {
+        let mut s = make_store();
+        s.set_active("feat-1", "myproject", 10, "/tmp/feat-1");
+        let ws = s.workspace("feat-1").unwrap();
+        assert_eq!(ws.project, "myproject");
+        assert!(ws.active);
+        assert_eq!(ws.tag_index, 10);
+        assert_eq!(ws.dir, "/tmp/feat-1");
+    }
+
+    #[test]
+    fn set_active_updates_existing() {
+        let mut s = make_store();
+        s.set_active("feat-1", "proj-a", 10, "/tmp/a");
+        s.set_active("feat-1", "proj-b", 11, "/tmp/b");
+        let ws = s.workspace("feat-1").unwrap();
+        assert_eq!(ws.project, "proj-b");
+        assert_eq!(ws.tag_index, 11);
+    }
+
+    #[test]
+    fn set_inactive_clears_fields() {
+        let mut s = make_store();
+        s.set_active("feat-1", "proj", 10, "/tmp/feat-1");
+        s.set_inactive("feat-1");
+        let ws = s.workspace("feat-1").unwrap();
+        assert!(!ws.active);
+        assert_eq!(ws.tag_index, 0);
+        assert!(ws.dir.is_empty());
+        assert_eq!(ws.project, "proj");
+    }
+
+    #[test]
+    fn set_inactive_nonexistent_noop() {
+        let mut s = make_store();
+        s.set_inactive("ghost");
+        assert!(s.workspace("ghost").is_none());
+    }
+
+    #[test]
+    fn remove_workspace() {
+        let mut s = make_store();
+        s.set_active("feat-1", "proj", 10, "/tmp");
+        s.remove("feat-1");
+        assert!(s.workspace("feat-1").is_none());
+    }
+
+    #[test]
+    fn active_names_sorted() {
+        let mut s = make_store();
+        s.set_active("charlie", "p", 10, "/tmp");
+        s.set_active("alice", "p", 11, "/tmp");
+        s.set_active("bob", "p", 12, "/tmp");
+        s.set_inactive("bob");
+        assert_eq!(s.active_names(), vec!["alice", "charlie"]);
+    }
+
+    #[test]
+    fn all_names_sorted() {
+        let mut s = make_store();
+        s.set_active("charlie", "p", 10, "/tmp");
+        s.set_active("alice", "p", 11, "/tmp");
+        s.set_inactive("alice");
+        assert_eq!(s.all_names(), vec!["alice", "charlie"]);
+    }
+
+    #[test]
+    fn workspaces_for_project_filters() {
+        let mut s = make_store();
+        s.set_active("feat-1", "proj-a", 10, "/tmp");
+        s.set_active("feat-2", "proj-b", 11, "/tmp");
+        s.set_active("feat-3", "proj-a", 12, "/tmp");
+        let result = s.workspaces_for_project("proj-a");
+        let names: Vec<_> = result.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(names, vec!["feat-1", "feat-3"]);
+    }
+
+    #[test]
+    fn workspaces_for_project_empty() {
+        let s = make_store();
+        assert!(s.workspaces_for_project("nope").is_empty());
+    }
+
+    #[test]
+    fn allocate_tag_index_returns_existing() {
+        let mut s = make_store();
+        s.set_active("feat-1", "p", 15, "/tmp");
+        assert_eq!(s.allocate_tag_index("feat-1"), 15);
+    }
+
+    #[test]
+    fn allocate_tag_index_starts_at_offset() {
+        let s = make_store();
+        assert_eq!(s.allocate_tag_index("new"), TAG_OFFSET);
+    }
+
+    #[test]
+    fn allocate_tag_index_skips_used() {
+        let mut s = make_store();
+        s.set_active("a", "p", TAG_OFFSET, "/tmp");
+        s.set_active("b", "p", TAG_OFFSET + 1, "/tmp");
+        assert_eq!(s.allocate_tag_index("c"), TAG_OFFSET + 2);
+    }
+
+    #[test]
+    fn allocate_tag_index_ignores_inactive() {
+        let mut s = make_store();
+        s.set_active("a", "p", TAG_OFFSET, "/tmp");
+        s.set_inactive("a");
+        assert_eq!(s.allocate_tag_index("b"), TAG_OFFSET);
+    }
+
+    #[test]
+    fn allocate_tag_index_zero_gets_new() {
+        let mut s = make_store();
+        s.workspaces.insert("ws".into(), WorkspaceState {
+            project: "p".into(),
+            tag_index: 0,
+            ..Default::default()
+        });
+        assert_eq!(s.allocate_tag_index("ws"), TAG_OFFSET);
+    }
+
+    #[test]
+    fn serialization_roundtrip() {
+        let mut s = make_store();
+        s.set_active("feat-1", "proj", 10, "/tmp/feat-1");
+        let json = serde_json::to_string(&s).unwrap();
+        let s2: Store = serde_json::from_str(&json).unwrap();
+        let ws = s2.workspace("feat-1").unwrap();
+        assert_eq!(ws.project, "proj");
+        assert!(ws.active);
+        assert_eq!(ws.tag_index, 10);
+    }
+
+    #[test]
+    fn deserialize_missing_fields() {
+        let json = r#"{"workspaces":{"ws1":{"project":"p"}}}"#;
+        let s: Store = serde_json::from_str(json).unwrap();
+        let ws = s.workspace("ws1").unwrap();
+        assert_eq!(ws.project, "p");
+        assert!(!ws.active);
+        assert_eq!(ws.tag_index, 0);
+        assert!(ws.dir.is_empty());
     }
 }

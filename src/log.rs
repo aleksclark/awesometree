@@ -1,3 +1,4 @@
+use crate::theme;
 use futures_channel::mpsc;
 use gpui::*;
 use std::sync::{Mutex, OnceLock};
@@ -81,11 +82,11 @@ pub fn request_log_window() {
     }
 }
 
-fn bg() -> Rgba { rgba(0x1e1e2eff) }
-fn fg() -> Rgba { rgba(0xcdd6f4ff) }
-fn fg_dim() -> Rgba { rgba(0x6c7086ff) }
-fn border_color() -> Rgba { rgba(0x313244ff) }
-fn accent() -> Rgba { rgba(0x89b4faff) }
+fn bg() -> Rgba { theme::bg() }
+fn fg() -> Rgba { theme::fg() }
+fn fg_dim() -> Rgba { theme::fg_dim() }
+fn border_color() -> Rgba { theme::border_color() }
+fn accent() -> Rgba { theme::accent() }
 
 actions!(log_viewer, [DismissLog]);
 

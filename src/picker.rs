@@ -1,4 +1,6 @@
 use crate::text_input::{TextInput, TextInputEvent};
+use crate::theme;
+use crate::ui_helpers;
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 use std::sync::mpsc;
@@ -453,20 +455,19 @@ impl PickerView {
     }
 }
 
-fn bg() -> Rgba { rgba(0x1e1e2eff) }
-fn bg_hover() -> Rgba { rgba(0x313244ff) }
-fn bg_selected() -> Rgba { rgba(0x45475aff) }
-fn fg() -> Rgba { rgba(0xcdd6f4ff) }
-fn fg_dim() -> Rgba { rgba(0x6c7086ff) }
-fn accent() -> Rgba { rgba(0x89b4faff) }
-fn active_dot() -> Rgba { rgba(0xa6e3a1ff) }
-fn border_color() -> Rgba { rgba(0x313244ff) }
-fn border_focus() -> Rgba { rgba(0x89b4faff) }
-fn btn_bg() -> Rgba { rgba(0x89b4faff) }
-fn btn_fg() -> Rgba { rgba(0x1e1e2eff) }
-fn btn_hover() -> Rgba { rgba(0xb4d0fbff) }
-fn new_badge() -> Rgba { rgba(0xf9e2afff) }
-fn new_badge_fg() -> Rgba { rgba(0x1e1e2eff) }
+fn bg() -> Rgba { theme::bg() }
+fn bg_hover() -> Rgba { theme::bg_hover() }
+fn bg_selected() -> Rgba { theme::bg_selected() }
+fn fg() -> Rgba { theme::fg() }
+fn fg_dim() -> Rgba { theme::fg_dim() }
+fn accent() -> Rgba { theme::accent() }
+fn active_dot() -> Rgba { theme::active_dot() }
+fn border_color() -> Rgba { theme::border_color() }
+fn btn_bg() -> Rgba { theme::btn_bg() }
+fn btn_fg() -> Rgba { theme::btn_fg() }
+fn btn_hover() -> Rgba { theme::btn_hover() }
+fn new_badge() -> Rgba { theme::new_badge() }
+fn new_badge_fg() -> Rgba { theme::new_badge_fg() }
 
 fn render_form_field(
     label: &str,
@@ -476,39 +477,10 @@ fn render_form_field(
     cx: &mut Context<'_, PickerView>,
 ) -> Stateful<Div> {
     let input_entity = input.clone();
-    div()
-        .id(ElementId::Name(format!("field-{label}").into()))
-        .cursor(CursorStyle::IBeam)
-        .on_mouse_down(
-            MouseButton::Left,
-            cx.listener(move |view, _, window, cx| {
-                view.form_field = field;
-                window.focus(&input_entity.read(cx).focus_handle(cx));
-                cx.notify();
-            }),
-        )
-        .flex()
-        .flex_col()
-        .gap(px(4.))
-        .child(
-            div()
-                .text_size(px(12.))
-                .text_color(if focused { accent() } else { fg_dim() })
-                .child(label.to_string()),
-        )
-        .child(
-            div()
-                .px(px(10.))
-                .py(px(6.))
-                .rounded(px(4.))
-                .border_1()
-                .border_color(if focused { border_focus() } else { border_color() })
-                .bg(bg_hover())
-                .text_size(px(14.))
-                .text_color(fg())
-                .font_family("monospace")
-                .child(input.clone()),
-        )
+    ui_helpers::render_form_field(label, input, focused, move |view: &mut PickerView, window, cx| {
+        view.form_field = field;
+        window.focus(&input_entity.read(cx).focus_handle(cx));
+    }, cx)
 }
 
 fn render_dropdown_items(
@@ -917,4 +889,83 @@ fn fuzzy_match(text: &str, pattern: &str) -> bool {
         }
     }
     pi == pattern_bytes.len()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{fuzzy_match, parse_create_result, CREATE_SENTINEL, DESTROY_PREFIX};
+
+    #[test]
+    fn fuzzy_match_exact() {
+        assert!(fuzzy_match("hello", "hello"));
+    }
+
+    #[test]
+    fn fuzzy_match_subsequence() {
+        assert!(fuzzy_match("hello world", "hlo"));
+    }
+
+    #[test]
+    fn fuzzy_match_empty_pattern() {
+        assert!(fuzzy_match("anything", ""));
+    }
+
+    #[test]
+    fn fuzzy_match_no_match() {
+        assert!(!fuzzy_match("abc", "xyz"));
+    }
+
+    #[test]
+    fn fuzzy_match_pattern_longer() {
+        assert!(!fuzzy_match("ab", "abc"));
+    }
+
+    #[test]
+    fn fuzzy_match_order_matters() {
+        assert!(fuzzy_match("abcdef", "ace"));
+        assert!(!fuzzy_match("abcdef", "eca"));
+    }
+
+    #[test]
+    fn fuzzy_match_repeated_chars() {
+        assert!(fuzzy_match("aabbc", "abc"));
+    }
+
+    #[test]
+    fn parse_create_result_valid() {
+        let result = parse_create_result("name\0proj\0/repo\0main\01").unwrap();
+        assert_eq!(result.name, "name");
+        assert_eq!(result.project, "proj");
+        assert_eq!(result.repo_path, "/repo");
+        assert_eq!(result.branch, "main");
+        assert!(result.is_new_project);
+    }
+
+    #[test]
+    fn parse_create_result_existing_project() {
+        let result = parse_create_result("ws\0proj\0/r\0master\00").unwrap();
+        assert!(!result.is_new_project);
+    }
+
+    #[test]
+    fn parse_create_result_too_few_parts() {
+        assert!(parse_create_result("a\0b\0c").is_none());
+    }
+
+    #[test]
+    fn parse_create_result_empty_fields() {
+        let result = parse_create_result("\0\0\0\0").unwrap();
+        assert!(result.name.is_empty());
+        assert!(result.project.is_empty());
+    }
+
+    #[test]
+    fn create_sentinel_is_nul_prefixed() {
+        assert!(CREATE_SENTINEL.starts_with('\0'));
+    }
+
+    #[test]
+    fn destroy_prefix_is_nul_prefixed() {
+        assert!(DESTROY_PREFIX.starts_with('\0'));
+    }
 }

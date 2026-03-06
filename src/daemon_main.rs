@@ -294,16 +294,11 @@ fn do_create(cx: &mut App) {
         if result.is_new_project {
             dlog::log(format!("Creating new project: {}", result.project));
             progress.update(format!("Saving project {}...", result.project));
-            let proj = interop::Project {
-                schema: Some(
-                    "https://project-interop.dev/schemas/v1/project.schema.json".into(),
-                ),
-                version: "1".into(),
-                name: result.project.clone(),
-                repo: Some(result.repo_path.clone()),
-                branch: Some(result.branch.clone()),
-                ..Default::default()
-            };
+            let proj = interop::Project::new(
+                &result.project,
+                &result.repo_path,
+                &result.branch,
+            );
             if let Err(e) = interop::save(&proj) {
                 progress.error(format!("Save project: {e}"));
                 return;

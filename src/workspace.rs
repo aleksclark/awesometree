@@ -20,6 +20,7 @@ pub struct DownOptions {
     pub keep_worktree: bool,
 }
 
+#[derive(Debug)]
 pub struct ResolvedWorkspace {
     pub name: String,
     pub project: Project,
@@ -309,4 +310,136 @@ fn remove_worktree(project: &Project, dir: &PathBuf) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn project_with_branch(name: &str, branch: &str) -> Project {
+        Project::new(name, "/tmp/test-repo", branch)
+    }
+
+    fn project_no_branch(name: &str) -> Project {
+        Project {
+            name: name.into(),
+            repo: Some("/tmp/test-repo".into()),
+            version: "1".into(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn resolve_dir_with_branch() {
+        let p = project_with_branch("myproj", "main");
+        let dir = resolve_dir("feat-1", &p);
+        assert!(dir.to_string_lossy().contains("myproj"));
+        assert!(dir.to_string_lossy().ends_with("feat-1"));
+    }
+
+    #[test]
+    fn resolve_dir_slash_replacement() {
+        let p = project_with_branch("proj", "main");
+        let dir = resolve_dir("user/feature", &p);
+        assert!(dir.to_string_lossy().ends_with("user-feature"));
+    }
+
+    #[test]
+    fn resolve_dir_no_branch_uses_repo() {
+        let p = project_no_branch("proj");
+        let dir = resolve_dir("ws", &p);
+        assert_eq!(dir, PathBuf::from("/tmp/test-repo"));
+    }
+
+    #[test]
+    fn resolve_dir_custom_worktree_dir() {
+        let mut p = project_with_branch("proj", "main");
+        let ext = interop::AwesometreeExt {
+            worktree_dir: Some("/custom/wt".into()),
+            ..Default::default()
+        };
+        p.set_awesometree_ext(&ext);
+        let dir = resolve_dir("feat", &p);
+        assert_eq!(dir, PathBuf::from("/custom/wt/feat"));
+    }
+
+    #[test]
+    fn ensure_worktree_no_branch_noop() {
+        let p = project_no_branch("proj");
+        let dir = PathBuf::from("/tmp/nonexistent");
+        assert!(ensure_worktree("ws", &p, &dir).is_ok());
+    }
+
+    #[test]
+    fn ensure_worktree_dir_exists_noop() {
+        let p = project_with_branch("proj", "main");
+        let dir = PathBuf::from("/tmp");
+        assert!(ensure_worktree("ws", &p, &dir).is_ok());
+    }
+
+    #[test]
+    fn remove_worktree_no_branch_noop() {
+        let p = project_no_branch("proj");
+        let dir = PathBuf::from("/tmp/nonexistent");
+        assert!(remove_worktree(&p, &dir).is_ok());
+    }
+
+    struct MockAdapter {
+        tags_created: std::cell::RefCell<Vec<String>>,
+        tags_deleted: std::cell::RefCell<Vec<String>>,
+        tags_switched: std::cell::RefCell<Vec<String>>,
+    }
+
+    impl MockAdapter {
+        fn new() -> Self {
+            Self {
+                tags_created: std::cell::RefCell::new(vec![]),
+                tags_deleted: std::cell::RefCell::new(vec![]),
+                tags_switched: std::cell::RefCell::new(vec![]),
+            }
+        }
+    }
+
+    impl wm::Adapter for MockAdapter {
+        fn create_tag(&self, tag: &str, _index: i32, _layout: &str) -> Result<(), String> {
+            self.tags_created.borrow_mut().push(tag.to_string());
+            Ok(())
+        }
+        fn delete_tag(&self, tag: &str) -> Result<(), String> {
+            self.tags_deleted.borrow_mut().push(tag.to_string());
+            Ok(())
+        }
+        fn switch_tag(&self, tag: &str) -> Result<(), String> {
+            self.tags_switched.borrow_mut().push(tag.to_string());
+            Ok(())
+        }
+        fn kill_tag_clients(&self, _tag: &str) -> Result<(), String> {
+            Ok(())
+        }
+        fn eval(&self, _lua: &str) -> Result<(), String> {
+            Ok(())
+        }
+        fn get_current_tag_name(&self) -> Result<Option<String>, String> {
+            Ok(None)
+        }
+        fn restore_previous_tag(&self) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn manager_new() {
+        let st = state::Store::default();
+        let mgr = Manager::new(st, Box::new(MockAdapter::new()));
+        assert!(mgr.state.all_names().is_empty());
+    }
+
+    #[test]
+    fn manager_resolve_workspace_not_found() {
+        let st = state::Store::default();
+        let mgr = Manager::new(st, Box::new(MockAdapter::new()));
+        let result = mgr.resolve_workspace("nonexistent");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("workspace not found"));
+    }
 }

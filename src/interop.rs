@@ -1,3 +1,4 @@
+use crate::paths;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
@@ -61,15 +62,11 @@ pub struct AwesometreeExt {
 
 const EXT_KEY: &str = "dev.awesometree";
 
-fn home_dir() -> PathBuf {
-    PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/tmp".into()))
-}
-
 pub fn base_dir() -> PathBuf {
     if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
         PathBuf::from(xdg).join("project-interop")
     } else {
-        home_dir().join(".config/project-interop")
+        paths::home_dir().join(".config/project-interop")
     }
 }
 
@@ -82,15 +79,11 @@ pub fn context_dir(name: &str) -> PathBuf {
 }
 
 pub fn worktree_base() -> PathBuf {
-    home_dir().join("worktrees")
+    paths::home_dir().join("worktrees")
 }
 
 pub fn expand_home(p: &str) -> PathBuf {
-    if let Some(rest) = p.strip_prefix("~/") {
-        home_dir().join(rest)
-    } else {
-        PathBuf::from(p)
-    }
+    paths::expand_home(p)
 }
 
 pub fn load(name: &str) -> Result<Project, String> {
@@ -172,7 +165,20 @@ pub fn interpolate(template: &str, project_name: &str, dir: &str) -> String {
         .replace("{dir}", dir)
 }
 
+pub const DEFAULT_SCHEMA: &str = "https://project-interop.dev/schemas/v1/project.schema.json";
+
 impl Project {
+    pub fn new(name: impl Into<String>, repo: impl Into<String>, branch: impl Into<String>) -> Self {
+        Self {
+            schema: Some(DEFAULT_SCHEMA.into()),
+            version: "1".into(),
+            name: name.into(),
+            repo: Some(repo.into()),
+            branch: Some(branch.into()),
+            ..Default::default()
+        }
+    }
+
     pub fn repo_path(&self) -> Option<PathBuf> {
         self.repo.as_ref().map(|r| expand_home(r))
     }
@@ -400,7 +406,7 @@ fn merge_json_objects(base: serde_json::Value, overlay: serde_json::Value) -> se
 }
 
 pub fn list_repos() -> Vec<PathBuf> {
-    let work_dir = home_dir().join("work");
+    let work_dir = paths::home_dir().join("work");
     let Ok(outer) = fs::read_dir(&work_dir) else {
         return vec![];
     };
@@ -447,4 +453,471 @@ pub fn list_branches(repo: &Path) -> Vec<String> {
     let mut branches: Vec<String> = seen.into_iter().collect();
     branches.sort();
     branches
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn project_new_sets_defaults() {
+        let p = Project::new("myproj", "/repos/myproj", "main");
+        assert_eq!(p.name, "myproj");
+        assert_eq!(p.repo.as_deref(), Some("/repos/myproj"));
+        assert_eq!(p.branch.as_deref(), Some("main"));
+        assert_eq!(p.version, "1");
+        assert_eq!(p.schema.as_deref(), Some(DEFAULT_SCHEMA));
+    }
+
+    #[test]
+    fn interpolate_replaces_placeholders() {
+        let result = interpolate("zeditor -n {dir} --project {project}", "curri", "/tmp/ws");
+        assert_eq!(result, "zeditor -n /tmp/ws --project curri");
+    }
+
+    #[test]
+    fn interpolate_no_placeholders() {
+        let result = interpolate("echo hello", "proj", "/dir");
+        assert_eq!(result, "echo hello");
+    }
+
+    #[test]
+    fn interpolate_multiple_same_placeholder() {
+        let result = interpolate("{dir}/{dir}", "p", "/x");
+        assert_eq!(result, "/x//x");
+    }
+
+    #[test]
+    fn project_repo_path_some() {
+        let p = Project::new("p", "/home/user/repo", "main");
+        let path = p.repo_path().unwrap();
+        assert_eq!(path, PathBuf::from("/home/user/repo"));
+    }
+
+    #[test]
+    fn project_repo_path_none() {
+        let p = Project::default();
+        assert!(p.repo_path().is_none());
+    }
+
+    #[test]
+    fn branch_or_default_with_branch() {
+        let p = Project::new("p", "/r", "develop");
+        assert_eq!(p.branch_or_default(), "develop");
+    }
+
+    #[test]
+    fn branch_or_default_without_branch() {
+        let p = Project::default();
+        assert_eq!(p.branch_or_default(), "master");
+    }
+
+    #[test]
+    fn awesometree_ext_default() {
+        let p = Project::default();
+        let ext = p.awesometree_ext();
+        assert!(ext.mcp.is_none());
+        assert!(ext.apps.is_empty());
+        assert!(ext.layout.is_empty());
+        assert!(ext.worktree_dir.is_none());
+    }
+
+    #[test]
+    fn awesometree_ext_roundtrip() {
+        let mut p = Project::new("p", "/r", "main");
+        let ext = AwesometreeExt {
+            mcp: Some("http://localhost:8080".into()),
+            apps: vec!["zeditor -n {dir}".into()],
+            layout: "max".into(),
+            worktree_dir: Some("~/wt".into()),
+        };
+        p.set_awesometree_ext(&ext);
+
+        let restored = p.awesometree_ext();
+        assert_eq!(restored.mcp.as_deref(), Some("http://localhost:8080"));
+        assert_eq!(restored.apps, vec!["zeditor -n {dir}"]);
+        assert_eq!(restored.layout, "max");
+        assert_eq!(restored.worktree_dir.as_deref(), Some("~/wt"));
+    }
+
+    #[test]
+    fn resolved_mcp_url_interpolates() {
+        let mut p = Project::new("proj", "/r", "main");
+        let ext = AwesometreeExt {
+            mcp: Some("http://localhost/{project}".into()),
+            ..Default::default()
+        };
+        p.set_awesometree_ext(&ext);
+        let url = p.resolved_mcp_url("/ws/dir").unwrap();
+        assert_eq!(url, "http://localhost/proj");
+    }
+
+    #[test]
+    fn resolved_mcp_url_none_when_no_ext() {
+        let p = Project::new("proj", "/r", "main");
+        assert!(p.resolved_mcp_url("/ws/dir").is_none());
+    }
+
+    #[test]
+    fn expand_home_tilde() {
+        let result = expand_home("~/projects/foo");
+        assert!(result.to_string_lossy().ends_with("projects/foo"));
+        assert!(!result.to_string_lossy().starts_with("~"));
+    }
+
+    #[test]
+    fn expand_home_absolute() {
+        let result = expand_home("/absolute/path");
+        assert_eq!(result, PathBuf::from("/absolute/path"));
+    }
+
+    #[test]
+    fn project_serialization_roundtrip() {
+        let mut p = Project::new("test", "/repo", "main");
+        p.launch = Some(Launch {
+            prompt: Some("hello".into()),
+            ..Default::default()
+        });
+        let json = serde_json::to_string(&p).unwrap();
+        let p2: Project = serde_json::from_str(&json).unwrap();
+        assert_eq!(p2.name, "test");
+        assert_eq!(p2.launch.unwrap().prompt.unwrap(), "hello");
+    }
+
+    #[test]
+    fn merge_basic_overlay() {
+        let base = Project::new("proj", "/base/repo", "master");
+        let overlay = Project {
+            name: "proj".into(),
+            branch: Some("develop".into()),
+            ..Default::default()
+        };
+        let merged = merge(base, overlay).unwrap();
+        assert_eq!(merged.repo.as_deref(), Some("/base/repo"));
+        assert_eq!(merged.branch.as_deref(), Some("develop"));
+    }
+
+    #[test]
+    fn merge_name_mismatch_errors() {
+        let base = Project::new("proj-a", "/r", "main");
+        let overlay = Project::new("proj-b", "/r", "main");
+        assert!(merge(base, overlay).is_err());
+    }
+
+    #[test]
+    fn merge_empty_overlay_name_ok() {
+        let base = Project::new("proj", "/r", "main");
+        let overlay = Project::default();
+        assert!(merge(base, overlay).is_ok());
+    }
+
+    #[test]
+    fn merge_launch_overlay() {
+        let base = Project {
+            launch: Some(Launch {
+                prompt: Some("base prompt".into()),
+                ..Default::default()
+            }),
+            ..Project::new("p", "/r", "main")
+        };
+        let overlay = Project {
+            name: "p".into(),
+            launch: Some(Launch {
+                prompt: Some("override prompt".into()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let merged = merge(base, overlay).unwrap();
+        assert_eq!(
+            merged.launch.unwrap().prompt.unwrap(),
+            "override prompt"
+        );
+    }
+
+    #[test]
+    fn merge_context_extends() {
+        let base = Project {
+            context: Some(ContextConfig {
+                files: Some(vec!["a.md".into()]),
+                ..Default::default()
+            }),
+            ..Project::new("p", "/r", "main")
+        };
+        let overlay = Project {
+            name: "p".into(),
+            context: Some(ContextConfig {
+                files: Some(vec!["b.md".into()]),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let merged = merge(base, overlay).unwrap();
+        let files = merged.context.unwrap().files.unwrap();
+        assert_eq!(files, vec!["a.md", "b.md"]);
+    }
+
+    #[test]
+    fn merge_extensions_overlay() {
+        let mut base = Project::new("p", "/r", "main");
+        let mut ext_map = HashMap::new();
+        ext_map.insert("key1".into(), serde_json::json!("val1"));
+        base.extensions = Some(ext_map);
+
+        let mut overlay = Project {
+            name: "p".into(),
+            ..Default::default()
+        };
+        let mut overlay_ext = HashMap::new();
+        overlay_ext.insert("key2".into(), serde_json::json!("val2"));
+        overlay.extensions = Some(overlay_ext);
+
+        let merged = merge(base, overlay).unwrap();
+        let exts = merged.extensions.unwrap();
+        assert_eq!(exts.get("key1"), Some(&serde_json::json!("val1")));
+        assert_eq!(exts.get("key2"), Some(&serde_json::json!("val2")));
+    }
+
+    #[test]
+    fn merge_json_objects_both_objects() {
+        let base = serde_json::json!({"a": 1, "b": 2});
+        let overlay = serde_json::json!({"b": 3, "c": 4});
+        let result = merge_json_objects(base, overlay);
+        assert_eq!(result, serde_json::json!({"a": 1, "b": 3, "c": 4}));
+    }
+
+    #[test]
+    fn merge_json_objects_overlay_wins_non_object() {
+        let base = serde_json::json!({"a": 1});
+        let overlay = serde_json::json!([1, 2, 3]);
+        let result = merge_json_objects(base, overlay.clone());
+        assert_eq!(result, overlay);
+    }
+
+    #[test]
+    fn context_dir_path() {
+        let dir = context_dir("myproj");
+        assert!(dir.to_string_lossy().contains("context/myproj"));
+    }
+
+    #[test]
+    fn projects_dir_path() {
+        let dir = projects_dir();
+        assert!(dir.to_string_lossy().contains("projects"));
+    }
+
+    #[test]
+    fn assemble_context_bundle_empty() {
+        let p = Project::default();
+        let result = assemble_context_bundle(&p).unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn assemble_context_bundle_no_context() {
+        let p = Project::new("p", "/r", "main");
+        let result = assemble_context_bundle(&p).unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn assemble_launch_prompt_no_launch() {
+        let p = Project::default();
+        let result = assemble_launch_prompt(&p, "/dir").unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn assemble_launch_prompt_with_inline() {
+        let p = Project {
+            launch: Some(Launch {
+                prompt: Some("Hello {project} in {dir}".into()),
+                ..Default::default()
+            }),
+            ..Project::new("myproj", "/r", "main")
+        };
+        let result = assemble_launch_prompt(&p, "/my/dir").unwrap();
+        assert_eq!(result, "Hello myproj in /my/dir");
+    }
+
+    #[test]
+    fn merge_launch_env() {
+        let base = Project {
+            launch: Some(Launch {
+                env: Some(HashMap::from([("A".into(), "1".into())])),
+                ..Default::default()
+            }),
+            ..Project::new("p", "/r", "main")
+        };
+        let overlay = Project {
+            name: "p".into(),
+            launch: Some(Launch {
+                env: Some(HashMap::from([
+                    ("A".into(), "2".into()),
+                    ("B".into(), "3".into()),
+                ])),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let merged = merge(base, overlay).unwrap();
+        let env = merged.launch.unwrap().env.unwrap();
+        assert_eq!(env.get("A"), Some(&"2".to_string()));
+        assert_eq!(env.get("B"), Some(&"3".to_string()));
+    }
+
+    #[test]
+    fn merge_tools_overlay() {
+        let base = Project {
+            tools: Some(serde_json::json!({"lint": "eslint"})),
+            ..Project::new("p", "/r", "main")
+        };
+        let overlay = Project {
+            name: "p".into(),
+            tools: Some(serde_json::json!({"test": "jest"})),
+            ..Default::default()
+        };
+        let merged = merge(base, overlay).unwrap();
+        let tools = merged.tools.unwrap();
+        assert_eq!(tools["lint"], "eslint");
+        assert_eq!(tools["test"], "jest");
+    }
+
+    #[test]
+    fn merge_agents_overlay() {
+        let base = Project {
+            agents: Some(serde_json::json!({"claude": {}})),
+            ..Project::new("p", "/r", "main")
+        };
+        let overlay = Project {
+            name: "p".into(),
+            agents: Some(serde_json::json!({"codex": {}})),
+            ..Default::default()
+        };
+        let merged = merge(base, overlay).unwrap();
+        let agents = merged.agents.unwrap();
+        assert!(agents["claude"].is_object());
+        assert!(agents["codex"].is_object());
+    }
+
+    #[test]
+    fn merge_context_max_bytes_override() {
+        let base = Project {
+            context: Some(ContextConfig {
+                max_bytes: Some(1000),
+                ..Default::default()
+            }),
+            ..Project::new("p", "/r", "main")
+        };
+        let overlay = Project {
+            name: "p".into(),
+            context: Some(ContextConfig {
+                max_bytes: Some(500),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let merged = merge(base, overlay).unwrap();
+        assert_eq!(merged.context.unwrap().max_bytes, Some(500));
+    }
+
+    #[test]
+    fn merge_context_repo_includes() {
+        let base = Project {
+            context: Some(ContextConfig {
+                repo_includes: Some(vec!["*.md".into()]),
+                ..Default::default()
+            }),
+            ..Project::new("p", "/r", "main")
+        };
+        let overlay = Project {
+            name: "p".into(),
+            context: Some(ContextConfig {
+                repo_includes: Some(vec!["*.rs".into()]),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let merged = merge(base, overlay).unwrap();
+        let includes = merged.context.unwrap().repo_includes.unwrap();
+        assert_eq!(includes, vec!["*.md", "*.rs"]);
+    }
+
+    #[test]
+    fn project_skip_empty_serialization() {
+        let p = Project::default();
+        let json = serde_json::to_string(&p).unwrap();
+        assert!(!json.contains("\"repo\""));
+        assert!(!json.contains("\"branch\""));
+        assert!(!json.contains("\"launch\""));
+    }
+
+    #[test]
+    fn awesometree_ext_skip_empty_serialization() {
+        let ext = AwesometreeExt::default();
+        let json = serde_json::to_string(&ext).unwrap();
+        assert!(!json.contains("\"apps\""));
+        assert!(!json.contains("\"layout\""));
+    }
+
+    #[test]
+    fn project_with_all_fields() {
+        let p = Project {
+            schema: Some(DEFAULT_SCHEMA.into()),
+            version: "1".into(),
+            name: "full".into(),
+            repo: Some("/r".into()),
+            branch: Some("main".into()),
+            launch: Some(Launch {
+                prompt: Some("hello".into()),
+                prompt_file: Some("prompt.md".into()),
+                env: Some(HashMap::from([("KEY".into(), "val".into())])),
+            }),
+            tools: Some(serde_json::json!({"test": "jest"})),
+            context: Some(ContextConfig {
+                files: Some(vec!["a.md".into()]),
+                repo_includes: Some(vec!["*.rs".into()]),
+                max_bytes: Some(1000),
+            }),
+            agents: Some(serde_json::json!({"claude": {}})),
+            extensions: Some(HashMap::new()),
+        };
+        let json = serde_json::to_string_pretty(&p).unwrap();
+        let p2: Project = serde_json::from_str(&json).unwrap();
+        assert_eq!(p2.name, "full");
+        assert!(p2.launch.is_some());
+        assert!(p2.tools.is_some());
+        assert!(p2.context.is_some());
+        assert!(p2.agents.is_some());
+    }
+
+    #[test]
+    fn base_dir_default() {
+        let dir = base_dir();
+        assert!(dir.to_string_lossy().contains("project-interop"));
+    }
+
+    #[test]
+    fn worktree_base_path() {
+        let dir = worktree_base();
+        assert!(dir.to_string_lossy().ends_with("worktrees"));
+    }
+
+    #[test]
+    fn load_nonexistent_project_errors() {
+        let result = load("definitely-not-a-project-12345");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn delete_nonexistent_project_errors() {
+        let result = delete("definitely-not-a-project-12345");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn list_empty_or_valid() {
+        let result = list();
+        assert!(result.is_ok());
+    }
 }

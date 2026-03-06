@@ -179,3 +179,61 @@ end
         self.awesome_eval(r#"require("awful").tag.history.restore()"#)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tag_name_format() {
+        assert_eq!(tag_name("myproj", "feat-1"), "myproj:feat-1");
+    }
+
+    #[test]
+    fn parse_tag_name_valid() {
+        let (project, ws) = parse_tag_name("myproj:feat-1").unwrap();
+        assert_eq!(project, "myproj");
+        assert_eq!(ws, "feat-1");
+    }
+
+    #[test]
+    fn parse_tag_name_no_colon() {
+        assert!(parse_tag_name("nocolon").is_none());
+    }
+
+    #[test]
+    fn parse_tag_name_empty_parts() {
+        let (a, b) = parse_tag_name(":ws").unwrap();
+        assert_eq!(a, "");
+        assert_eq!(b, "ws");
+    }
+
+    #[test]
+    fn parse_tag_name_multiple_colons() {
+        let (project, ws) = parse_tag_name("proj:ws:extra").unwrap();
+        assert_eq!(project, "proj");
+        assert_eq!(ws, "ws:extra");
+    }
+
+    #[test]
+    fn tag_name_roundtrip() {
+        let tag = tag_name("proj", "ws");
+        let (p, w) = parse_tag_name(&tag).unwrap();
+        assert_eq!(p, "proj");
+        assert_eq!(w, "ws");
+    }
+
+    #[test]
+    fn layout_to_lua_known() {
+        assert_eq!(layout_to_lua("fair"), "awful.layout.suit.fair");
+        assert_eq!(layout_to_lua("max"), "awful.layout.suit.max");
+        assert_eq!(layout_to_lua("floating"), "awful.layout.suit.floating");
+    }
+
+    #[test]
+    fn layout_to_lua_default() {
+        assert_eq!(layout_to_lua("tile"), "awful.layout.suit.tile");
+        assert_eq!(layout_to_lua("unknown"), "awful.layout.suit.tile");
+        assert_eq!(layout_to_lua(""), "awful.layout.suit.tile");
+    }
+}
