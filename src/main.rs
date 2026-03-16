@@ -1,5 +1,6 @@
 use awesometree::daemon;
 use awesometree::interop::{self, Project};
+use awesometree::server;
 use awesometree::state;
 use awesometree::wm::{self, Adapter, AwesomeAdapter};
 use awesometree::workspace::{DownOptions, Manager, UpOptions};
@@ -74,6 +75,10 @@ enum Commands {
     RestartDaemon,
     Edit { name: String },
     Daemon,
+    Openapi {
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -140,6 +145,7 @@ fn main() {
         Commands::RestartDaemon => cmd_restart_daemon(),
         Commands::Edit { name } => cmd_edit(&name),
         Commands::Daemon => cmd_daemon(),
+        Commands::Openapi { output } => cmd_openapi(output),
     }
 }
 
@@ -563,4 +569,18 @@ fn cmd_daemon() {
         .stdout(process::Stdio::from(log))
         .stderr(process::Stdio::from(log_err))
         .spawn();
+}
+
+fn cmd_openapi(output: Option<PathBuf>) {
+    let spec = server::openapi_spec();
+    match output {
+        Some(path) => {
+            std::fs::write(&path, &spec).unwrap_or_else(|e| {
+                eprintln!("Error writing {}: {e}", path.display());
+                process::exit(1);
+            });
+            eprintln!("Wrote OpenAPI spec to {}", path.display());
+        }
+        None => print!("{spec}"),
+    }
 }

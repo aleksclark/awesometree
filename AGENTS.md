@@ -23,6 +23,7 @@ AwesomeWM `P:` tag via `awesome-client`, and launches Zed.
 | Config | `src/config.rs` | JSON load/save, project/workspace model |
 | Workspace | `src/workspace.rs` | `Manager` — worktree, tag, app lifecycle |
 | WM adapter | `src/wm.rs` | `Adapter` trait; `AwesomeAdapter` via `awesome-client` |
+| HTTP/ACP | `src/server.rs` | REST API, ACP reverse proxy (axum + tokio) |
 | Picker | `src/picker.rs` | GPUI fuzzy picker + create form |
 | Projects UI | `src/projects_ui.rs` | GPUI project CRUD window |
 | Tray | `src/tray.rs` | System tray icon + popup menu |

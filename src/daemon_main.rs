@@ -4,6 +4,7 @@ use awesometree::log as dlog;
 use awesometree::notify;
 use awesometree::picker::{self, parse_create_result, PickerItem, PickerMode, CREATE_SENTINEL, DESTROY_PREFIX};
 use awesometree::projects_ui;
+use awesometree::server;
 use awesometree::state;
 use awesometree::tray;
 use awesometree::wm::AwesomeAdapter;
@@ -57,6 +58,11 @@ fn main() {
         }) {
             eprintln!("tray thread panicked: {e:?}");
         }
+    });
+
+    thread::spawn(|| {
+        let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+        rt.block_on(server::run(server::DEFAULT_PORT));
     });
 
     dlog::log("Daemon starting");

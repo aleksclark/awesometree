@@ -86,8 +86,10 @@ impl Manager {
                 ext.apps.clone()
             };
 
+            let acp_port = self.state.allocate_acp_port(ws_name);
+
             for app_cmd in &apps {
-                let expanded = interop::interpolate(app_cmd, &project.name, &dir_str);
+                let expanded = interop::interpolate_with_port(app_cmd, &project.name, &dir_str, acp_port);
                 dlog::log(format!("Launching app: {expanded}"));
                 let _ = Command::new("sh")
                     .args(["-c", &expanded])
@@ -97,11 +99,15 @@ impl Manager {
                     .stderr(std::process::Stdio::null())
                     .spawn();
             }
-        }
 
-        let dir_str = dir.to_string_lossy().into_owned();
-        self.state
-            .set_active(ws_name, &project.name, tag_idx, &dir_str);
+            let dir_str = dir.to_string_lossy().into_owned();
+            self.state
+                .set_active(ws_name, &project.name, tag_idx, &dir_str, acp_port);
+        } else {
+            let dir_str = dir.to_string_lossy().into_owned();
+            self.state
+                .set_active(ws_name, &project.name, tag_idx, &dir_str, None);
+        }
         state::save(&self.state)
     }
 

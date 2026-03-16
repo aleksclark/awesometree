@@ -12,3 +12,4 @@ pub mod tray;
 pub mod daemon;
 pub mod notify;
 pub mod log;
+pub mod server;
