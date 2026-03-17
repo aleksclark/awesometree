@@ -79,6 +79,8 @@ enum Commands {
         #[arg(short, long)]
         output: Option<PathBuf>,
     },
+    #[command(name = "mobile-qr")]
+    MobileQr,
 }
 
 #[derive(Subcommand)]
@@ -146,6 +148,7 @@ fn main() {
         Commands::Edit { name } => cmd_edit(&name),
         Commands::Daemon => cmd_daemon(),
         Commands::Openapi { output } => cmd_openapi(output),
+        Commands::MobileQr => send_daemon_cmd("mobile-qr"),
     }
 }
 

@@ -4,6 +4,7 @@ use awesometree::log as dlog;
 use awesometree::notify;
 use awesometree::picker::{self, parse_create_result, PickerItem, PickerMode, CREATE_SENTINEL, DESTROY_PREFIX};
 use awesometree::projects_ui;
+use awesometree::qr;
 use awesometree::server;
 use awesometree::state;
 use awesometree::tray;
@@ -80,6 +81,7 @@ fn main() {
             KeyBinding::new("ctrl-n", picker::OpenCreate, None),
             KeyBinding::new("ctrl-d", picker::DestroySelected, None),
             KeyBinding::new("escape", projects_ui::Dismiss, None),
+            KeyBinding::new("escape", qr::DismissQr, None),
             KeyBinding::new("enter", projects_ui::ConfirmAction, None),
             KeyBinding::new("tab", projects_ui::NextField, None),
             KeyBinding::new("shift-tab", projects_ui::PrevField, None),
@@ -176,6 +178,10 @@ fn main() {
                     DaemonCmd::Reload => {}
                     DaemonCmd::Logs => {
                         let _ = cx.update(|cx| dlog::show_log_window(cx));
+                    }
+                    DaemonCmd::MobileQr => {
+                        dlog::log("QR code window opened");
+                        let _ = cx.update(|cx| qr::show_qr_window(cx));
                     }
                 }
             }

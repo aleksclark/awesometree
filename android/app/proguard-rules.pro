@@ -1,0 +1,2 @@
+-keep class uniffi.** { *; }
+-keep class dev.awesometree.mobile.** { *; }

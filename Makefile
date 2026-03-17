@@ -1,6 +1,6 @@
 PREFIX ?= $(HOME)/.local
 
-.PHONY: build install clean uninstall
+.PHONY: build install clean uninstall openapi android-lib test
 
 build:
 	cargo build --release
@@ -16,3 +16,14 @@ uninstall:
 
 clean:
 	cargo clean
+
+openapi:
+	cargo run --release --bin awesometree -- openapi
+
+android-lib:
+	cargo build -p awesometree-core --release --target aarch64-linux-android
+	cargo build -p awesometree-core --release --target armv7-linux-androideabi
+	cargo build -p awesometree-core --release --target x86_64-linux-android
+
+test:
+	cargo test --workspace

@@ -1,3 +1,4 @@
+use crate::auth;
 use crate::interop::{self, Project};
 use crate::log as dlog;
 use crate::state::{self, Store};
@@ -5,6 +6,7 @@ use crate::workspace;
 use axum::body::Body;
 use axum::extract::{Path, Request, State};
 use axum::http::StatusCode;
+use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Json, Response};
 use hyper_util::client::legacy::Client;
 use hyper_util::rt::TokioExecutor;
@@ -88,6 +90,29 @@ pub fn openapi_spec() -> String {
     api.to_pretty_json().expect("OpenAPI JSON serialization")
 }
 
+async fn auth_middleware(req: Request, next: Next) -> Result<Response, Response> {
+    let is_local = req
+        .extensions()
+        .get::<axum::extract::ConnectInfo<SocketAddr>>()
+        .map(|ci| ci.0.ip().is_loopback())
+        .unwrap_or(false);
+
+    if is_local {
+        return Ok(next.run(req).await);
+    }
+
+    let auth_header = req
+        .headers()
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "));
+
+    match auth_header {
+        Some(token) if auth::validate_token(token) => Ok(next.run(req).await),
+        _ => Err(err(StatusCode::UNAUTHORIZED, "invalid or missing token")),
+    }
+}
+
 pub async fn run(port: u16) {
     let client = Client::builder(TokioExecutor::new()).build_http();
     let state = AppState {
@@ -119,9 +144,10 @@ pub async fn run(port: u16) {
             "/acp/{workspace}/{*rest}",
             axum::routing::any(acp_proxy_path),
         )
+        .layer(middleware::from_fn(auth_middleware))
         .with_state(state);
 
-    let addr = SocketAddr::from(([127, 0, 0, 1], port));
+    let addr = SocketAddr::from(([0, 0, 0, 0], port));
     dlog::log(format!("HTTP server listening on {addr}"));
 
     let listener = match tokio::net::TcpListener::bind(addr).await {

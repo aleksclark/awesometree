@@ -56,6 +56,7 @@ fn show_menu(position: PhysicalPosition<f64>) {
     menu.add(&TextEntry::of("pick", "Open Workspace"));
     menu.add(&Divider);
     menu.add(&TextEntry::of("projects", "Projects"));
+    menu.add(&TextEntry::of("mobile-qr", "Mobile Connect"));
     menu.add(&TextEntry::of("logs", "Logs"));
     menu.add(&Divider);
     menu.add(&TextEntry::of("restart", "Restart"));
@@ -71,6 +72,9 @@ fn show_menu(position: PhysicalPosition<f64>) {
             }
             "projects" => {
                 let _ = Command::new("awesometree").arg("projects-ui").spawn();
+            }
+            "mobile-qr" => {
+                let _ = Command::new("awesometree").arg("mobile-qr").spawn();
             }
             "logs" => {
                 crate::log::request_log_window();

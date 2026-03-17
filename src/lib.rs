@@ -12,4 +12,6 @@ pub mod tray;
 pub mod daemon;
 pub mod notify;
 pub mod log;
+pub mod auth;
+pub mod qr;
 pub mod server;
