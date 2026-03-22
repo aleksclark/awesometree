@@ -490,48 +490,53 @@ fn render_dropdown_items(
     prefix: &str,
     cx: &mut Context<'_, PickerView>,
     field: FormField,
-) -> Div {
+) -> Stateful<Div> {
     let max_visible = 5;
-    let visible: Vec<_> = filtered.iter().take(max_visible).copied().collect();
 
-    div().flex().flex_col().children(
-        visible.into_iter().enumerate().map(|(vi, item_idx)| {
-            let item = items[item_idx].clone();
-            let is_selected = vi == selected;
-            let item_for_click = item.clone();
+    div()
+        .id(ElementId::Name(format!("{prefix}-dropdown").into()))
+        .max_h(px(max_visible as f32 * 26.))
+        .overflow_y_scroll()
+        .flex()
+        .flex_col()
+        .children(
+            filtered.iter().enumerate().map(|(vi, &item_idx)| {
+                let item = items[item_idx].clone();
+                let is_selected = vi == selected;
+                let item_for_click = item.clone();
 
-            div()
-                .id(ElementId::Name(format!("{prefix}-{vi}").into()))
-                .px(px(10.))
-                .py(px(3.))
-                .rounded(px(2.))
-                .bg(if is_selected { bg_selected() } else { bg() })
-                .hover(|s| s.bg(bg_hover()))
-                .cursor_pointer()
-                .on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(move |view, _, window, cx| {
-                        match field {
-                            FormField::Project => {
-                                view.form_project.update(cx, |input, cx| {
-                                    input.set_value(&item_for_click, cx);
-                                });
-                                view.form_field = FormField::Name;
-                                view.focus_active_field(window, cx);
+                div()
+                    .id(ElementId::Name(format!("{prefix}-{vi}").into()))
+                    .px(px(10.))
+                    .py(px(3.))
+                    .rounded(px(2.))
+                    .bg(if is_selected { bg_selected() } else { bg() })
+                    .hover(|s| s.bg(bg_hover()))
+                    .cursor_pointer()
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |view, _, window, cx| {
+                            match field {
+                                FormField::Project => {
+                                    view.form_project.update(cx, |input, cx| {
+                                        input.set_value(&item_for_click, cx);
+                                    });
+                                    view.form_field = FormField::Name;
+                                    view.focus_active_field(window, cx);
+                                }
+                                _ => {}
                             }
-                            _ => {}
-                        }
-                        cx.notify();
-                    }),
-                )
-                .child(
-                    div()
-                        .text_size(px(13.))
-                        .when(is_selected, |s: Div| s.text_color(accent()))
-                        .child(item),
-                )
-        }),
-    )
+                            cx.notify();
+                        }),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(13.))
+                            .when(is_selected, |s: Div| s.text_color(accent()))
+                            .child(item),
+                    )
+            }),
+        )
 }
 
 impl Render for PickerView {
@@ -796,7 +801,7 @@ impl PickerView {
                     ),
             )
             .when(!self.freeform, |this: Div| {
-                let mut list = div().flex().flex_col().flex_1().overflow_y_hidden();
+                let mut list = div().id("picker-list").flex().flex_col().flex_1().overflow_y_scroll();
                 for (project, entries) in groups {
                     list = list.child(
                         div()

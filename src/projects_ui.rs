@@ -618,8 +618,9 @@ impl Render for ProjectsView {
                     .flex()
                     .flex_col()
                     .flex_1()
-                    .overflow_y_hidden()
-                    .when(mode != Mode::List, |this: Div| {
+                    .id("projects-scroll")
+                    .overflow_y_scroll()
+                    .when(mode != Mode::List, |this: Stateful<Div>| {
                         let title = match mode {
                             Mode::Adding => "New Project",
                             Mode::Editing(_) => "Edit Project",
@@ -733,17 +734,12 @@ impl Render for ProjectsView {
                                 ),
                         )
                     })
-                    .when(mode == Mode::List, |this: Div| {
+                    .when(mode == Mode::List, |this: Stateful<Div>| {
                         this.children(projects.into_iter().map(|(idx, proj)| {
-                            let ext = proj.awesometree_ext();
-                            let mcp_label = ext.mcp.as_deref().unwrap_or("");
-                            let worktree_label = ext.worktree_dir.as_deref().unwrap_or("");
-                            let apps_count = ext.apps.len();
-
                             div()
                                 .id(ElementId::Name(format!("proj-{idx}").into()))
                                 .px(px(20.))
-                                .py(px(12.))
+                                .py(px(10.))
                                 .border_b_1()
                                 .border_color(border_color())
                                 .hover(|s| s.bg(bg_hover()))
@@ -753,8 +749,8 @@ impl Render for ProjectsView {
                                 .child(
                                     div()
                                         .flex()
-                                        .flex_col()
-                                        .gap(px(4.))
+                                        .items_center()
+                                        .gap(px(10.))
                                         .child(
                                             div()
                                                 .text_size(px(15.))
@@ -766,38 +762,11 @@ impl Render for ProjectsView {
                                                 .text_size(px(12.))
                                                 .text_color(fg_dim())
                                                 .child(format!(
-                                                    "{}  ·  branch: {}",
+                                                    "{}  ·  {}",
                                                     proj.repo.as_deref().unwrap_or(""),
                                                     proj.branch_or_default()
                                                 )),
-                                        )
-                                        .when(!worktree_label.is_empty(), |s: Div| {
-                                            s.child(
-                                                div()
-                                                    .text_size(px(11.))
-                                                    .text_color(fg_dim())
-                                                    .child(format!("worktrees: {worktree_label}")),
-                                            )
-                                        })
-                                        .when(!mcp_label.is_empty(), |s: Div| {
-                                            s.child(
-                                                div()
-                                                    .text_size(px(11.))
-                                                    .text_color(fg_dim())
-                                                    .child(format!("mcp: {mcp_label}")),
-                                            )
-                                        })
-                                        .when(apps_count > 0, |s: Div| {
-                                            s.child(
-                                                div()
-                                                    .text_size(px(11.))
-                                                    .text_color(fg_dim())
-                                                    .child(format!(
-                                                        "{apps_count} app{}",
-                                                        if apps_count == 1 { "" } else { "s" }
-                                                    )),
-                                            )
-                                        }),
+                                        ),
                                 )
                                 .child(
                                     div()
@@ -843,7 +812,7 @@ impl Render for ProjectsView {
                                         ),
                                 )
                         }))
-                        .when(self.projects.is_empty(), |this: Div| {
+                        .when(self.projects.is_empty(), |this: Stateful<Div>| {
                             this.child(
                                 div()
                                     .px(px(20.))
