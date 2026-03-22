@@ -116,6 +116,8 @@ struct PickerView {
     projects: Vec<String>,
     project_filtered: Vec<usize>,
     project_selected: usize,
+    dropdown_scroll: ScrollHandle,
+    list_scroll: ScrollHandle,
     tx: mpsc::Sender<String>,
     focus: FocusHandle,
 }
@@ -164,6 +166,8 @@ impl PickerView {
                     projects: vec![],
                     project_filtered: vec![],
                     project_selected: 0,
+                    dropdown_scroll: ScrollHandle::new(),
+                    list_scroll: ScrollHandle::new(),
                     tx,
                     focus,
                 }
@@ -183,6 +187,8 @@ impl PickerView {
                 projects: vec![],
                 project_filtered: vec![],
                 project_selected: 0,
+                dropdown_scroll: ScrollHandle::new(),
+                list_scroll: ScrollHandle::new(),
                 tx,
                 focus,
             },
@@ -203,6 +209,8 @@ impl PickerView {
                     projects,
                     project_filtered,
                     project_selected: 0,
+                    dropdown_scroll: ScrollHandle::new(),
+                    list_scroll: ScrollHandle::new(),
                     tx,
                     focus,
                 }
@@ -392,12 +400,14 @@ impl PickerView {
         if self.is_form {
             if self.form_field == FormField::Project && !self.project_filtered.is_empty() {
                 self.project_selected = (self.project_selected + 1) % self.project_filtered.len();
+                self.dropdown_scroll.scroll_to_item(self.project_selected);
             }
             cx.notify();
             return;
         }
         if !self.filtered.is_empty() {
             self.selected = (self.selected + 1) % self.filtered.len();
+            self.list_scroll.scroll_to_item(self.selected);
             cx.notify();
         }
     }
@@ -406,6 +416,7 @@ impl PickerView {
         if self.is_form {
             if self.form_field == FormField::Project && !self.project_filtered.is_empty() {
                 self.project_selected = self.project_selected.checked_sub(1).unwrap_or(self.project_filtered.len() - 1);
+                self.dropdown_scroll.scroll_to_item(self.project_selected);
             }
             cx.notify();
             return;
@@ -415,6 +426,7 @@ impl PickerView {
                 .selected
                 .checked_sub(1)
                 .unwrap_or(self.filtered.len() - 1);
+            self.list_scroll.scroll_to_item(self.selected);
             cx.notify();
         }
     }
@@ -490,6 +502,7 @@ fn render_dropdown_items(
     prefix: &str,
     cx: &mut Context<'_, PickerView>,
     field: FormField,
+    scroll_handle: &ScrollHandle,
 ) -> Stateful<Div> {
     let max_visible = 5;
 
@@ -497,6 +510,7 @@ fn render_dropdown_items(
         .id(ElementId::Name(format!("{prefix}-dropdown").into()))
         .max_h(px(max_visible as f32 * 26.))
         .overflow_y_scroll()
+        .track_scroll(scroll_handle)
         .flex()
         .flex_col()
         .children(
@@ -553,6 +567,7 @@ impl PickerView {
         let project_filtered = self.project_filtered.clone();
         let project_selected = self.project_selected;
         let projects = self.projects.clone();
+        let dropdown_scroll = self.dropdown_scroll.clone();
         let field = self.form_field;
         let name_val = self.read_field(FormField::Name, cx);
         let project_val = self.read_field(FormField::Project, cx);
@@ -640,6 +655,7 @@ impl PickerView {
                                     "project",
                                     cx,
                                     FormField::Project,
+                                    &dropdown_scroll,
                                 ))
                             }),
                     )
@@ -801,7 +817,10 @@ impl PickerView {
                     ),
             )
             .when(!self.freeform, |this: Div| {
-                let mut list = div().id("picker-list").flex().flex_col().flex_1().overflow_y_scroll();
+                let list_scroll = self.list_scroll.clone();
+                let mut list = div().id("picker-list").flex().flex_col().flex_1().overflow_y_scroll().track_scroll(&list_scroll);
+                let mut child_index = 0usize;
+                let mut selected_child = 0usize;
                 for (project, entries) in groups {
                     list = list.child(
                         div()
@@ -815,9 +834,13 @@ impl PickerView {
                                     .child(project.to_uppercase()),
                             ),
                     );
+                    child_index += 1;
                     for (vi, item_idx) in entries {
                         let item = items[item_idx].clone();
                         let is_selected = vi == selected;
+                        if is_selected {
+                            selected_child = child_index;
+                        }
 
                         list = list.child(
                             div()
@@ -859,8 +882,10 @@ impl PickerView {
                                         ),
                                 ),
                         );
+                        child_index += 1;
                     }
                 }
+                list_scroll.scroll_to_item(selected_child);
                 this.child(list)
             })
             .child(
