@@ -13,6 +13,7 @@ import androidx.compose.material.icons.filled.Workspaces
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.navigation.NavController
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
@@ -90,9 +91,13 @@ fun MainScaffold(connectionStore: ConnectionStore) {
             startDestination = "workspaces",
             modifier = Modifier.padding(padding),
         ) {
-            composable("workspaces") { WorkspacesScreen(connectionStore) }
+            composable("workspaces") { WorkspacesScreen(connectionStore, navController) }
             composable("projects") { ProjectsScreen(connectionStore) }
             composable("acp") { AcpScreen(connectionStore) }
+            composable("acp/{workspace}") { backStackEntry ->
+                val workspace = backStackEntry.arguments?.getString("workspace")
+                AcpScreen(connectionStore, preselectedWorkspace = workspace)
+            }
             composable("settings") { SettingsScreen(connectionStore) }
         }
     }

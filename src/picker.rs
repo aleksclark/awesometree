@@ -10,6 +10,7 @@ pub struct PickerItem {
     pub name: String,
     pub project: String,
     pub active: bool,
+    pub acp_status: Option<String>,
 }
 
 pub const CREATE_SENTINEL: &str = "\0CREATE";
@@ -462,6 +463,7 @@ fn fg() -> Rgba { theme::fg() }
 fn fg_dim() -> Rgba { theme::fg_dim() }
 fn accent() -> Rgba { theme::accent() }
 fn active_dot() -> Rgba { theme::active_dot() }
+fn success() -> Rgba { theme::success() }
 fn border_color() -> Rgba { theme::border_color() }
 fn btn_bg() -> Rgba { theme::btn_bg() }
 fn btn_fg() -> Rgba { theme::btn_fg() }
@@ -846,11 +848,31 @@ impl PickerView {
                                         )
                                         .child(
                                             div()
-                                                .text_size(px(14.))
-                                                .when(is_selected, |s: Div| {
-                                                    s.text_color(accent())
-                                                })
-                                                .child(item.name.clone()),
+                                                .flex()
+                                                .flex_1()
+                                                .items_center()
+                                                .gap(px(6.))
+                                                .child(
+                                                    div()
+                                                        .text_size(px(14.))
+                                                        .when(is_selected, |s: Div| {
+                                                            s.text_color(accent())
+                                                        })
+                                                        .child(item.name.clone()),
+                                                )
+                                                .when_some(item.acp_status.clone(), |s, status| {
+                                                    let color = if status == "running" {
+                                                        success()
+                                                    } else {
+                                                        fg_dim()
+                                                    };
+                                                    s.child(
+                                                        div()
+                                                            .text_size(px(10.))
+                                                            .text_color(color)
+                                                            .child("ACP"),
+                                                    )
+                                                }),
                                         ),
                                 ),
                         );

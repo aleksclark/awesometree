@@ -39,19 +39,30 @@ fun SettingsScreen(
     val connection by connectionStore.connection.collectAsState()
     var host by remember { mutableStateOf(connection?.host ?: "") }
     var port by remember { mutableStateOf(connection?.port?.toString() ?: "9099") }
+    var useHttps by remember { mutableStateOf(connection?.useHttps ?: false) }
     var scanning by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
+
+    fun parseHostInput(): Triple<String, String, Boolean> {
+        val raw = host.trim()
+        return when {
+            raw.startsWith("https://") -> Triple(raw.removePrefix("https://"), port, true)
+            raw.startsWith("http://") -> Triple(raw.removePrefix("http://"), port, false)
+            else -> Triple(raw, port, useHttps)
+        }
+    }
 
     if (scanning) {
         QrScannerScreen(
             onScanned = { token ->
                 scanning = false
-                val portNum = port.toIntOrNull()
-                if (host.isBlank() || portNum == null || portNum !in 1..65535) {
+                val (h, p, https) = parseHostInput()
+                val portNum = p.toIntOrNull()
+                if (h.isBlank() || portNum == null || portNum !in 1..65535) {
                     error = "Enter a valid host and port before scanning"
                     return@QrScannerScreen
                 }
-                connectionStore.save(ServerConnection(host.trim(), portNum, token.trim()))
+                connectionStore.save(ServerConnection(h, portNum, token.trim(), https))
                 error = null
             },
             onCancel = { scanning = false },
@@ -111,18 +122,32 @@ fun SettingsScreen(
                 verticalAlignment = Alignment.CenterVertically,
                 modifier = Modifier.fillMaxWidth(),
             ) {
-                Icon(
-                    Icons.Default.Warning,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.error,
-                    modifier = Modifier.size(16.dp),
+                Checkbox(
+                    checked = useHttps,
+                    onCheckedChange = { useHttps = it },
                 )
-                Spacer(Modifier.width(6.dp))
-                Text(
-                    "Connection uses HTTP (unencrypted). Use on trusted networks only.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.error,
-                )
+                Text("Use HTTPS", style = MaterialTheme.typography.bodyMedium)
+            }
+
+            if (!useHttps && !host.startsWith("https://")) {
+                Spacer(Modifier.height(4.dp))
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Icon(
+                        Icons.Default.Warning,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.size(16.dp),
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    Text(
+                        "HTTP is unencrypted. Use on trusted networks only.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
             }
 
             Spacer(Modifier.height(16.dp))
@@ -134,6 +159,33 @@ fun SettingsScreen(
                 Icon(Icons.Default.QrCodeScanner, null, Modifier.size(24.dp))
                 Spacer(Modifier.width(8.dp))
                 Text("Scan Token QR Code")
+            }
+
+            Spacer(Modifier.height(8.dp))
+            var token by remember { mutableStateOf("") }
+            OutlinedTextField(
+                value = token,
+                onValueChange = { token = it },
+                label = { Text("Or paste token") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Spacer(Modifier.height(8.dp))
+            OutlinedButton(
+                onClick = {
+                    val (h, p, https) = parseHostInput()
+                    val portNum = p.toIntOrNull()
+                    if (h.isNotBlank() && portNum != null && portNum in 1..65535 && token.isNotBlank()) {
+                        connectionStore.save(ServerConnection(h, portNum, token.trim(), https))
+                        error = null
+                    } else {
+                        error = "Fill in host, port, and token"
+                    }
+                },
+                enabled = host.isNotBlank() && (port.toIntOrNull() ?: 0) in 1..65535 && token.isNotBlank(),
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text("Connect with Token")
             }
 
             error?.let {
@@ -148,8 +200,7 @@ fun SettingsScreen(
                         Text("Connected", style = MaterialTheme.typography.titleMedium,
                             color = MaterialTheme.colorScheme.secondary)
                         Spacer(Modifier.height(8.dp))
-                        Text("Host: ${conn.host}", style = MaterialTheme.typography.bodyMedium)
-                        Text("Port: ${conn.port}", style = MaterialTheme.typography.bodyMedium)
+                        Text(conn.baseUrl, style = MaterialTheme.typography.bodyMedium)
                     }
                 }
                 Spacer(Modifier.height(16.dp))

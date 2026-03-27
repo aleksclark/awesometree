@@ -8,6 +8,7 @@ import java.io.BufferedReader
 import java.io.InputStreamReader
 import java.net.HttpURLConnection
 import java.net.URL
+import java.net.URLEncoder
 
 class ApiClient(private val connection: ServerConnection) {
 
@@ -17,7 +18,7 @@ class ApiClient(private val connection: ServerConnection) {
         body: String? = null,
     ): Result<String> = withContext(Dispatchers.IO) {
         try {
-            val url = URL("http://${connection.host}:${connection.port}$path")
+            val url = URL("${connection.baseUrl}$path")
             val conn = (url.openConnection() as HttpURLConnection).apply {
                 requestMethod = method
                 setRequestProperty("Authorization", "Bearer ${connection.token}")
@@ -50,7 +51,7 @@ class ApiClient(private val connection: ServerConnection) {
         request("GET", "/api/workspaces").map { parseWorkspaceList(it) }
 
     suspend fun getWorkspace(name: String): Result<WorkspaceInfo> =
-        request("GET", "/api/workspaces/$name").map { parseWorkspace(it) }
+        request("GET", "/api/workspaces/${enc(name)}").map { parseWorkspace(it) }
 
     suspend fun createWorkspace(name: String, project: String): Result<WorkspaceInfo> {
         val body = JSONObject().put("name", name).put("project", project).toString()
@@ -58,26 +59,34 @@ class ApiClient(private val connection: ServerConnection) {
     }
 
     suspend fun deleteWorkspace(name: String): Result<Unit> =
-        request("DELETE", "/api/workspaces/$name").map { }
+        request("DELETE", "/api/workspaces/${enc(name)}").map { }
+
+    suspend fun startWorkspace(name: String): Result<WorkspaceInfo> =
+        request("POST", "/api/workspaces/${enc(name)}/start").map { parseWorkspace(it) }
+
+    suspend fun stopWorkspace(name: String): Result<WorkspaceInfo> =
+        request("POST", "/api/workspaces/${enc(name)}/stop").map { parseWorkspace(it) }
 
     suspend fun listProjects(): Result<List<ProjectInfo>> =
         request("GET", "/api/projects").map { parseProjectList(it) }
 
     suspend fun getProject(name: String): Result<ProjectDetail> =
-        request("GET", "/api/projects/$name").map { parseProjectDetail(it) }
+        request("GET", "/api/projects/${enc(name)}").map { parseProjectDetail(it) }
 
     suspend fun createProject(project: ProjectDetail): Result<ProjectDetail> =
         request("POST", "/api/projects", project.toJson()).map { parseProjectDetail(it) }
 
     suspend fun updateProject(name: String, project: ProjectDetail): Result<ProjectDetail> =
-        request("PUT", "/api/projects/$name", project.toJson()).map { parseProjectDetail(it) }
+        request("PUT", "/api/projects/${enc(name)}", project.toJson()).map { parseProjectDetail(it) }
 
     suspend fun deleteProject(name: String): Result<Unit> =
-        request("DELETE", "/api/projects/$name").map { }
+        request("DELETE", "/api/projects/${enc(name)}").map { }
 
     suspend fun acpSend(workspace: String, message: String): Result<String> =
-        request("POST", "/acp/$workspace", message)
+        request("POST", "/acp/${enc(workspace)}", message)
 }
+
+private fun enc(value: String): String = URLEncoder.encode(value, "UTF-8")
 
 class ApiException(val code: Int, message: String) : Exception("HTTP $code: $message")
 
@@ -88,6 +97,9 @@ data class WorkspaceInfo(
     val tagIndex: Int,
     val dir: String,
     val acpPort: Int?,
+    val acpUrl: String?,
+    val acpSessionId: String?,
+    val acpStatus: String?,
 )
 
 data class ProjectInfo(
@@ -119,6 +131,9 @@ private fun parseWorkspace(json: String): WorkspaceInfo {
         tagIndex = obj.getInt("tag_index"),
         dir = obj.getString("dir"),
         acpPort = if (obj.has("acp_port") && !obj.isNull("acp_port")) obj.getInt("acp_port") else null,
+        acpUrl = if (obj.has("acp_url") && !obj.isNull("acp_url")) obj.getString("acp_url") else null,
+        acpSessionId = if (obj.has("acp_session_id") && !obj.isNull("acp_session_id")) obj.getString("acp_session_id") else null,
+        acpStatus = if (obj.has("acp_status") && !obj.isNull("acp_status")) obj.getString("acp_status") else null,
     )
 }
 

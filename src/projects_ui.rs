@@ -84,6 +84,7 @@ enum FormField {
     WorktreeDir,
     LaunchPrompt,
     McpUrl,
+    AcpEnabled,
     App(usize),
 }
 
@@ -96,6 +97,7 @@ struct ProjectsView {
     form_worktree_dir: Entity<TextInput>,
     form_launch_prompt: Entity<TextInput>,
     form_mcp_url: Entity<TextInput>,
+    form_acp_enabled: bool,
     form_apps: Vec<Entity<TextInput>>,
     form_field: FormField,
     focus: FocusHandle,
@@ -112,6 +114,7 @@ impl ProjectsView {
             form_worktree_dir: cx.new(|cx| TextInput::new("~/worktrees/project-name (default)", cx)),
             form_launch_prompt: cx.new(|cx| TextInput::new("system prompt for agent", cx)),
             form_mcp_url: cx.new(|cx| TextInput::new("http://localhost:8080/{project}", cx)),
+            form_acp_enabled: false,
             form_apps: vec![],
             form_field: FormField::Name,
             focus: cx.focus_handle(),
@@ -126,6 +129,7 @@ impl ProjectsView {
             FormField::WorktreeDir => Some(&self.form_worktree_dir),
             FormField::LaunchPrompt => Some(&self.form_launch_prompt),
             FormField::McpUrl => Some(&self.form_mcp_url),
+            FormField::AcpEnabled => None,
             FormField::App(i) => self.form_apps.get(i),
         }
     }
@@ -144,6 +148,7 @@ impl ProjectsView {
             FormField::WorktreeDir => self.form_worktree_dir.read(cx).value().to_string(),
             FormField::LaunchPrompt => self.form_launch_prompt.read(cx).value().to_string(),
             FormField::McpUrl => self.form_mcp_url.read(cx).value().to_string(),
+            FormField::AcpEnabled => String::new(),
             FormField::App(i) => self
                 .form_apps
                 .get(i)
@@ -159,6 +164,7 @@ impl ProjectsView {
         self.form_worktree_dir.update(cx, |input, cx| input.clear(cx));
         self.form_launch_prompt.update(cx, |input, cx| input.clear(cx));
         self.form_mcp_url.update(cx, |input, cx| input.clear(cx));
+        self.form_acp_enabled = false;
         self.form_apps.clear();
         self.form_field = FormField::Name;
     }
@@ -194,6 +200,7 @@ impl ProjectsView {
         self.form_mcp_url.update(cx, |input, icx| {
             input.set_value(ext.mcp.as_deref().unwrap_or(""), icx);
         });
+        self.form_acp_enabled = ext.acp.as_ref().map(|a| a.enabled).unwrap_or(false);
         self.form_apps = ext
             .apps
             .iter()
@@ -242,6 +249,14 @@ impl ProjectsView {
                     if !worktree_dir.is_empty() {
                         ext.worktree_dir = Some(worktree_dir);
                     }
+                    if self.form_acp_enabled {
+                        ext.acp = Some(interop::AcpConfig {
+                            enabled: true,
+                            ..ext.acp.unwrap_or_default()
+                        });
+                    } else {
+                        ext.acp = None;
+                    }
                     ext.apps = clean_apps(&apps);
                     proj.set_awesometree_ext(&ext);
                 }
@@ -283,6 +298,14 @@ impl ProjectsView {
                     ext.worktree_dir = Some(worktree_dir);
                 }
                 ext.apps = clean_apps(&apps);
+                if self.form_acp_enabled {
+                    ext.acp = Some(interop::AcpConfig {
+                        enabled: true,
+                        ..ext.acp.unwrap_or_default()
+                    });
+                } else {
+                    ext.acp = None;
+                }
                 p.set_awesometree_ext(&ext);
                 let _ = interop::save(p);
                 self.mode = Mode::List;
@@ -323,7 +346,7 @@ impl ProjectsView {
             self.form_apps.remove(idx);
         }
         if self.form_apps.is_empty() {
-            self.form_field = FormField::McpUrl;
+            self.form_field = FormField::AcpEnabled;
         } else {
             let new_idx = idx.min(self.form_apps.len().saturating_sub(1));
             self.form_field = FormField::App(new_idx);
@@ -355,7 +378,8 @@ impl ProjectsView {
             FormField::Branch => FormField::WorktreeDir,
             FormField::WorktreeDir => FormField::LaunchPrompt,
             FormField::LaunchPrompt => FormField::McpUrl,
-            FormField::McpUrl => {
+            FormField::McpUrl => FormField::AcpEnabled,
+            FormField::AcpEnabled => {
                 if self.form_apps.is_empty() {
                     FormField::Name
                 } else {
@@ -376,7 +400,7 @@ impl ProjectsView {
         match self.form_field {
             FormField::Name => {
                 if self.form_apps.is_empty() {
-                    FormField::McpUrl
+                    FormField::AcpEnabled
                 } else {
                     FormField::App(self.form_apps.len() - 1)
                 }
@@ -386,11 +410,12 @@ impl ProjectsView {
             FormField::WorktreeDir => FormField::Branch,
             FormField::LaunchPrompt => FormField::WorktreeDir,
             FormField::McpUrl => FormField::LaunchPrompt,
+            FormField::AcpEnabled => FormField::McpUrl,
             FormField::App(i) => {
                 if i > 0 {
                     FormField::App(i - 1)
                 } else {
-                    FormField::McpUrl
+                    FormField::AcpEnabled
                 }
             }
         }
@@ -680,6 +705,44 @@ impl Render for ProjectsView {
                                     FormField::McpUrl,
                                     cx,
                                 ))
+                                .child({
+                                    let acp_on = self.form_acp_enabled;
+                                    let focused = field == FormField::AcpEnabled;
+                                    div()
+                                        .id("acp-toggle")
+                                        .flex()
+                                        .items_center()
+                                        .gap(px(10.))
+                                        .px(px(10.))
+                                        .py(px(6.))
+                                        .rounded(px(4.))
+                                        .border_1()
+                                        .border_color(if focused { border_focus() } else { border_color() })
+                                        .bg(bg_hover())
+                                        .cursor_pointer()
+                                        .on_mouse_down(
+                                            MouseButton::Left,
+                                            cx.listener(|view, _, _, cx| {
+                                                view.form_acp_enabled = !view.form_acp_enabled;
+                                                view.form_field = FormField::AcpEnabled;
+                                                cx.notify();
+                                            }),
+                                        )
+                                        .child(
+                                            div()
+                                                .size(px(16.))
+                                                .rounded(px(3.))
+                                                .border_1()
+                                                .border_color(if acp_on { accent() } else { fg_dim() })
+                                                .when(acp_on, |s: Div| s.bg(accent()))
+                                        )
+                                        .child(
+                                            div()
+                                                .text_size(px(12.))
+                                                .text_color(if focused { accent() } else { fg_dim() })
+                                                .child("ACP AGENT (crush serve)")
+                                        )
+                                })
                                 .child(render_apps_section(&self.form_apps, field, cx))
                                 .child(
                                     div()
@@ -739,6 +802,7 @@ impl Render for ProjectsView {
                             let mcp_label = ext.mcp.as_deref().unwrap_or("");
                             let worktree_label = ext.worktree_dir.as_deref().unwrap_or("");
                             let apps_count = ext.apps.len();
+                            let acp_enabled = ext.acp.as_ref().map(|a| a.enabled).unwrap_or(false);
 
                             div()
                                 .id(ElementId::Name(format!("proj-{idx}").into()))
@@ -796,6 +860,14 @@ impl Render for ProjectsView {
                                                         "{apps_count} app{}",
                                                         if apps_count == 1 { "" } else { "s" }
                                                     )),
+                                            )
+                                        })
+                                        .when(acp_enabled, |s: Div| {
+                                            s.child(
+                                                div()
+                                                    .text_size(px(11.))
+                                                    .text_color(success())
+                                                    .child("acp: enabled"),
                                             )
                                         }),
                                 )
