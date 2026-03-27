@@ -32,6 +32,9 @@ struct WorkspaceInfo {
     tag_index: i32,
     dir: String,
     acp_port: Option<u16>,
+    acp_url: Option<String>,
+    acp_session_id: Option<String>,
+    acp_status: Option<String>,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -77,6 +80,8 @@ fn build_api_router() -> (axum::Router<AppState>, utoipa::openapi::OpenApi) {
         .routes(routes!(create_workspace))
         .routes(routes!(get_workspace))
         .routes(routes!(delete_workspace))
+        .routes(routes!(start_workspace))
+        .routes(routes!(stop_workspace))
         .routes(routes!(list_projects))
         .routes(routes!(create_project))
         .routes(routes!(get_project))
@@ -137,6 +142,26 @@ pub async fn run(port: u16) {
             }),
         )
         .route(
+            "/api/acp/{workspace}/health",
+            axum::routing::get(acp_health),
+        )
+        .route(
+            "/api/acp/{workspace}/send",
+            axum::routing::post(acp_send),
+        )
+        .route(
+            "/api/acp/{workspace}/messages",
+            axum::routing::get(acp_messages),
+        )
+        .route(
+            "/api/acp/{workspace}/history",
+            axum::routing::get(acp_history),
+        )
+        .route(
+            "/api/acp/{workspace}/stream",
+            axum::routing::post(acp_stream),
+        )
+        .route(
             "/acp/{workspace}",
             axum::routing::any(acp_proxy),
         )
@@ -158,7 +183,12 @@ pub async fn run(port: u16) {
         }
     };
 
-    if let Err(e) = axum::serve(listener, app).await {
+    if let Err(e) = axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .await
+    {
         dlog::log(format!("HTTP server error: {e}"));
     }
 }
@@ -168,6 +198,14 @@ fn load_state() -> Result<Store, Response> {
 }
 
 fn ws_to_info(name: &str, ws: &state::WorkspaceState) -> WorkspaceInfo {
+    let acp_status = if ws.acp_url.is_some() || ws.acp_port.is_some() {
+        let running = crate::acp_supervisor::get()
+            .map(|s| s.is_running(name))
+            .unwrap_or(false);
+        Some(if running { "running" } else { "stopped" }.to_string())
+    } else {
+        None
+    };
     WorkspaceInfo {
         name: name.to_string(),
         project: ws.project.clone(),
@@ -175,6 +213,9 @@ fn ws_to_info(name: &str, ws: &state::WorkspaceState) -> WorkspaceInfo {
         tag_index: ws.tag_index,
         dir: ws.dir.clone(),
         acp_port: ws.acp_port,
+        acp_url: ws.acp_url.clone(),
+        acp_session_id: ws.acp_session_id.clone(),
+        acp_status,
     }
 }
 
@@ -249,11 +290,41 @@ async fn create_workspace(
     workspace::ensure_worktree(&req.name, &project, &dir)
         .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
 
+    let ext = project.awesometree_ext();
     let tag_idx = st.allocate_tag_index(&req.name);
     let acp_port = st.allocate_acp_port(&req.name);
     let dir_str = dir.to_string_lossy().into_owned();
-    st.set_active(&req.name, &req.project, tag_idx, &dir_str, acp_port);
+
+    let apps = if ext.apps.is_empty() {
+        vec!["zeditor -n {dir}".to_string()]
+    } else {
+        ext.apps.clone()
+    };
+    for app_cmd in &apps {
+        let expanded = interop::interpolate_with_port(app_cmd, &project.name, &dir_str, acp_port);
+        dlog::log(format!("API: launching app: {expanded}"));
+        let _ = std::process::Command::new("sh")
+            .args(["-c", &expanded])
+            .current_dir(&dir)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn();
+    }
+
+    let acp_url = project.resolved_acp_url(&dir_str, acp_port);
+    st.set_active(&req.name, &req.project, tag_idx, &dir_str, acp_port, acp_url);
     state::save(&st).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+
+    if let Some(acp) = project.acp_config() {
+        if acp.enabled {
+            if let Some(port) = acp_port {
+                crate::acp_supervisor::start_for_workspace(
+                    &req.name, &dir_str, port, acp.command.as_deref(),
+                );
+            }
+        }
+    }
 
     dlog::log(format!(
         "API: created workspace {} (project: {}, acp_port: {:?})",
@@ -292,6 +363,108 @@ async fn delete_workspace(Path(name): Path<String>) -> Result<StatusCode, Respon
 
     dlog::log(format!("API: deleted workspace {name}"));
     Ok(StatusCode::NO_CONTENT)
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/workspaces/{name}/start",
+    tag = "workspaces",
+    params(
+        ("name" = String, Path, description = "Workspace name"),
+    ),
+    responses(
+        (status = 200, description = "Workspace started", body = WorkspaceInfo),
+        (status = 404, description = "Workspace not found", body = ErrorBody),
+        (status = 500, description = "Internal error", body = ErrorBody),
+    )
+)]
+async fn start_workspace(Path(name): Path<String>) -> Result<Json<WorkspaceInfo>, Response> {
+    let mut st = load_state()?;
+
+    let ws = st
+        .workspace(&name)
+        .ok_or_else(|| err(StatusCode::NOT_FOUND, format!("workspace not found: {name}")))?;
+
+    if ws.active {
+        return Ok(Json(ws_to_info(&name, ws)));
+    }
+
+    let project_name = ws.project.clone();
+    let project = interop::load(&project_name)
+        .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+
+    let ext = project.awesometree_ext();
+    let dir = workspace::resolve_dir(&name, &project);
+    workspace::ensure_worktree(&name, &project, &dir)
+        .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+
+    let tag_idx = st.allocate_tag_index(&name);
+    let acp_port = st.allocate_acp_port(&name);
+    let dir_str = dir.to_string_lossy().into_owned();
+
+    let apps = if ext.apps.is_empty() {
+        vec!["zeditor -n {dir}".to_string()]
+    } else {
+        ext.apps.clone()
+    };
+    for app_cmd in &apps {
+        let expanded = interop::interpolate_with_port(app_cmd, &project.name, &dir_str, acp_port);
+        dlog::log(format!("API: launching app: {expanded}"));
+        let _ = std::process::Command::new("sh")
+            .args(["-c", &expanded])
+            .current_dir(&dir)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn();
+    }
+
+    let acp_url = project.resolved_acp_url(&dir_str, acp_port);
+    st.set_active(&name, &project_name, tag_idx, &dir_str, acp_port, acp_url);
+    state::save(&st).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+
+    if let Some(acp) = project.acp_config() {
+        if acp.enabled {
+            if let Some(port) = acp_port {
+                crate::acp_supervisor::start_for_workspace(
+                    &name, &dir_str, port, acp.command.as_deref(),
+                );
+            }
+        }
+    }
+
+    dlog::log(format!("API: started workspace {name}"));
+    let ws = st.workspace(&name).unwrap();
+    Ok(Json(ws_to_info(&name, ws)))
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/workspaces/{name}/stop",
+    tag = "workspaces",
+    params(
+        ("name" = String, Path, description = "Workspace name"),
+    ),
+    responses(
+        (status = 200, description = "Workspace stopped", body = WorkspaceInfo),
+        (status = 404, description = "Workspace not found", body = ErrorBody),
+        (status = 500, description = "Internal error", body = ErrorBody),
+    )
+)]
+async fn stop_workspace(Path(name): Path<String>) -> Result<Json<WorkspaceInfo>, Response> {
+    let mut st = load_state()?;
+
+    if st.workspace(&name).is_none() {
+        return Err(err(StatusCode::NOT_FOUND, format!("workspace not found: {name}")));
+    }
+
+    crate::acp_supervisor::stop_for_workspace(&name);
+    st.set_inactive(&name);
+    state::save(&st).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+
+    dlog::log(format!("API: stopped workspace {name}"));
+    let ws = st.workspace(&name).unwrap();
+    Ok(Json(ws_to_info(&name, ws)))
 }
 
 #[utoipa::path(
@@ -422,28 +595,34 @@ async fn acp_proxy_path(
     proxy_to_acp(&workspace, &rest, req, &state).await
 }
 
+fn resolve_acp_url(workspace: &str) -> Result<String, Response> {
+    let st = load_state()?;
+    let (_, ws) = st
+        .workspace_name_for_route(workspace)
+        .ok_or_else(|| err(StatusCode::NOT_FOUND, format!("no active workspace: {workspace}")))?;
+
+    if let Some(ref url) = ws.acp_url {
+        return Ok(url.clone());
+    }
+
+    let port = ws.acp_port.ok_or_else(|| {
+        err(StatusCode::BAD_GATEWAY, format!("workspace {workspace} has no ACP endpoint"))
+    })?;
+    Ok(format!("http://127.0.0.1:{port}"))
+}
+
+fn acp_client(workspace: &str) -> Result<crush_acp_sdk::Client, Response> {
+    let url = resolve_acp_url(workspace)?;
+    Ok(crush_acp_sdk::Client::new(&url))
+}
+
 async fn proxy_to_acp(
     workspace: &str,
     rest: &str,
     req: Request,
     state: &AppState,
 ) -> Result<Response, Response> {
-    let st = load_state()?;
-    let (_, ws) = st
-        .workspace_name_for_route(workspace)
-        .ok_or_else(|| {
-            err(
-                StatusCode::NOT_FOUND,
-                format!("no active workspace: {workspace}"),
-            )
-        })?;
-
-    let port = ws.acp_port.ok_or_else(|| {
-        err(
-            StatusCode::BAD_GATEWAY,
-            format!("workspace {workspace} has no ACP port"),
-        )
-    })?;
+    let base_url = resolve_acp_url(workspace)?;
 
     let path = if rest.is_empty() {
         String::new()
@@ -457,7 +636,7 @@ async fn proxy_to_acp(
         .map(|q| format!("?{q}"))
         .unwrap_or_default();
 
-    let target_uri = format!("http://127.0.0.1:{port}{path}{query}");
+    let target_uri = format!("{base_url}{path}{query}");
 
     let (parts, body) = req.into_parts();
     let mut builder = hyper::Request::builder()
@@ -481,12 +660,182 @@ async fn proxy_to_acp(
         .map_err(|e| {
             err(
                 StatusCode::BAD_GATEWAY,
-                format!("ACP backend ({workspace} @ port {port}): {e}"),
+                format!("ACP backend ({workspace}): {e}"),
             )
         })?;
 
     let (parts, body) = resp.into_parts();
     Ok(Response::from_parts(parts, Body::new(body)))
+}
+
+#[derive(Deserialize)]
+struct AcpSendReq {
+    message: String,
+    #[serde(default)]
+    session_id: Option<String>,
+}
+
+async fn acp_health(Path(workspace): Path<String>) -> Result<Json<serde_json::Value>, Response> {
+    let client = acp_client(&workspace)?;
+    client
+        .ping()
+        .await
+        .map_err(|e| err(StatusCode::BAD_GATEWAY, format!("ACP ping failed: {e}")))?;
+    Ok(Json(serde_json::json!({"status": "ok"})))
+}
+
+async fn acp_send(
+    Path(workspace): Path<String>,
+    Json(req): Json<AcpSendReq>,
+) -> Result<Json<serde_json::Value>, Response> {
+    let client = acp_client(&workspace)?;
+
+    let result = if let Some(ref sid) = req.session_id {
+        client.resume(sid, &req.message).await
+    } else {
+        client.new_session(&req.message).await
+    };
+
+    let session_result = result.map_err(|e| err(StatusCode::BAD_GATEWAY, format!("ACP error: {e}")))?;
+
+    let session_id = session_result.run.as_ref().map(|r| r.session_id.clone());
+    let text = session_result.text();
+    let status = session_result.run.as_ref().map(|r| r.status.to_string());
+
+    if let Some(ref sid) = session_id {
+        let _ = save_session_id(&workspace, sid);
+    }
+
+    Ok(Json(serde_json::json!({
+        "session_id": session_id,
+        "text": text,
+        "status": status,
+    })))
+}
+
+async fn acp_messages(Path(workspace): Path<String>) -> Result<Json<serde_json::Value>, Response> {
+    let st = load_state()?;
+    let (_, ws) = st
+        .workspace_name_for_route(&workspace)
+        .ok_or_else(|| err(StatusCode::NOT_FOUND, format!("no active workspace: {workspace}")))?;
+
+    let session_id = ws.acp_session_id.as_ref().ok_or_else(|| {
+        err(StatusCode::NOT_FOUND, format!("no ACP session for workspace {workspace}"))
+    })?;
+
+    let client = acp_client(&workspace)?;
+    let snapshot = client
+        .dump(session_id)
+        .await
+        .map_err(|e| err(StatusCode::BAD_GATEWAY, format!("ACP dump failed: {e}")))?;
+
+    Ok(Json(serde_json::to_value(&snapshot).unwrap_or_default()))
+}
+
+async fn acp_history(Path(workspace): Path<String>) -> Result<Json<serde_json::Value>, Response> {
+    let st = load_state()?;
+    let (_, ws) = st
+        .workspace_name_for_route(&workspace)
+        .ok_or_else(|| err(StatusCode::NOT_FOUND, format!("no active workspace: {workspace}")))?;
+
+    let session_id = match ws.acp_session_id.as_ref() {
+        Some(sid) => sid,
+        None => return Ok(Json(serde_json::json!([]))),
+    };
+
+    let client = acp_client(&workspace)?;
+    let snapshot = client
+        .dump(session_id)
+        .await
+        .map_err(|e| err(StatusCode::BAD_GATEWAY, format!("ACP dump failed: {e}")))?;
+
+    let messages: Vec<serde_json::Value> = snapshot
+        .messages
+        .iter()
+        .filter(|m| !m.is_summary_message)
+        .filter_map(|m| {
+            let parts: serde_json::Value = serde_json::from_str(&m.parts).ok()?;
+            let text: String = parts
+                .as_array()?
+                .iter()
+                .filter_map(|p| {
+                    if p.get("type")?.as_str()? == "text" {
+                        p.get("data")?.get("text")?.as_str().map(String::from)
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("");
+            if text.is_empty() {
+                return None;
+            }
+            let role = match m.role.as_str() {
+                "assistant" => "agent",
+                other => other,
+            };
+            Some(serde_json::json!({"role": role, "content": text}))
+        })
+        .collect();
+
+    Ok(Json(serde_json::json!(messages)))
+}
+
+async fn acp_stream(
+    Path(workspace): Path<String>,
+    Json(req): Json<AcpSendReq>,
+) -> Result<Response, Response> {
+    let client = acp_client(&workspace)?;
+
+    let stream_result = if let Some(ref sid) = req.session_id {
+        client.resume_stream(sid, &req.message).await
+    } else {
+        client.new_session_stream(&req.message).await
+    };
+
+    let mut acp_stream =
+        stream_result.map_err(|e| err(StatusCode::BAD_GATEWAY, format!("ACP stream: {e}")))?;
+
+    let ws_name = workspace.clone();
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<String, std::io::Error>>(64);
+
+    tokio::spawn(async move {
+        use crush_acp_sdk::EventType;
+        while let Some(event) = acp_stream.next().await {
+            if let Some(ref run) = event.run {
+                if !run.session_id.is_empty() {
+                    let _ = save_session_id(&ws_name, &run.session_id);
+                }
+            }
+            match event.event_type {
+                EventType::SessionMessage | EventType::SessionSnapshot => continue,
+                _ => {}
+            }
+            let line = serde_json::to_string(&event).unwrap_or_default();
+            if tx.send(Ok(format!("{line}\n"))).await.is_err() {
+                break;
+            }
+        }
+    });
+
+    let body_stream = tokio_stream::wrappers::ReceiverStream::new(rx);
+    let body = Body::from_stream(body_stream);
+
+    Ok(Response::builder()
+        .status(StatusCode::OK)
+        .header("content-type", "application/x-ndjson")
+        .header("cache-control", "no-cache")
+        .body(body)
+        .unwrap())
+}
+
+fn save_session_id(workspace: &str, session_id: &str) -> Result<(), String> {
+    let mut st = state::load()?;
+    if let Some(ws) = st.workspaces.get_mut(workspace) {
+        ws.acp_session_id = Some(session_id.to_string());
+        state::save(&st)?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -511,6 +860,9 @@ mod tests {
             tag_index: 10,
             dir: "/tmp".into(),
             acp_port: Some(9100),
+            acp_url: Some("http://127.0.0.1:9100".into()),
+            acp_session_id: None,
+            acp_status: Some("running".into()),
         };
         let json = serde_json::to_string(&info).unwrap();
         assert!(json.contains("\"acp_port\":9100"));

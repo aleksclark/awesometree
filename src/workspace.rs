@@ -1,3 +1,4 @@
+use crate::acp_supervisor;
 use crate::interop::{self, AwesometreeExt, Project};
 use crate::log as dlog;
 use crate::state::{self, Store};
@@ -100,13 +101,18 @@ impl Manager {
                     .spawn();
             }
 
+            let acp_url = start_acp_if_configured(ws_name, &dir, acp_port, project);
+
             let dir_str = dir.to_string_lossy().into_owned();
             self.state
-                .set_active(ws_name, &project.name, tag_idx, &dir_str, acp_port);
+                .set_active(ws_name, &project.name, tag_idx, &dir_str, acp_port, acp_url);
         } else {
+            let acp_port = self.state.allocate_acp_port(ws_name);
+            let acp_url = start_acp_if_configured(ws_name, &dir, acp_port, project);
+
             let dir_str = dir.to_string_lossy().into_owned();
             self.state
-                .set_active(ws_name, &project.name, tag_idx, &dir_str, None);
+                .set_active(ws_name, &project.name, tag_idx, &dir_str, acp_port, acp_url);
         }
         state::save(&self.state)
     }
@@ -114,6 +120,8 @@ impl Manager {
     pub fn down(&mut self, ws_name: &str, opts: &DownOptions) -> Result<(), String> {
         eprintln!("  Removing workspace: {ws_name}");
         let rw = self.resolve_workspace(ws_name)?;
+
+        acp_supervisor::stop_for_workspace(ws_name);
 
         if opts.manage_tag {
             let tag = wm::tag_name(&rw.project.name, ws_name);
@@ -209,6 +217,24 @@ impl Manager {
         self.state.remove(ws_name);
         state::save(&self.state)
     }
+}
+
+fn start_acp_if_configured(
+    ws_name: &str,
+    dir: &PathBuf,
+    acp_port: Option<u16>,
+    project: &Project,
+) -> Option<String> {
+    let acp = project.acp_config()?;
+    if !acp.enabled {
+        return None;
+    }
+    let port = acp_port?;
+    let dir_str = dir.to_string_lossy();
+    let cmd = acp.command.as_deref();
+    acp_supervisor::start_for_workspace(ws_name, &dir_str, port, cmd);
+    let url = acp.url.as_deref().unwrap_or("http://127.0.0.1:{port}");
+    Some(interop::interpolate_with_port(url, &project.name, &dir_str, Some(port)))
 }
 
 pub fn resolve_dir(ws_name: &str, project: &Project) -> PathBuf {

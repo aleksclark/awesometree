@@ -1,3 +1,4 @@
+use awesometree::auth;
 use awesometree::daemon;
 use awesometree::interop::{self, Project};
 use awesometree::server;
@@ -81,6 +82,8 @@ enum Commands {
     },
     #[command(name = "mobile-qr")]
     MobileQr,
+    #[command(name = "generate-token")]
+    GenerateToken,
 }
 
 #[derive(Subcommand)]
@@ -149,6 +152,7 @@ fn main() {
         Commands::Daemon => cmd_daemon(),
         Commands::Openapi { output } => cmd_openapi(output),
         Commands::MobileQr => send_daemon_cmd("mobile-qr"),
+        Commands::GenerateToken => println!("{}", auth::generate_token()),
     }
 }
 

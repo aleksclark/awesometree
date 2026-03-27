@@ -21,6 +21,10 @@ pub struct WorkspaceState {
     pub dir: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub acp_port: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub acp_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub acp_session_id: Option<String>,
 }
 
 pub const TAG_OFFSET: i32 = 10;
@@ -60,7 +64,7 @@ impl Store {
         self.workspaces.get(name)
     }
 
-    pub fn set_active(&mut self, name: &str, project: &str, tag_index: i32, dir: &str, acp_port: Option<u16>) {
+    pub fn set_active(&mut self, name: &str, project: &str, tag_index: i32, dir: &str, acp_port: Option<u16>, acp_url: Option<String>) {
         let ws = self.workspaces.entry(name.to_string()).or_insert_with(|| {
             WorkspaceState {
                 project: project.to_string(),
@@ -72,6 +76,7 @@ impl Store {
         ws.tag_index = tag_index;
         ws.dir = dir.to_string();
         ws.acp_port = acp_port;
+        ws.acp_url = acp_url;
     }
 
     pub fn set_inactive(&mut self, name: &str) {
@@ -80,6 +85,8 @@ impl Store {
             ws.tag_index = 0;
             ws.dir.clear();
             ws.acp_port = None;
+            ws.acp_url = None;
+            ws.acp_session_id = None;
         }
     }
 
@@ -191,7 +198,7 @@ mod tests {
     #[test]
     fn set_active_creates_workspace() {
         let mut s = make_store();
-        s.set_active("feat-1", "myproject", 10, "/tmp/feat-1", None);
+        s.set_active("feat-1", "myproject", 10, "/tmp/feat-1", None, None);
         let ws = s.workspace("feat-1").unwrap();
         assert_eq!(ws.project, "myproject");
         assert!(ws.active);
@@ -203,8 +210,8 @@ mod tests {
     #[test]
     fn set_active_updates_existing() {
         let mut s = make_store();
-        s.set_active("feat-1", "proj-a", 10, "/tmp/a", None);
-        s.set_active("feat-1", "proj-b", 11, "/tmp/b", None);
+        s.set_active("feat-1", "proj-a", 10, "/tmp/a", None, None);
+        s.set_active("feat-1", "proj-b", 11, "/tmp/b", None, None);
         let ws = s.workspace("feat-1").unwrap();
         assert_eq!(ws.project, "proj-b");
         assert_eq!(ws.tag_index, 11);
@@ -213,7 +220,7 @@ mod tests {
     #[test]
     fn set_inactive_clears_fields() {
         let mut s = make_store();
-        s.set_active("feat-1", "proj", 10, "/tmp/feat-1", Some(9100));
+        s.set_active("feat-1", "proj", 10, "/tmp/feat-1", Some(9100), None);
         s.set_inactive("feat-1");
         let ws = s.workspace("feat-1").unwrap();
         assert!(!ws.active);
@@ -233,7 +240,7 @@ mod tests {
     #[test]
     fn remove_workspace() {
         let mut s = make_store();
-        s.set_active("feat-1", "proj", 10, "/tmp", None);
+        s.set_active("feat-1", "proj", 10, "/tmp", None, None);
         s.remove("feat-1");
         assert!(s.workspace("feat-1").is_none());
     }
@@ -241,9 +248,9 @@ mod tests {
     #[test]
     fn active_names_sorted() {
         let mut s = make_store();
-        s.set_active("charlie", "p", 10, "/tmp", None);
-        s.set_active("alice", "p", 11, "/tmp", None);
-        s.set_active("bob", "p", 12, "/tmp", None);
+        s.set_active("charlie", "p", 10, "/tmp", None, None);
+        s.set_active("alice", "p", 11, "/tmp", None, None);
+        s.set_active("bob", "p", 12, "/tmp", None, None);
         s.set_inactive("bob");
         assert_eq!(s.active_names(), vec!["alice", "charlie"]);
     }
@@ -251,8 +258,8 @@ mod tests {
     #[test]
     fn all_names_sorted() {
         let mut s = make_store();
-        s.set_active("charlie", "p", 10, "/tmp", None);
-        s.set_active("alice", "p", 11, "/tmp", None);
+        s.set_active("charlie", "p", 10, "/tmp", None, None);
+        s.set_active("alice", "p", 11, "/tmp", None, None);
         s.set_inactive("alice");
         assert_eq!(s.all_names(), vec!["alice", "charlie"]);
     }
@@ -260,9 +267,9 @@ mod tests {
     #[test]
     fn workspaces_for_project_filters() {
         let mut s = make_store();
-        s.set_active("feat-1", "proj-a", 10, "/tmp", None);
-        s.set_active("feat-2", "proj-b", 11, "/tmp", None);
-        s.set_active("feat-3", "proj-a", 12, "/tmp", None);
+        s.set_active("feat-1", "proj-a", 10, "/tmp", None, None);
+        s.set_active("feat-2", "proj-b", 11, "/tmp", None, None);
+        s.set_active("feat-3", "proj-a", 12, "/tmp", None, None);
         let result = s.workspaces_for_project("proj-a");
         let names: Vec<_> = result.iter().map(|(n, _)| n.as_str()).collect();
         assert_eq!(names, vec!["feat-1", "feat-3"]);
@@ -277,7 +284,7 @@ mod tests {
     #[test]
     fn allocate_tag_index_returns_existing() {
         let mut s = make_store();
-        s.set_active("feat-1", "p", 15, "/tmp", None);
+        s.set_active("feat-1", "p", 15, "/tmp", None, None);
         assert_eq!(s.allocate_tag_index("feat-1"), 15);
     }
 
@@ -290,15 +297,15 @@ mod tests {
     #[test]
     fn allocate_tag_index_skips_used() {
         let mut s = make_store();
-        s.set_active("a", "p", TAG_OFFSET, "/tmp", None);
-        s.set_active("b", "p", TAG_OFFSET + 1, "/tmp", None);
+        s.set_active("a", "p", TAG_OFFSET, "/tmp", None, None);
+        s.set_active("b", "p", TAG_OFFSET + 1, "/tmp", None, None);
         assert_eq!(s.allocate_tag_index("c"), TAG_OFFSET + 2);
     }
 
     #[test]
     fn allocate_tag_index_ignores_inactive() {
         let mut s = make_store();
-        s.set_active("a", "p", TAG_OFFSET, "/tmp", None);
+        s.set_active("a", "p", TAG_OFFSET, "/tmp", None, None);
         s.set_inactive("a");
         assert_eq!(s.allocate_tag_index("b"), TAG_OFFSET);
     }
@@ -317,7 +324,7 @@ mod tests {
     #[test]
     fn serialization_roundtrip() {
         let mut s = make_store();
-        s.set_active("feat-1", "proj", 10, "/tmp/feat-1", Some(9100));
+        s.set_active("feat-1", "proj", 10, "/tmp/feat-1", Some(9100), None);
         let json = serde_json::to_string(&s).unwrap();
         let s2: Store = serde_json::from_str(&json).unwrap();
         let ws = s2.workspace("feat-1").unwrap();
@@ -348,22 +355,22 @@ mod tests {
     #[test]
     fn allocate_acp_port_returns_existing() {
         let mut s = make_store();
-        s.set_active("feat-1", "p", 10, "/tmp", Some(9105));
+        s.set_active("feat-1", "p", 10, "/tmp", Some(9105), None);
         assert_eq!(s.allocate_acp_port("feat-1"), Some(9105));
     }
 
     #[test]
     fn allocate_acp_port_skips_used() {
         let mut s = make_store();
-        s.set_active("a", "p", 10, "/tmp", Some(ACP_PORT_BASE));
-        s.set_active("b", "p", 11, "/tmp", Some(ACP_PORT_BASE + 1));
+        s.set_active("a", "p", 10, "/tmp", Some(ACP_PORT_BASE), None);
+        s.set_active("b", "p", 11, "/tmp", Some(ACP_PORT_BASE + 1), None);
         assert_eq!(s.allocate_acp_port("c"), Some(ACP_PORT_BASE + 2));
     }
 
     #[test]
     fn allocate_acp_port_ignores_inactive() {
         let mut s = make_store();
-        s.set_active("a", "p", 10, "/tmp", Some(ACP_PORT_BASE));
+        s.set_active("a", "p", 10, "/tmp", Some(ACP_PORT_BASE), None);
         s.set_inactive("a");
         assert_eq!(s.allocate_acp_port("b"), Some(ACP_PORT_BASE));
     }
@@ -371,7 +378,7 @@ mod tests {
     #[test]
     fn workspace_name_for_route_finds_active() {
         let mut s = make_store();
-        s.set_active("my-feature", "proj", 10, "/tmp", Some(9100));
+        s.set_active("my-feature", "proj", 10, "/tmp", Some(9100), None);
         let (name, ws) = s.workspace_name_for_route("my-feature").unwrap();
         assert_eq!(name, "my-feature");
         assert_eq!(ws.acp_port, Some(9100));
@@ -380,7 +387,7 @@ mod tests {
     #[test]
     fn workspace_name_for_route_skips_inactive() {
         let mut s = make_store();
-        s.set_active("feat", "proj", 10, "/tmp", Some(9100));
+        s.set_active("feat", "proj", 10, "/tmp", Some(9100), None);
         s.set_inactive("feat");
         assert!(s.workspace_name_for_route("feat").is_none());
     }
@@ -388,7 +395,7 @@ mod tests {
     #[test]
     fn workspace_by_acp_port_finds_match() {
         let mut s = make_store();
-        s.set_active("feat-1", "proj", 10, "/tmp", Some(9101));
+        s.set_active("feat-1", "proj", 10, "/tmp", Some(9101), None);
         let (name, _) = s.workspace_by_acp_port(9101).unwrap();
         assert_eq!(name, "feat-1");
     }
@@ -402,7 +409,7 @@ mod tests {
     #[test]
     fn acp_port_serialization_roundtrip() {
         let mut s = make_store();
-        s.set_active("feat", "proj", 10, "/tmp", Some(9105));
+        s.set_active("feat", "proj", 10, "/tmp", Some(9105), None);
         let json = serde_json::to_string(&s).unwrap();
         let s2: Store = serde_json::from_str(&json).unwrap();
         assert_eq!(s2.workspace("feat").unwrap().acp_port, Some(9105));
@@ -411,7 +418,7 @@ mod tests {
     #[test]
     fn acp_port_none_not_serialized() {
         let mut s = make_store();
-        s.set_active("feat", "proj", 10, "/tmp", None);
+        s.set_active("feat", "proj", 10, "/tmp", None, None);
         let json = serde_json::to_string(&s).unwrap();
         assert!(!json.contains("acp_port"));
     }

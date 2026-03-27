@@ -34,10 +34,15 @@ pub fn show_qr_window(cx: &mut App) {
             ..Default::default()
         },
         move |_window, cx| {
-            cx.new(move |cx| QrView {
-                matrix,
-                server_info: format!("{ip}:9099"),
-                focus: cx.focus_handle(),
+            let token_for_clipboard = data.clone();
+            cx.new(move |cx| {
+                cx.write_to_clipboard(ClipboardItem::new_string(token_for_clipboard));
+                QrView {
+                    matrix,
+                    token: data,
+                    server_info: format!("{ip}:9099"),
+                    focus: cx.focus_handle(),
+                }
             })
         },
     )
@@ -46,6 +51,7 @@ pub fn show_qr_window(cx: &mut App) {
 
 struct QrView {
     matrix: Vec<Vec<bool>>,
+    token: String,
     server_info: String,
     focus: FocusHandle,
 }
@@ -142,13 +148,19 @@ impl Render for QrView {
                                 div()
                                     .text_size(px(11.))
                                     .text_color(theme::fg_dim())
-                                    .child("Scan to authenticate the mobile app"),
+                                    .child("Scan QR or paste token (copied to clipboard)"),
                             )
                             .child(
                                 div()
                                     .text_size(px(11.))
                                     .text_color(theme::fg())
                                     .child(format!("Server: {}", self.server_info)),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(10.))
+                                    .text_color(theme::fg_dim())
+                                    .child(format!("Token: {}", self.token)),
                             ),
                     )
                     .child(

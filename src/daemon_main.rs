@@ -1,3 +1,4 @@
+use awesometree::acp_supervisor;
 use awesometree::daemon::{self, DaemonCmd};
 use awesometree::interop;
 use awesometree::log as dlog;
@@ -63,7 +64,12 @@ fn main() {
 
     thread::spawn(|| {
         let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
-        rt.block_on(server::run(server::DEFAULT_PORT));
+        acp_supervisor::init(rt.handle().clone());
+        rt.block_on(async {
+            acp_supervisor::start_active_workspaces();
+            acp_supervisor::start_sync_loop(std::time::Duration::from_secs(5));
+            server::run(server::DEFAULT_PORT).await;
+        });
     });
 
     dlog::log("Daemon starting");
@@ -172,6 +178,7 @@ fn main() {
                     DaemonCmd::LaunchAgent => {}
                     DaemonCmd::Restart => {
                         dlog::log("Daemon restarting");
+                        acp_supervisor::stop_all();
                         daemon::cleanup();
                         std::process::exit(0);
                     }
@@ -193,6 +200,7 @@ fn main() {
 }
 
 extern "C" fn handle_signal(_sig: libc::c_int) {
+    acp_supervisor::stop_all();
     daemon::cleanup();
     std::process::exit(0);
 }
@@ -203,10 +211,19 @@ fn do_pick(cx: &mut App, cmd_tx: mpsc::UnboundedSender<DaemonCmd>) {
 
     let mut items: Vec<PickerItem> = Vec::new();
     for (ws_name, ws) in &st.workspaces {
+        let acp_status = if ws.acp_url.is_some() || ws.acp_port.is_some() {
+            let running = acp_supervisor::get()
+                .map(|s| s.is_running(ws_name))
+                .unwrap_or(false);
+            Some(if running { "running" } else { "stopped" }.to_string())
+        } else {
+            None
+        };
         items.push(PickerItem {
             name: ws_name.clone(),
             project: ws.project.clone(),
             active: ws.active,
+            acp_status,
         });
     }
     items.sort_by(|a, b| a.project.cmp(&b.project).then(a.name.cmp(&b.name)));

@@ -57,6 +57,8 @@ pub struct ContextConfig {
 pub struct AwesometreeExt {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mcp: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub acp: Option<AcpConfig>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub apps: Vec<String>,
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -64,6 +66,23 @@ pub struct AwesometreeExt {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worktree_dir: Option<String>,
 }
+
+#[derive(Debug, Default, Serialize, Deserialize, Clone)]
+pub struct AcpConfig {
+    #[serde(default = "default_true", skip_serializing_if = "is_true")]
+    pub enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
+    #[serde(default)]
+    pub verify_on_open: bool,
+}
+
+fn default_true() -> bool { true }
+fn is_true(b: &bool) -> bool { *b }
 
 const EXT_KEY: &str = "dev.awesometree";
 
@@ -218,6 +237,17 @@ impl Project {
     pub fn resolved_mcp_url(&self, dir: &str) -> Option<String> {
         let ext = self.awesometree_ext();
         ext.mcp.map(|url| interpolate(&url, &self.name, dir))
+    }
+
+    pub fn resolved_acp_url(&self, dir: &str, port: Option<u16>) -> Option<String> {
+        let ext = self.awesometree_ext();
+        let acp = ext.acp?;
+        let url = acp.url.unwrap_or_else(|| "http://127.0.0.1:{port}".to_string());
+        Some(interpolate_with_port(&url, &self.name, dir, port))
+    }
+
+    pub fn acp_config(&self) -> Option<AcpConfig> {
+        self.awesometree_ext().acp
     }
 }
 
@@ -563,6 +593,7 @@ mod tests {
         let mut p = Project::new("p", "/r", "main");
         let ext = AwesometreeExt {
             mcp: Some("http://localhost:8080".into()),
+            acp: None,
             apps: vec!["zeditor -n {dir}".into()],
             layout: "max".into(),
             worktree_dir: Some("~/wt".into()),

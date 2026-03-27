@@ -15,3 +15,4 @@ pub mod log;
 pub mod auth;
 pub mod qr;
 pub mod server;
+pub mod acp_supervisor;
