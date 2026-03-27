@@ -14,6 +14,7 @@ pub enum DaemonCmd {
     Restart,
     Reload,
     Logs,
+    MobileQr,
 }
 
 pub fn send_command(cmd: &str) -> Result<String, String> {
@@ -73,6 +74,7 @@ pub fn parse_command(input: &str) -> Option<DaemonCmd> {
         "restart" => Some(DaemonCmd::Restart),
         "reload" => Some(DaemonCmd::Reload),
         "logs" => Some(DaemonCmd::Logs),
+        "mobile-qr" => Some(DaemonCmd::MobileQr),
         _ => None,
     }
 }
@@ -118,6 +120,11 @@ mod tests {
     #[test]
     fn parse_command_logs() {
         assert!(matches!(parse_command("logs"), Some(DaemonCmd::Logs)));
+    }
+
+    #[test]
+    fn parse_command_mobile_qr() {
+        assert!(matches!(parse_command("mobile-qr"), Some(DaemonCmd::MobileQr)));
     }
 
     #[test]

@@ -3,10 +3,12 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use utoipa::ToSchema;
 
-#[derive(Debug, Default, Serialize, Deserialize, Clone)]
+#[derive(Debug, Default, Serialize, Deserialize, Clone, ToSchema)]
 pub struct Project {
     #[serde(rename = "$schema", default, skip_serializing_if = "Option::is_none")]
+    #[schema(rename = "$schema")]
     pub schema: Option<String>,
     pub version: String,
     pub name: String,
@@ -17,16 +19,19 @@ pub struct Project {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub launch: Option<Launch>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<Object>)]
     pub tools: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context: Option<ContextConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<Object>)]
     pub agents: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<HashMap<String, Object>>)]
     pub extensions: Option<HashMap<String, serde_json::Value>>,
 }
 
-#[derive(Debug, Default, Serialize, Deserialize, Clone)]
+#[derive(Debug, Default, Serialize, Deserialize, Clone, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct Launch {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -37,7 +42,7 @@ pub struct Launch {
     pub env: Option<HashMap<String, String>>,
 }
 
-#[derive(Debug, Default, Serialize, Deserialize, Clone)]
+#[derive(Debug, Default, Serialize, Deserialize, Clone, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ContextConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -163,6 +168,14 @@ pub fn interpolate(template: &str, project_name: &str, dir: &str) -> String {
     template
         .replace("{project}", project_name)
         .replace("{dir}", dir)
+}
+
+pub fn interpolate_with_port(template: &str, project_name: &str, dir: &str, port: Option<u16>) -> String {
+    let mut result = interpolate(template, project_name, dir);
+    if let Some(p) = port {
+        result = result.replace("{port}", &p.to_string());
+    }
+    result
 }
 
 pub const DEFAULT_SCHEMA: &str = "https://project-interop.dev/schemas/v1/project.schema.json";
@@ -485,6 +498,29 @@ mod tests {
     fn interpolate_multiple_same_placeholder() {
         let result = interpolate("{dir}/{dir}", "p", "/x");
         assert_eq!(result, "/x//x");
+    }
+
+    #[test]
+    fn interpolate_with_port_replaces_all() {
+        let result = interpolate_with_port(
+            "agent --port {port} --dir {dir} --project {project}",
+            "myproj",
+            "/tmp/ws",
+            Some(9100),
+        );
+        assert_eq!(result, "agent --port 9100 --dir /tmp/ws --project myproj");
+    }
+
+    #[test]
+    fn interpolate_with_port_none_leaves_placeholder() {
+        let result = interpolate_with_port("agent --port {port}", "p", "/d", None);
+        assert_eq!(result, "agent --port {port}");
+    }
+
+    #[test]
+    fn interpolate_with_port_no_port_placeholder() {
+        let result = interpolate_with_port("zeditor -n {dir}", "p", "/d", Some(9100));
+        assert_eq!(result, "zeditor -n /d");
     }
 
     #[test]

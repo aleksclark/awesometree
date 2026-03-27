@@ -1,3 +1,7 @@
+[workspace]
+members = [".", "core"]
+resolver = "3"
+
 [package]
 name = "awesometree"
 version = "0.1.0"
@@ -12,12 +16,24 @@ name = "awesometree-daemon"
 path = "src/daemon_main.rs"
 
 [dependencies]
+awesometree-core = { path = "core" }
+axum = "0.8"
+axum-extra = { version = "0.10", features = ["typed-header"] }
 clap = { version = "4.5.60", features = ["derive"] }
 gpui = "0.2.2"
+headers = "0.4"
+hmac = "0.12"
+hyper = { version = "1", features = ["full"] }
+hyper-util = { version = "0.1", features = ["client-legacy", "tokio"] }
+http-body-util = "0.1"
 image = { version = "0.25", default-features = false, features = ["png"] }
 libc = "0.2"
+qrcode = "0.14"
+rand = "0.9"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
+sha2 = "0.10"
+tokio = { version = "1", features = ["full"] }
 tray = "0.1"
 tray-menu = { version = "0.1", features = ["gtk"] }
 gtk = "0.18"
@@ -25,3 +41,6 @@ futures-channel = "0.3"
 futures-util = "0.3"
 unicode-segmentation = "1.11"
 glob = "0.3"
+utoipa = "5"
+utoipa-axum = "0.2"
+base64 = "0.22"
