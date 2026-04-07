@@ -121,9 +121,14 @@ impl Manager {
         eprintln!("  Removing workspace: {ws_name}");
         let mut errors: Vec<String> = Vec::new();
 
-        acp_supervisor::stop_for_workspace(ws_name);
-
         let resolved = self.resolve_workspace(ws_name);
+
+        self.state.set_inactive(ws_name);
+        if let Err(e) = state::save(&self.state) {
+            errors.push(format!("save state: {e}"));
+        }
+
+        acp_supervisor::stop_for_workspace(ws_name);
 
         if let Ok(ref rw) = resolved {
             if opts.manage_tag {
@@ -142,11 +147,6 @@ impl Manager {
             }
         } else if let Err(e) = resolved {
             errors.push(format!("resolve workspace: {e}"));
-        }
-
-        self.state.set_inactive(ws_name);
-        if let Err(e) = state::save(&self.state) {
-            errors.push(format!("save state: {e}"));
         }
 
         if errors.is_empty() {
