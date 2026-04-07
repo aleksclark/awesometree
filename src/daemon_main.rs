@@ -9,7 +9,7 @@ use awesometree::qr;
 use awesometree::server;
 use awesometree::state;
 use awesometree::tray;
-use awesometree::wm::AwesomeAdapter;
+use awesometree::wm;
 use awesometree::workspace::{self as ws, DownOptions, Manager, UpOptions};
 use futures_channel::mpsc;
 use futures_util::StreamExt;
@@ -101,7 +101,7 @@ fn main() {
 
         cx.spawn(async move |cx: &mut AsyncApp| {
             while let Some(()) = log_rx.next().await {
-                let _ = cx.update(|cx| dlog::show_log_window(cx));
+                let _ = cx.update(dlog::show_log_window);
             }
         })
         .detach();
@@ -169,11 +169,11 @@ fn main() {
                     }
                     DaemonCmd::Create => {
                         dlog::log("Create form opened");
-                        let _ = cx.update(|cx| do_create(cx));
+                        let _ = cx.update(do_create);
                     }
                     DaemonCmd::Projects => {
                         dlog::log("Projects UI opened");
-                        let _ = cx.update(|cx| projects_ui::open_projects_window(cx));
+                        let _ = cx.update(projects_ui::open_projects_window);
                     }
                     DaemonCmd::LaunchAgent => {}
                     DaemonCmd::Restart => {
@@ -184,11 +184,11 @@ fn main() {
                     }
                     DaemonCmd::Reload => {}
                     DaemonCmd::Logs => {
-                        let _ = cx.update(|cx| dlog::show_log_window(cx));
+                        let _ = cx.update(dlog::show_log_window);
                     }
                     DaemonCmd::MobileQr => {
                         dlog::log("QR code window opened");
-                        let _ = cx.update(|cx| qr::show_qr_window(cx));
+                        let _ = cx.update(qr::show_qr_window);
                     }
                 }
             }
@@ -266,7 +266,7 @@ fn do_pick(cx: &mut App, cmd_tx: mpsc::UnboundedSender<DaemonCmd>) {
 
         let ws = st.workspace(&name);
         let is_active = ws.map(|w| w.active).unwrap_or(false);
-        let wm = Box::new(AwesomeAdapter::new());
+        let wm = wm::platform_adapter();
 
         if is_active {
             dlog::log(format!("Switching to active workspace: {name}"));
@@ -368,7 +368,7 @@ fn do_create(cx: &mut App) {
                 return;
             }
         };
-        let wm = Box::new(AwesomeAdapter::new());
+        let wm = wm::platform_adapter();
         let mut mgr = Manager::new(st, wm);
 
         if let Err(e) = mgr.up(
@@ -396,7 +396,7 @@ fn do_create(cx: &mut App) {
 fn do_destroy_workspace(ws_name: &str) -> Result<(), String> {
     dlog::log(format!("Destroying workspace: {ws_name}"));
     let st = state::load().map_err(|e| format!("load state: {e}"))?;
-    let wm = Box::new(AwesomeAdapter::new());
+    let wm = wm::platform_adapter();
     let mut mgr = Manager::new(st, wm);
 
     if let Ok(true) = mgr.is_dirty(ws_name) {
@@ -424,7 +424,7 @@ fn do_destroy_workspace(ws_name: &str) -> Result<(), String> {
 fn do_stop_workspace(ws_name: &str) -> Result<(), String> {
     dlog::log(format!("Stopping workspace: {ws_name}"));
     let st = state::load().map_err(|e| format!("load state: {e}"))?;
-    let wm = Box::new(AwesomeAdapter::new());
+    let wm = wm::platform_adapter();
     let mut mgr = Manager::new(st, wm);
 
     let _ = mgr.wm.restore_previous_tag();

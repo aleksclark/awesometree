@@ -2,7 +2,7 @@ use crate::auth;
 use crate::interop::{self, Project};
 use crate::log as dlog;
 use crate::state::{self, Store};
-use crate::wm::AwesomeAdapter;
+use crate::wm;
 use crate::workspace::{self, DownOptions, Manager};
 use axum::body::Body;
 use axum::extract::{Path, Request, State};
@@ -459,7 +459,7 @@ async fn stop_workspace(Path(name): Path<String>) -> Result<Json<WorkspaceInfo>,
         return Err(err(StatusCode::NOT_FOUND, format!("workspace not found: {name}")));
     }
 
-    let wm = Box::new(AwesomeAdapter::new());
+    let wm = wm::platform_adapter();
     let mut mgr = Manager::new(st, wm);
     let opts = DownOptions { manage_tag: true, keep_worktree: true };
     if let Err(e) = mgr.down(&name, &opts) {

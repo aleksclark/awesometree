@@ -1,3 +1,12 @@
+#![allow(
+    clippy::collapsible_if,
+    clippy::ptr_arg,
+    clippy::single_match,
+    clippy::result_large_err,
+    clippy::redundant_pattern_matching,
+    clippy::redundant_locals
+)]
+
 pub mod paths;
 pub mod theme;
 pub mod ui_helpers;

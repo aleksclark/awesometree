@@ -1,11 +1,17 @@
 use std::process::Command;
 use std::time::Duration;
-use tray::dpi::PhysicalPosition;
 use tray::{Icon, TrayIconBuilder, TrayIconEvent, MouseButton, MouseButtonState};
+
+#[cfg(target_os = "linux")]
+use tray::dpi::PhysicalPosition;
+#[cfg(target_os = "linux")]
 use tray_menu::{PopupMenu, TextEntry, Divider};
 
 pub fn run_tray(_workspaces: Vec<(String, bool)>) {
-    gtk::init().expect("failed to init gtk");
+    #[cfg(target_os = "linux")]
+    {
+        gtk::init().expect("failed to init gtk");
+    }
 
     let icon_bytes = include_bytes!("../assets/tray-icon.png");
     let img = image::load_from_memory(icon_bytes)
@@ -43,13 +49,17 @@ pub fn run_tray(_workspaces: Vec<(String, bool)>) {
                 show_menu(pos);
             }
         }
-        while gtk::events_pending() {
-            gtk::main_iteration();
+        #[cfg(target_os = "linux")]
+        {
+            while gtk::events_pending() {
+                gtk::main_iteration();
+            }
         }
         std::thread::sleep(Duration::from_millis(16));
     }
 }
 
+#[cfg(target_os = "linux")]
 fn show_menu(position: PhysicalPosition<f64>) {
     let mut menu = PopupMenu::new();
     menu.add(&TextEntry::of("create", "Create Workspace"));
@@ -63,27 +73,57 @@ fn show_menu(position: PhysicalPosition<f64>) {
     menu.add(&TextEntry::of("exit", "Exit"));
 
     if let Some(id) = menu.popup(position) {
-        match id.0.as_str() {
-            "create" => {
-                let _ = Command::new("awesometree").arg("create-interactive").spawn();
-            }
-            "pick" => {
-                let _ = Command::new("awesometree").arg("pick").spawn();
-            }
-            "projects" => {
-                let _ = Command::new("awesometree").arg("projects-ui").spawn();
-            }
-            "mobile-qr" => {
-                let _ = Command::new("awesometree").arg("mobile-qr").spawn();
-            }
-            "logs" => {
-                crate::log::request_log_window();
-            }
-            "restart" => {
-                let _ = Command::new("awesometree").arg("restart-daemon").spawn();
-            }
-            "exit" => std::process::exit(0),
-            _ => {}
+        handle_menu_action(id.0.as_str());
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn show_menu(_position: tray::dpi::PhysicalPosition<f64>) {
+    let script = r#"
+set menuItems to {"Create Workspace", "Open Workspace", "-", "Projects", "Mobile Connect", "Logs", "-", "Restart", "Exit"}
+set menuIds to {"create", "pick", "", "projects", "mobile-qr", "logs", "", "restart", "exit"}
+set chosen to choose from list menuItems with prompt "awesometree" without multiple selections allowed and empty selection allowed
+if chosen is false then return ""
+set chosenItem to item 1 of chosen
+repeat with i from 1 to count of menuItems
+    if item i of menuItems is chosenItem then
+        return item i of menuIds
+    end if
+end repeat
+return ""
+"#;
+    let output = Command::new("osascript")
+        .args(["-e", script])
+        .output();
+    if let Ok(output) = output {
+        let choice = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if !choice.is_empty() {
+            handle_menu_action(&choice);
         }
+    }
+}
+
+fn handle_menu_action(id: &str) {
+    match id {
+        "create" => {
+            let _ = Command::new("awesometree").arg("create-interactive").spawn();
+        }
+        "pick" => {
+            let _ = Command::new("awesometree").arg("pick").spawn();
+        }
+        "projects" => {
+            let _ = Command::new("awesometree").arg("projects-ui").spawn();
+        }
+        "mobile-qr" => {
+            let _ = Command::new("awesometree").arg("mobile-qr").spawn();
+        }
+        "logs" => {
+            crate::log::request_log_window();
+        }
+        "restart" => {
+            let _ = Command::new("awesometree").arg("restart-daemon").spawn();
+        }
+        "exit" => std::process::exit(0),
+        _ => {}
     }
 }

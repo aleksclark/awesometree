@@ -3,7 +3,7 @@ use awesometree::daemon;
 use awesometree::interop::{self, Project};
 use awesometree::server;
 use awesometree::state;
-use awesometree::wm::{self, Adapter, AwesomeAdapter};
+use awesometree::wm::{self, Adapter};
 use awesometree::workspace::{DownOptions, Manager, UpOptions};
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
@@ -167,7 +167,7 @@ fn make_manager() -> Manager {
         eprintln!("Error: {e}");
         process::exit(1);
     });
-    Manager::new(st, Box::new(AwesomeAdapter::new()))
+    Manager::new(st, wm::platform_adapter())
 }
 
 fn cmd_up(name: Option<String>, no_tag: bool, no_launch: bool) {
@@ -257,8 +257,8 @@ fn cmd_destroy(name: String, no_tag: bool) {
     }
 }
 
-fn resolve_current_workspace() -> (AwesomeAdapter, String) {
-    let wm = AwesomeAdapter::new();
+fn resolve_current_workspace() -> (Box<dyn Adapter>, String) {
+    let wm = wm::platform_adapter();
     let tag_full = wm
         .get_current_tag_name()
         .unwrap_or_else(|e| {
@@ -314,7 +314,7 @@ fn cmd_cycle() {
     if active.is_empty() {
         return;
     }
-    let wm = AwesomeAdapter::new();
+    let wm = wm::platform_adapter();
     let current = wm.get_current_tag_name().ok().flatten();
     let current_ws = current.as_deref().and_then(wm::parse_tag_name).map(|(_, ws)| ws);
     let next_idx = match current_ws {
@@ -575,13 +575,25 @@ fn cmd_daemon() {
     let log_err = log
         .try_clone()
         .unwrap_or_else(|_| std::fs::File::open("/dev/null").unwrap());
-    let _ = process::Command::new("setsid")
-        .arg("--fork")
-        .arg(&exe)
-        .stdin(process::Stdio::null())
-        .stdout(process::Stdio::from(log))
-        .stderr(process::Stdio::from(log_err))
-        .spawn();
+
+    #[cfg(target_os = "linux")]
+    {
+        let _ = process::Command::new("setsid")
+            .arg("--fork")
+            .arg(&exe)
+            .stdin(process::Stdio::null())
+            .stdout(process::Stdio::from(log))
+            .stderr(process::Stdio::from(log_err))
+            .spawn();
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let _ = process::Command::new(&exe)
+            .stdin(process::Stdio::null())
+            .stdout(process::Stdio::from(log))
+            .stderr(process::Stdio::from(log_err))
+            .spawn();
+    }
 }
 
 fn cmd_openapi(output: Option<PathBuf>) {
