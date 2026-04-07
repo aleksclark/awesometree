@@ -48,12 +48,29 @@ pub fn load() -> Result<Store, String> {
     serde_json::from_str(&data).map_err(|e| format!("parse state: {e}"))
 }
 
+static SAVE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 pub fn save(store: &Store) -> Result<(), String> {
+    let _guard = SAVE_LOCK.lock().unwrap();
+    save_inner(store)
+}
+
+pub fn modify<F>(f: F) -> Result<(), String>
+where
+    F: FnOnce(&mut Store),
+{
+    let _guard = SAVE_LOCK.lock().unwrap();
+    let mut store = load()?;
+    f(&mut store);
+    save_inner(&store)
+}
+
+fn save_inner(store: &Store) -> Result<(), String> {
     let dir = state_dir();
     fs::create_dir_all(&dir).map_err(|e| format!("create state dir: {e}"))?;
     let data = serde_json::to_string_pretty(store).map_err(|e| format!("serialize state: {e}"))?;
     let path = state_path();
-    let tmp = dir.join(".state.json.tmp");
+    let tmp = dir.join(format!(".state.json.{}.tmp", std::process::id()));
     fs::write(&tmp, &data).map_err(|e| format!("write tmp: {e}"))?;
     fs::rename(&tmp, &path).map_err(|e| format!("rename: {e}"))?;
     Ok(())

@@ -3,7 +3,7 @@ use awesometree::daemon::{self, DaemonCmd};
 use awesometree::interop;
 use awesometree::log as dlog;
 use awesometree::notify;
-use awesometree::picker::{self, parse_create_result, PickerItem, PickerMode, CREATE_SENTINEL, DESTROY_PREFIX};
+use awesometree::picker::{self, parse_create_result, PickerItem, PickerMode, CREATE_SENTINEL, DESTROY_PREFIX, STOP_PREFIX};
 use awesometree::projects_ui;
 use awesometree::qr;
 use awesometree::server;
@@ -256,6 +256,11 @@ fn do_pick(cx: &mut App, cmd_tx: mpsc::UnboundedSender<DaemonCmd>) {
             return do_destroy_workspace(ws_name);
         }
 
+        if let Some(ws_name) = selection.strip_prefix(STOP_PREFIX) {
+            dlog::log(format!("Picker: stopping workspace {ws_name}"));
+            return do_stop_workspace(ws_name);
+        }
+
         let st = state::load().map_err(|e| format!("load state: {e}"))?;
         let name = selection;
 
@@ -413,5 +418,25 @@ fn do_destroy_workspace(ws_name: &str) -> Result<(), String> {
     )
     .map_err(|e| format!("destroy {ws_name}: {e}"))?;
     dlog::log(format!("Workspace {ws_name} destroyed"));
+    Ok(())
+}
+
+fn do_stop_workspace(ws_name: &str) -> Result<(), String> {
+    dlog::log(format!("Stopping workspace: {ws_name}"));
+    let st = state::load().map_err(|e| format!("load state: {e}"))?;
+    let wm = Box::new(AwesomeAdapter::new());
+    let mut mgr = Manager::new(st, wm);
+
+    let _ = mgr.wm.restore_previous_tag();
+
+    mgr.down(
+        ws_name,
+        &DownOptions {
+            manage_tag: true,
+            keep_worktree: true,
+        },
+    )
+    .map_err(|e| format!("stop {ws_name}: {e}"))?;
+    dlog::log(format!("Workspace {ws_name} stopped"));
     Ok(())
 }

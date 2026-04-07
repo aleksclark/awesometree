@@ -24,6 +24,8 @@ enum Commands {
         no_tag: bool,
         #[arg(long)]
         no_launch: bool,
+        #[arg(long)]
+        nogui: bool,
     },
     Down {
         name: Option<String>,
@@ -40,6 +42,8 @@ enum Commands {
         no_tag: bool,
         #[arg(long)]
         no_launch: bool,
+        #[arg(long)]
+        nogui: bool,
     },
     Destroy {
         name: String,
@@ -118,7 +122,8 @@ fn main() {
             name,
             no_tag,
             no_launch,
-        } => cmd_up(name, no_tag, no_launch),
+            nogui,
+        } => cmd_up(name, no_tag || nogui, no_launch || nogui),
         Commands::Down {
             name,
             no_tag,
@@ -129,7 +134,8 @@ fn main() {
             project,
             no_tag,
             no_launch,
-        } => cmd_create(name, project, no_tag, no_launch),
+            nogui,
+        } => cmd_create(name, project, no_tag || nogui, no_launch || nogui),
         Commands::Destroy { name, no_tag } => cmd_destroy(name, no_tag),
         Commands::DestroyCurrent => cmd_destroy_current(),
         Commands::Close => cmd_close(),

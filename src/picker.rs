@@ -15,6 +15,7 @@ pub struct PickerItem {
 
 pub const CREATE_SENTINEL: &str = "\0CREATE";
 pub const DESTROY_PREFIX: &str = "\0DESTROY\0";
+pub const STOP_PREFIX: &str = "\0STOP\0";
 
 pub enum PickerMode {
     List { items: Vec<PickerItem> },
@@ -482,6 +483,7 @@ fn btn_fg() -> Rgba { theme::btn_fg() }
 fn btn_hover() -> Rgba { theme::btn_hover() }
 fn new_badge() -> Rgba { theme::new_badge() }
 fn new_badge_fg() -> Rgba { theme::new_badge_fg() }
+fn danger() -> Rgba { theme::danger() }
 
 fn render_form_field(
     label: &str,
@@ -844,6 +846,7 @@ impl PickerView {
                             selected_child = child_index;
                         }
 
+                        let is_active = item.active;
                         list = list.child(
                             div()
                                 .id(ElementId::Name(format!("item-{vi}").into()))
@@ -901,7 +904,37 @@ impl PickerView {
                                                             .child("ACP"),
                                                     )
                                                 }),
-                                        ),
+                                        )
+                                        .when(is_active, |s: Div| {
+                                            s.child(
+                                                div()
+                                                    .id(ElementId::Name(
+                                                        format!("stop-{vi}").into(),
+                                                    ))
+                                                    .ml(px(8.))
+                                                    .w(px(16.))
+                                                    .h(px(16.))
+                                                    .rounded(px(3.))
+                                                    .bg(danger())
+                                                    .hover(|s| s.opacity(0.8))
+                                                    .cursor_pointer()
+                                                    .on_mouse_down(
+                                                        MouseButton::Left,
+                                                        cx.listener(
+                                                            move |view, _, window, _cx| {
+                                                                let name =
+                                                                    view.items[item_idx]
+                                                                        .name
+                                                                        .clone();
+                                                                let _ = view.tx.send(format!(
+                                                                    "{STOP_PREFIX}{name}"
+                                                                ));
+                                                                window.remove_window();
+                                                            },
+                                                        ),
+                                                    ),
+                                            )
+                                        }),
                                 ),
                         );
                         child_index += 1;
@@ -945,7 +978,7 @@ fn fuzzy_match(text: &str, pattern: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{fuzzy_match, parse_create_result, CREATE_SENTINEL, DESTROY_PREFIX};
+    use super::{fuzzy_match, parse_create_result, CREATE_SENTINEL, DESTROY_PREFIX, STOP_PREFIX};
 
     #[test]
     fn fuzzy_match_exact() {
@@ -1019,5 +1052,10 @@ mod tests {
     #[test]
     fn destroy_prefix_is_nul_prefixed() {
         assert!(DESTROY_PREFIX.starts_with('\0'));
+    }
+
+    #[test]
+    fn stop_prefix_is_nul_prefixed() {
+        assert!(STOP_PREFIX.starts_with('\0'));
     }
 }

@@ -34,7 +34,25 @@ pub fn send_command(cmd: &str) -> Result<String, String> {
 }
 
 pub fn is_running() -> bool {
-    UnixStream::connect(SOCK_PATH).is_ok()
+    let stream = match UnixStream::connect(SOCK_PATH) {
+        Ok(s) => s,
+        Err(_) => return false,
+    };
+    let timeout = std::time::Duration::from_secs(2);
+    let _ = stream.set_read_timeout(Some(timeout));
+    let _ = stream.set_write_timeout(Some(timeout));
+    let mut s = stream;
+    if s.write_all(b"ping\n").is_err() {
+        let _ = std::fs::remove_file(SOCK_PATH);
+        return false;
+    }
+    let _ = s.shutdown(std::net::Shutdown::Write);
+    let mut buf = String::new();
+    if BufReader::new(&s).read_line(&mut buf).is_err() {
+        let _ = std::fs::remove_file(SOCK_PATH);
+        return false;
+    }
+    !buf.is_empty()
 }
 
 pub fn listen(tx: mpsc::Sender<DaemonCmd>) {

@@ -2,7 +2,8 @@ use crate::auth;
 use crate::interop::{self, Project};
 use crate::log as dlog;
 use crate::state::{self, Store};
-use crate::workspace;
+use crate::wm::AwesomeAdapter;
+use crate::workspace::{self, DownOptions, Manager};
 use axum::body::Body;
 use axum::extract::{Path, Request, State};
 use axum::http::StatusCode;
@@ -452,18 +453,21 @@ async fn start_workspace(Path(name): Path<String>) -> Result<Json<WorkspaceInfo>
     )
 )]
 async fn stop_workspace(Path(name): Path<String>) -> Result<Json<WorkspaceInfo>, Response> {
-    let mut st = load_state()?;
+    let st = load_state()?;
 
     if st.workspace(&name).is_none() {
         return Err(err(StatusCode::NOT_FOUND, format!("workspace not found: {name}")));
     }
 
-    crate::acp_supervisor::stop_for_workspace(&name);
-    st.set_inactive(&name);
-    state::save(&st).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    let wm = Box::new(AwesomeAdapter::new());
+    let mut mgr = Manager::new(st, wm);
+    let opts = DownOptions { manage_tag: true, keep_worktree: true };
+    if let Err(e) = mgr.down(&name, &opts) {
+        dlog::log(format!("API: stop workspace {name} had errors: {e}"));
+    }
 
     dlog::log(format!("API: stopped workspace {name}"));
-    let ws = st.workspace(&name).unwrap();
+    let ws = mgr.state.workspace(&name).unwrap();
     Ok(Json(ws_to_info(&name, ws)))
 }
 

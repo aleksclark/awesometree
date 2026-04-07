@@ -164,17 +164,15 @@ async fn graceful_stop(child: &mut Child) {
 }
 
 fn update_state_acp(workspace: &str, port: u16) {
-    let result = (|| {
-        let mut st = state::load()?;
-        if let Some(ws) = st.workspaces.get_mut(workspace) {
+    let ws_name = workspace.to_string();
+    let result = state::modify(|st| {
+        if let Some(ws) = st.workspaces.get_mut(&ws_name) {
             ws.acp_port = Some(port);
             if ws.acp_url.is_none() {
                 ws.acp_url = Some(format!("http://127.0.0.1:{port}"));
             }
-            state::save(&st)?;
         }
-        Ok::<(), String>(())
-    })();
+    });
     if let Err(e) = result {
         dlog::log(format!("ACP supervisor: failed to update state for {workspace}: {e}"));
     }

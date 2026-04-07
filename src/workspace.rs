@@ -119,25 +119,41 @@ impl Manager {
 
     pub fn down(&mut self, ws_name: &str, opts: &DownOptions) -> Result<(), String> {
         eprintln!("  Removing workspace: {ws_name}");
-        let rw = self.resolve_workspace(ws_name)?;
+        let mut errors: Vec<String> = Vec::new();
 
         acp_supervisor::stop_for_workspace(ws_name);
 
-        if opts.manage_tag {
-            let tag = wm::tag_name(&rw.project.name, ws_name);
-            dlog::log(format!("Killing clients on tag: {tag}"));
-            let _ = self.wm.kill_tag_clients(&tag);
-            std::thread::sleep(std::time::Duration::from_millis(300));
-            dlog::log(format!("Deleting tag: {tag}"));
-            let _ = self.wm.delete_tag(&tag);
-        }
+        let resolved = self.resolve_workspace(ws_name);
 
-        if !opts.keep_worktree {
-            remove_worktree(&rw.project, &rw.dir)?;
+        if let Ok(ref rw) = resolved {
+            if opts.manage_tag {
+                let tag = wm::tag_name(&rw.project.name, ws_name);
+                dlog::log(format!("Killing clients on tag: {tag}"));
+                let _ = self.wm.kill_tag_clients(&tag);
+                std::thread::sleep(std::time::Duration::from_millis(300));
+                dlog::log(format!("Deleting tag: {tag}"));
+                let _ = self.wm.delete_tag(&tag);
+            }
+
+            if !opts.keep_worktree {
+                if let Err(e) = remove_worktree(&rw.project, &rw.dir) {
+                    errors.push(format!("remove worktree: {e}"));
+                }
+            }
+        } else if let Err(e) = resolved {
+            errors.push(format!("resolve workspace: {e}"));
         }
 
         self.state.set_inactive(ws_name);
-        state::save(&self.state)
+        if let Err(e) = state::save(&self.state) {
+            errors.push(format!("save state: {e}"));
+        }
+
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors.join("; "))
+        }
     }
 
     pub fn switch(&self, name: &str) -> Result<(), String> {
