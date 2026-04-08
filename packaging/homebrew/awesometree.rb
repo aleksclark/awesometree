@@ -1,7 +1,7 @@
 class Awesometree < Formula
   desc "Workspace manager: window management + Zed + git worktrees"
   homepage "https://github.com/aleksclark/awesometree"
-  version "0.1.0"
+  version "2026.4.8"
   license "MIT"
 
   on_macos do

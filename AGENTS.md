@@ -119,10 +119,12 @@ Two GitHub Actions workflows in `.github/workflows/`:
 
 ### Releasing
 
+Uses CalVer (`YYYY.M.D`). Bump version in `Cargo.toml`, `core/Cargo.toml`,
+and `macos/Info.plist`, then tag and push:
+
 ```sh
-# bump version in Cargo.toml, then:
-git tag v0.2.0
-git push origin v0.2.0
+git tag v2026.4.8
+git push origin v2026.4.8
 ```
 
 The release workflow handles everything else automatically.

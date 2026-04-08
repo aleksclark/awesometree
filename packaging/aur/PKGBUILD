@@ -1,6 +1,6 @@
 # Maintainer: Aleks Clark <aleks@aleksclark.com>
 pkgname=awesometree
-pkgver=0.1.0
+pkgver=2026.4.8
 pkgrel=1
 pkgdesc="Workspace manager: window management + Zed + git worktrees"
 arch=('x86_64')

@@ -4,7 +4,7 @@ resolver = "3"
 
 [package]
 name = "awesometree"
-version = "0.1.0"
+version = "2026.4.8"
 edition = "2024"
 
 [[bin]]

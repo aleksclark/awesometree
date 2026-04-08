@@ -183,9 +183,9 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
         run: |
-          VERSION=${{ needs.release.outputs.version }}
-          TAG=${{ github.ref_name }}
-          REPO=${{ github.repository }}
+          VERSION="${{ needs.release.outputs.version }}"
+          TAG="${{ github.ref_name }}"
+          REPO="${{ github.repository }}"
 
           ARM64_URL="https://github.com/${REPO}/releases/download/${TAG}/awesometree-${VERSION}-macos-arm64.tar.gz"
           X86_URL="https://github.com/${REPO}/releases/download/${TAG}/awesometree-${VERSION}-macos-x86_64.tar.gz"
@@ -195,7 +195,7 @@ jobs:
           X86_SHA=$(curl -sL "${X86_URL}" | sha256sum | cut -d' ' -f1)
           LINUX_SHA=$(curl -sL "${LINUX_URL}" | sha256sum | cut -d' ' -f1)
 
-          cat > awesometree.rb <<FORMULA
+          cat > awesometree.rb <<EOF
           class Awesometree < Formula
             desc "Workspace manager: window management + Zed + git worktrees"
             homepage "https://github.com/${REPO}"
@@ -249,9 +249,11 @@ jobs:
               assert_match version.to_s, shell_output("#{bin}/awesometree --version", 2)
             end
           end
-          FORMULA
+          EOF
 
-          # Push to homebrew tap repo
+          # Strip leading whitespace from heredoc
+          sed -i 's/^          //' awesometree.rb
+
           git clone "https://x-access-token:${GH_TOKEN}@github.com/aleksclark/homebrew-tap.git" tap
           mkdir -p tap/Formula
           cp awesometree.rb tap/Formula/awesometree.rb
@@ -271,50 +273,49 @@ jobs:
 
       - name: Generate PKGBUILD
         run: |
-          VERSION=${{ needs.release.outputs.version }}
-          TAG=${{ github.ref_name }}
-          REPO=${{ github.repository }}
+          VERSION="${{ needs.release.outputs.version }}"
+          TAG="${{ github.ref_name }}"
+          REPO="${{ github.repository }}"
           SOURCE_URL="https://github.com/${REPO}/archive/refs/tags/${TAG}.tar.gz"
           SOURCE_SHA=$(curl -sL "${SOURCE_URL}" | sha256sum | cut -d' ' -f1)
 
-          cat > PKGBUILD <<'PKGEOF'
+          cat > PKGBUILD <<EOF
           # Maintainer: Aleks Clark <aleks@aleksclark.com>
           pkgname=awesometree
-          pkgver=VERSION_PLACEHOLDER
+          pkgver=${VERSION}
           pkgrel=1
           pkgdesc="Workspace manager: window management + Zed + git worktrees"
           arch=('x86_64')
-          url="https://github.com/REPO_PLACEHOLDER"
+          url="https://github.com/${REPO}"
           license=('MIT')
           depends=('gtk3' 'vulkan-icd-loader' 'wayland' 'libxkbcommon' 'libxcb' 'freetype2' 'fontconfig' 'openssl')
           makedepends=('rust' 'cargo' 'cmake' 'pkg-config')
-          source=("${pkgname}-${pkgver}.tar.gz::https://github.com/REPO_PLACEHOLDER/archive/refs/tags/vVERSION_PLACEHOLDER.tar.gz")
-          sha256sums=('SOURCE_SHA_PLACEHOLDER')
+          source=("\${pkgname}-\${pkgver}.tar.gz::https://github.com/${REPO}/archive/refs/tags/v\${pkgver}.tar.gz")
+          sha256sums=('${SOURCE_SHA}')
 
           prepare() {
-            cd "${pkgname}-${pkgver}"
+            cd "awesometree-\${pkgver}"
             export RUSTUP_TOOLCHAIN=stable
-            cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
+            cargo fetch --locked --target "\$(rustc -vV | sed -n 's/host: //p')"
           }
 
           build() {
-            cd "${pkgname}-${pkgver}"
+            cd "awesometree-\${pkgver}"
             export RUSTUP_TOOLCHAIN=stable
             export CARGO_TARGET_DIR=target
             cargo build --frozen --release
           }
 
           package() {
-            cd "${pkgname}-${pkgver}"
-            install -Dm755 target/release/awesometree "${pkgdir}/usr/bin/awesometree"
-            install -Dm755 target/release/awesometree-daemon "${pkgdir}/usr/bin/awesometree-daemon"
-            install -Dm644 awesometree-daemon.service "${pkgdir}/usr/lib/systemd/user/awesometree-daemon.service"
+            cd "awesometree-\${pkgver}"
+            install -Dm755 target/release/awesometree "\${pkgdir}/usr/bin/awesometree"
+            install -Dm755 target/release/awesometree-daemon "\${pkgdir}/usr/bin/awesometree-daemon"
+            install -Dm644 awesometree-daemon.service "\${pkgdir}/usr/lib/systemd/user/awesometree-daemon.service"
           }
-          PKGEOF
+          EOF
 
-          sed -i "s/VERSION_PLACEHOLDER/${VERSION}/g" PKGBUILD
-          sed -i "s|REPO_PLACEHOLDER|${REPO}|g" PKGBUILD
-          sed -i "s/SOURCE_SHA_PLACEHOLDER/${SOURCE_SHA}/g" PKGBUILD
+          # Strip leading whitespace from heredoc
+          sed -i 's/^          //' PKGBUILD
 
       - name: Publish to AUR
         uses: KSXGitHub/github-actions-deploy-aur@v4

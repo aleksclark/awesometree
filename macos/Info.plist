@@ -12,10 +12,10 @@
     <string>com.awesometree.app</string>
 
     <key>CFBundleVersion</key>
-    <string>0.1.0</string>
+    <string>2026.4.8</string>
 
     <key>CFBundleShortVersionString</key>
-    <string>0.1.0</string>
+    <string>2026.4.8</string>
 
     <key>CFBundleExecutable</key>
     <string>awesometree-daemon</string>
