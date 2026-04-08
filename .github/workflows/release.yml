@@ -107,18 +107,20 @@ jobs:
 
   build-macos-x86_64:
     name: Build macOS x86_64
-    runs-on: macos-13
+    runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
 
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-apple-darwin
 
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: macos-x86_64-release
 
       - name: Build
-        run: cargo build --release --workspace
+        run: cargo build --release --workspace --target x86_64-apple-darwin
 
       - name: Test
         run: cargo test --workspace
@@ -128,8 +130,8 @@ jobs:
           VERSION=${GITHUB_REF_NAME#v}
           ARCHIVE=awesometree-${VERSION}-macos-x86_64.tar.gz
           mkdir -p dist/awesometree
-          cp target/release/awesometree dist/awesometree/
-          cp target/release/awesometree-daemon dist/awesometree/
+          cp target/x86_64-apple-darwin/release/awesometree dist/awesometree/
+          cp target/x86_64-apple-darwin/release/awesometree-daemon dist/awesometree/
           cp com.awesometree.daemon.plist dist/awesometree/
           tar -czf dist/${ARCHIVE} -C dist awesometree
           echo "ARCHIVE=${ARCHIVE}" >> $GITHUB_ENV
