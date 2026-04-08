@@ -61,6 +61,7 @@ The `eval` method on macOS accepts AppleScript instead of Lua.
 | Core lib | `core/` | Shared API client crate with UniFFI for Android |
 | Android | `android/` | Kotlin/Compose mobile app |
 | macOS bundle | `macos/` | Info.plist for .app bundle |
+| Packaging | `packaging/` | Homebrew formula + AUR PKGBUILD templates |
 
 ## Build & Install
 
@@ -104,3 +105,42 @@ Screens: Workspaces, Projects, ACP Agent Chat, Settings/QR Scanner.
 - [CLI Reference](docs/workspace-system/ws-cli.md)
 - [Configuration](docs/workspace-system/configuration.md)
 - [WM Integration](docs/workspace-system/lua-module.md)
+
+## CI/CD
+
+Two GitHub Actions workflows in `.github/workflows/`:
+
+- **`ci.yml`** — Runs on push/PR. Linux build+test, macOS build+test, clippy.
+- **`release.yml`** — Triggered by `v*` tags. Builds release binaries for
+  Linux x86_64, macOS arm64, and macOS x86_64, then:
+  1. Creates a GitHub Release with tarballs + checksums
+  2. Updates the Homebrew tap (`aleksclark/homebrew-tap`)
+  3. Publishes to AUR (`awesometree`)
+
+### Releasing
+
+```sh
+# bump version in Cargo.toml, then:
+git tag v0.2.0
+git push origin v0.2.0
+```
+
+The release workflow handles everything else automatically.
+
+### Required Secrets
+
+| Secret | Purpose |
+|--------|---------|
+| `HOMEBREW_TAP_TOKEN` | GitHub PAT with write access to `aleksclark/homebrew-tap` |
+| `AUR_SSH_PRIVATE_KEY` | SSH key registered with AUR for pushing PKGBUILD |
+
+### Package Installation
+
+```sh
+# Homebrew (macOS/Linux)
+brew tap aleksclark/tap
+brew install awesometree
+
+# AUR (Arch Linux)
+yay -S awesometree
+```

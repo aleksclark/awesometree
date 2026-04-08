@@ -1,0 +1,327 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  build-linux:
+    name: Build Linux x86_64
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libgtk-3-dev \
+            libvulkan-dev \
+            libwayland-dev \
+            libxkbcommon-dev \
+            libxkbcommon-x11-dev \
+            libxcb1-dev \
+            libxcb-render0-dev \
+            libxcb-shape0-dev \
+            libxcb-xfixes0-dev \
+            libx11-dev \
+            libx11-xcb-dev \
+            libfreetype-dev \
+            libfontconfig1-dev \
+            libssl-dev \
+            libatk1.0-dev \
+            libcairo2-dev \
+            libpango1.0-dev \
+            libgdk-pixbuf2.0-dev \
+            pkg-config \
+            cmake
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: linux-release
+
+      - name: Build
+        run: cargo build --release --workspace
+
+      - name: Test
+        run: cargo test --workspace
+
+      - name: Package
+        run: |
+          VERSION=${GITHUB_REF_NAME#v}
+          ARCHIVE=awesometree-${VERSION}-linux-x86_64.tar.gz
+          mkdir -p dist/awesometree
+          cp target/release/awesometree dist/awesometree/
+          cp target/release/awesometree-daemon dist/awesometree/
+          cp awesometree-daemon.service dist/awesometree/
+          tar -czf dist/${ARCHIVE} -C dist awesometree
+          echo "ARCHIVE=${ARCHIVE}" >> $GITHUB_ENV
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-x86_64
+          path: dist/${{ env.ARCHIVE }}
+
+  build-macos-arm64:
+    name: Build macOS arm64
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: macos-arm64-release
+
+      - name: Build
+        run: cargo build --release --workspace
+
+      - name: Test
+        run: cargo test --workspace
+
+      - name: Package
+        run: |
+          VERSION=${GITHUB_REF_NAME#v}
+          ARCHIVE=awesometree-${VERSION}-macos-arm64.tar.gz
+          mkdir -p dist/awesometree
+          cp target/release/awesometree dist/awesometree/
+          cp target/release/awesometree-daemon dist/awesometree/
+          cp com.awesometree.daemon.plist dist/awesometree/
+          tar -czf dist/${ARCHIVE} -C dist awesometree
+          echo "ARCHIVE=${ARCHIVE}" >> $GITHUB_ENV
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-arm64
+          path: dist/${{ env.ARCHIVE }}
+
+  build-macos-x86_64:
+    name: Build macOS x86_64
+    runs-on: macos-13
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: macos-x86_64-release
+
+      - name: Build
+        run: cargo build --release --workspace
+
+      - name: Test
+        run: cargo test --workspace
+
+      - name: Package
+        run: |
+          VERSION=${GITHUB_REF_NAME#v}
+          ARCHIVE=awesometree-${VERSION}-macos-x86_64.tar.gz
+          mkdir -p dist/awesometree
+          cp target/release/awesometree dist/awesometree/
+          cp target/release/awesometree-daemon dist/awesometree/
+          cp com.awesometree.daemon.plist dist/awesometree/
+          tar -czf dist/${ARCHIVE} -C dist awesometree
+          echo "ARCHIVE=${ARCHIVE}" >> $GITHUB_ENV
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-x86_64
+          path: dist/${{ env.ARCHIVE }}
+
+  release:
+    name: Create GitHub Release
+    needs: [build-linux, build-macos-arm64, build-macos-x86_64]
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Get version
+        id: version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> $GITHUB_OUTPUT
+
+      - name: Collect archives
+        run: |
+          mkdir -p release
+          find artifacts -type f -name '*.tar.gz' -exec mv {} release/ \;
+          ls -la release/
+
+      - name: Compute checksums
+        working-directory: release
+        run: sha256sum *.tar.gz > sha256sums.txt
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${{ github.ref_name }}" release/* \
+            --title "awesometree ${{ steps.version.outputs.version }}" \
+            --generate-notes
+
+  publish-homebrew:
+    name: Update Homebrew tap
+    needs: release
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Update Homebrew formula
+        env:
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          VERSION=${{ needs.release.outputs.version }}
+          TAG=${{ github.ref_name }}
+          REPO=${{ github.repository }}
+
+          ARM64_URL="https://github.com/${REPO}/releases/download/${TAG}/awesometree-${VERSION}-macos-arm64.tar.gz"
+          X86_URL="https://github.com/${REPO}/releases/download/${TAG}/awesometree-${VERSION}-macos-x86_64.tar.gz"
+          LINUX_URL="https://github.com/${REPO}/releases/download/${TAG}/awesometree-${VERSION}-linux-x86_64.tar.gz"
+
+          ARM64_SHA=$(curl -sL "${ARM64_URL}" | sha256sum | cut -d' ' -f1)
+          X86_SHA=$(curl -sL "${X86_URL}" | sha256sum | cut -d' ' -f1)
+          LINUX_SHA=$(curl -sL "${LINUX_URL}" | sha256sum | cut -d' ' -f1)
+
+          cat > awesometree.rb <<FORMULA
+          class Awesometree < Formula
+            desc "Workspace manager: window management + Zed + git worktrees"
+            homepage "https://github.com/${REPO}"
+            version "${VERSION}"
+            license "MIT"
+
+            on_macos do
+              if Hardware::CPU.arm?
+                url "${ARM64_URL}"
+                sha256 "${ARM64_SHA}"
+              else
+                url "${X86_URL}"
+                sha256 "${X86_SHA}"
+              end
+            end
+
+            on_linux do
+              url "${LINUX_URL}"
+              sha256 "${LINUX_SHA}"
+            end
+
+            def install
+              bin.install "awesometree"
+              bin.install "awesometree-daemon"
+
+              if OS.mac?
+                (prefix/"com.awesometree.daemon.plist").install "com.awesometree.daemon.plist"
+              else
+                (prefix/"awesometree-daemon.service").install "awesometree-daemon.service"
+              end
+            end
+
+            def caveats
+              if OS.mac?
+                <<~EOS
+                  To start the daemon as a launchd service:
+                    cp #{prefix}/com.awesometree.daemon.plist ~/Library/LaunchAgents/
+                    launchctl bootstrap gui/\$(id -u) ~/Library/LaunchAgents/com.awesometree.daemon.plist
+                EOS
+              else
+                <<~EOS
+                  To start the daemon as a systemd service:
+                    cp #{prefix}/awesometree-daemon.service ~/.config/systemd/user/
+                    systemctl --user daemon-reload
+                    systemctl --user enable --now awesometree-daemon
+                EOS
+              end
+            end
+
+            test do
+              assert_match version.to_s, shell_output("#{bin}/awesometree --version", 2)
+            end
+          end
+          FORMULA
+
+          # Push to homebrew tap repo
+          git clone "https://x-access-token:${GH_TOKEN}@github.com/aleksclark/homebrew-tap.git" tap
+          mkdir -p tap/Formula
+          cp awesometree.rb tap/Formula/awesometree.rb
+          cd tap
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/awesometree.rb
+          git diff --cached --quiet || git commit -m "awesometree ${VERSION}"
+          git push
+
+  publish-aur:
+    name: Update AUR package
+    needs: release
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Generate PKGBUILD
+        run: |
+          VERSION=${{ needs.release.outputs.version }}
+          TAG=${{ github.ref_name }}
+          REPO=${{ github.repository }}
+          SOURCE_URL="https://github.com/${REPO}/archive/refs/tags/${TAG}.tar.gz"
+          SOURCE_SHA=$(curl -sL "${SOURCE_URL}" | sha256sum | cut -d' ' -f1)
+
+          cat > PKGBUILD <<'PKGEOF'
+          # Maintainer: Aleks Clark <aleks@aleksclark.com>
+          pkgname=awesometree
+          pkgver=VERSION_PLACEHOLDER
+          pkgrel=1
+          pkgdesc="Workspace manager: window management + Zed + git worktrees"
+          arch=('x86_64')
+          url="https://github.com/REPO_PLACEHOLDER"
+          license=('MIT')
+          depends=('gtk3' 'vulkan-icd-loader' 'wayland' 'libxkbcommon' 'libxcb' 'freetype2' 'fontconfig' 'openssl')
+          makedepends=('rust' 'cargo' 'cmake' 'pkg-config')
+          source=("${pkgname}-${pkgver}.tar.gz::https://github.com/REPO_PLACEHOLDER/archive/refs/tags/vVERSION_PLACEHOLDER.tar.gz")
+          sha256sums=('SOURCE_SHA_PLACEHOLDER')
+
+          prepare() {
+            cd "${pkgname}-${pkgver}"
+            export RUSTUP_TOOLCHAIN=stable
+            cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
+          }
+
+          build() {
+            cd "${pkgname}-${pkgver}"
+            export RUSTUP_TOOLCHAIN=stable
+            export CARGO_TARGET_DIR=target
+            cargo build --frozen --release
+          }
+
+          package() {
+            cd "${pkgname}-${pkgver}"
+            install -Dm755 target/release/awesometree "${pkgdir}/usr/bin/awesometree"
+            install -Dm755 target/release/awesometree-daemon "${pkgdir}/usr/bin/awesometree-daemon"
+            install -Dm644 awesometree-daemon.service "${pkgdir}/usr/lib/systemd/user/awesometree-daemon.service"
+          }
+          PKGEOF
+
+          sed -i "s/VERSION_PLACEHOLDER/${VERSION}/g" PKGBUILD
+          sed -i "s|REPO_PLACEHOLDER|${REPO}|g" PKGBUILD
+          sed -i "s/SOURCE_SHA_PLACEHOLDER/${SOURCE_SHA}/g" PKGBUILD
+
+      - name: Publish to AUR
+        uses: KSXGitHub/github-actions-deploy-aur@v4
+        with:
+          pkgname: awesometree
+          pkgbuild: PKGBUILD
+          commit_username: Aleks Clark
+          commit_email: aleks@aleksclark.com
+          ssh_private_key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+          commit_message: "Update to ${{ needs.release.outputs.version }}"
