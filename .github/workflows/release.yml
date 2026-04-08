@@ -183,7 +183,7 @@ jobs:
     steps:
       - name: Update Homebrew formula
         env:
-          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
         run: |
           VERSION="${{ needs.release.outputs.version }}"
           TAG="${{ github.ref_name }}"
@@ -326,5 +326,5 @@ jobs:
           pkgbuild: PKGBUILD
           commit_username: Aleks Clark
           commit_email: aleks@aleksclark.com
-          ssh_private_key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+          ssh_private_key: ${{ secrets.AUR_SSH_KEY }}
           commit_message: "Update to ${{ needs.release.outputs.version }}"

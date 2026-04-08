@@ -133,8 +133,8 @@ The release workflow handles everything else automatically.
 
 | Secret | Purpose |
 |--------|---------|
-| `HOMEBREW_TAP_TOKEN` | GitHub PAT with write access to `aleksclark/homebrew-tap` |
-| `AUR_SSH_PRIVATE_KEY` | SSH key registered with AUR for pushing PKGBUILD |
+| `HOMEBREW_TAP_GITHUB_TOKEN` | GitHub PAT with write access to `aleksclark/homebrew-tap` |
+| `AUR_SSH_KEY` | SSH key registered with AUR for pushing PKGBUILD |
 
 ### Package Installation
 
