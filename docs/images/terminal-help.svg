@@ -1,0 +1,45 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="672" height="742" viewBox="0 0 672 742">
+<defs><filter id="shadow" x="-5%" y="-5%" width="110%" height="110%"><feDropShadow dx="0" dy="4" stdDeviation="8" flood-opacity="0.3"/></filter></defs>
+<rect width="672" height="742" rx="10" fill="#1e1e2e" filter="url(#shadow)" stroke="#313244"/>
+<rect width="672" height="36" rx="10" fill="#181825"/>
+<rect y="26" width="672" height="10" fill="#181825"/>
+<circle cx="18" cy="18" r="6" fill="#f38ba8"/>
+<circle cx="38" cy="18" r="6" fill="#f9e2af"/>
+<circle cx="58" cy="18" r="6" fill="#a6e3a1"/>
+<text x="20" y="56" font-family="JetBrains Mono,Menlo,monospace" font-size="13"><tspan fill="#a6e3a1">$</tspan><tspan fill="#cdd6f4"> awesometree --help</tspan></text>
+<text x="20" y="82" font-family="JetBrains Mono,Menlo,monospace" font-size="12"><tspan fill="#cdd6f4">Workspace manager for window managers + Zed + git worktrees</tspan></text>
+<text x="20" y="100" font-family="JetBrains Mono,Menlo,monospace" font-size="12"><tspan fill="#cdd6f4"></tspan></text>
+<text x="20" y="118" font-family="JetBrains Mono,Menlo,monospace" font-size="12"><tspan fill="#cdd6f4">Usage: awesometree &lt;COMMAND&gt;</tspan></text>
+<text x="20" y="136" font-family="JetBrains Mono,Menlo,monospace" font-size="12"><tspan fill="#cdd6f4"></tspan></text>
+<text x="20" y="154" font-family="JetBrains Mono,Menlo,monospace" font-size="12"><tspan fill="#cdd6f4">Commands:</tspan></text>
+<text x="20" y="172" font-family="JetBrains Mono,Menlo,monospace" font-size="12"><tspan fill="#cdd6f4">  up                  </tspan></text>
+<text x="20" y="190" font-family="JetBrains Mono,Menlo,monospace" font-size="12"><tspan fill="#cdd6f4">  down                </tspan></text>
+<text x="20" y="208" font-family="JetBrains Mono,Menlo,monospace" font-size="12"><tspan fill="#cdd6f4">  create              </tspan></text>
+<text x="20" y="226" font-family="JetBrains Mono,Menlo,monospace" font-size="12"><tspan fill="#cdd6f4">  destroy             </tspan></text>
+<text x="20" y="244" font-family="JetBrains Mono,Menlo,monospace" font-size="12"><tspan fill="#cdd6f4">  destroy-current     </tspan></text>
+<text x="20" y="262" font-family="JetBrains Mono,Menlo,monospace" font-size="12"><tspan fill="#cdd6f4">  close               </tspan></text>
+<text x="20" y="280" font-family="JetBrains Mono,Menlo,monospace" font-size="12"><tspan fill="#cdd6f4">  cycle               </tspan></text>
+<text x="20" y="298" font-family="JetBrains Mono,Menlo,monospace" font-size="12"><tspan fill="#cdd6f4">  list                </tspan></text>
+<text x="20" y="316" font-family="JetBrains Mono,Menlo,monospace" font-size="12"><tspan fill="#cdd6f4">  switch              </tspan></text>
+<text x="20" y="334" font-family="JetBrains Mono,Menlo,monospace" font-size="12"><tspan fill="#cdd6f4">  pick                </tspan></text>
+<text x="20" y="352" font-family="JetBrains Mono,Menlo,monospace" font-size="12"><tspan fill="#cdd6f4">  create-interactive  </tspan></text>
+<text x="20" y="370" font-family="JetBrains Mono,Menlo,monospace" font-size="12"><tspan fill="#cdd6f4">  project             </tspan></text>
+<text x="20" y="388" font-family="JetBrains Mono,Menlo,monospace" font-size="12"><tspan fill="#cdd6f4">  context             </tspan></text>
+<text x="20" y="406" font-family="JetBrains Mono,Menlo,monospace" font-size="12"><tspan fill="#cdd6f4">  launch-agent        </tspan></text>
+<text x="20" y="424" font-family="JetBrains Mono,Menlo,monospace" font-size="12"><tspan fill="#cdd6f4">  repos               </tspan></text>
+<text x="20" y="442" font-family="JetBrains Mono,Menlo,monospace" font-size="12"><tspan fill="#cdd6f4">  names               </tspan></text>
+<text x="20" y="460" font-family="JetBrains Mono,Menlo,monospace" font-size="12"><tspan fill="#cdd6f4">  allnames            </tspan></text>
+<text x="20" y="478" font-family="JetBrains Mono,Menlo,monospace" font-size="12"><tspan fill="#cdd6f4">  dir                 </tspan></text>
+<text x="20" y="496" font-family="JetBrains Mono,Menlo,monospace" font-size="12"><tspan fill="#cdd6f4">  projects            </tspan></text>
+<text x="20" y="514" font-family="JetBrains Mono,Menlo,monospace" font-size="12"><tspan fill="#cdd6f4">  projects-ui         </tspan></text>
+<text x="20" y="532" font-family="JetBrains Mono,Menlo,monospace" font-size="12"><tspan fill="#cdd6f4">  restart-daemon      </tspan></text>
+<text x="20" y="550" font-family="JetBrains Mono,Menlo,monospace" font-size="12"><tspan fill="#cdd6f4">  edit                </tspan></text>
+<text x="20" y="568" font-family="JetBrains Mono,Menlo,monospace" font-size="12"><tspan fill="#cdd6f4">  daemon              </tspan></text>
+<text x="20" y="586" font-family="JetBrains Mono,Menlo,monospace" font-size="12"><tspan fill="#cdd6f4">  openapi             </tspan></text>
+<text x="20" y="604" font-family="JetBrains Mono,Menlo,monospace" font-size="12"><tspan fill="#cdd6f4">  mobile-qr           </tspan></text>
+<text x="20" y="622" font-family="JetBrains Mono,Menlo,monospace" font-size="12"><tspan fill="#cdd6f4">  generate-token      </tspan></text>
+<text x="20" y="640" font-family="JetBrains Mono,Menlo,monospace" font-size="12"><tspan fill="#cdd6f4">  help                Print this message or the help of the given subcommand(s)</tspan></text>
+<text x="20" y="658" font-family="JetBrains Mono,Menlo,monospace" font-size="12"><tspan fill="#cdd6f4"></tspan></text>
+<text x="20" y="676" font-family="JetBrains Mono,Menlo,monospace" font-size="12"><tspan fill="#cdd6f4">Options:</tspan></text>
+<text x="20" y="694" font-family="JetBrains Mono,Menlo,monospace" font-size="12"><tspan fill="#cdd6f4">  -h, --help  Print help</tspan></text>
+</svg>

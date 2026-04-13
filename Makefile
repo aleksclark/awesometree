@@ -85,6 +85,9 @@ android-lib:
 test:
 	cargo test --workspace
 
+screenshots: build
+	SCREENSHOTS=1 cargo test --test screenshots -- --nocapture
+
 # macOS .app bundle
 bundle: build
 ifeq ($(UNAME_S),Darwin)
