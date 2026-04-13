@@ -1,0 +1,65 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="680" height="200" viewBox="0 0 680 200">
+  <style>
+    text { font-family: 'JetBrains Mono', monospace; }
+    .state { font-size: 14px; font-weight: 600; }
+    .action { font-size: 11px; }
+  </style>
+
+  <rect width="680" height="200" rx="8" fill="#11111b"/>
+
+  <!-- State: Not Created -->
+  <rect x="20" y="70" width="130" height="60" rx="10" fill="#1e1e2e" stroke="#6c7086" stroke-width="1.5"/>
+  <text x="45" y="96" class="state" fill="#6c7086">no config</text>
+  <text x="50" y="116" fill="#6c7086" font-size="10">not yet created</text>
+
+  <!-- Arrow: create -->
+  <line x1="150" y1="100" x2="220" y2="100" stroke="#f9e2af" stroke-width="2" marker-end="url(#arrowY)"/>
+  <text x="158" y="90" class="action" fill="#f9e2af">create</text>
+
+  <!-- State: Inactive -->
+  <rect x="222" y="70" width="130" height="60" rx="10" fill="#1e1e2e" stroke="#89b4fa" stroke-width="2"/>
+  <text x="252" y="96" class="state" fill="#89b4fa">inactive</text>
+  <text x="243" y="116" fill="#6c7086" font-size="10">worktree on disk</text>
+
+  <!-- Arrow: up -->
+  <line x1="352" y1="88" x2="422" y2="88" stroke="#a6e3a1" stroke-width="2" marker-end="url(#arrowG)"/>
+  <text x="375" y="80" class="action" fill="#a6e3a1">up</text>
+
+  <!-- Arrow: close (back) -->
+  <line x1="422" y1="112" x2="352" y2="112" stroke="#89b4fa" stroke-width="2" marker-end="url(#arrowB)"/>
+  <text x="368" y="132" class="action" fill="#89b4fa">close</text>
+
+  <!-- State: Active -->
+  <rect x="424" y="70" width="130" height="60" rx="10" fill="#1e1e2e" stroke="#a6e3a1" stroke-width="2"/>
+  <circle cx="442" cy="100" r="5" fill="#a6e3a1"/>
+  <text x="454" y="96" class="state" fill="#a6e3a1">active</text>
+  <text x="440" y="116" fill="#6c7086" font-size="10">tag + editor open</text>
+
+  <!-- Arrow: destroy -->
+  <line x1="554" y1="100" x2="584" y2="100" stroke="#f38ba8" stroke-width="2" marker-end="url(#arrowR)"/>
+  <text x="560" y="90" class="action" fill="#f38ba8">destroy</text>
+
+  <!-- State: Removed -->
+  <rect x="586" y="70" width="80" height="60" rx="10" fill="#1e1e2e" stroke="#f38ba8" stroke-width="1.5" stroke-dasharray="4"/>
+  <text x="594" y="104" class="state" fill="#f38ba8" font-size="12">removed</text>
+
+  <!-- Arrow: destroy from inactive -->
+  <path d="M287,130 Q287,170 636,170 Q636,170 636,130" fill="none" stroke="#f38ba8" stroke-width="1.5" stroke-dasharray="4" marker-end="url(#arrowR)"/>
+  <text x="420" y="168" class="action" fill="#f38ba8">destroy</text>
+
+  <!-- Arrow markers -->
+  <defs>
+    <marker id="arrowY" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6" fill="none" stroke="#f9e2af" stroke-width="1.5"/>
+    </marker>
+    <marker id="arrowG" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6" fill="none" stroke="#a6e3a1" stroke-width="1.5"/>
+    </marker>
+    <marker id="arrowB" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6" fill="none" stroke="#89b4fa" stroke-width="1.5"/>
+    </marker>
+    <marker id="arrowR" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6" fill="none" stroke="#f38ba8" stroke-width="1.5"/>
+    </marker>
+  </defs>
+</svg>

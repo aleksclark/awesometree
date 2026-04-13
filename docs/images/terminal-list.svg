@@ -1,0 +1,58 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="656" height="976" viewBox="0 0 656 976">
+<defs><filter id="shadow" x="-5%" y="-5%" width="110%" height="110%"><feDropShadow dx="0" dy="4" stdDeviation="8" flood-opacity="0.3"/></filter></defs>
+<rect width="656" height="976" rx="10" fill="#1e1e2e" filter="url(#shadow)" stroke="#313244"/>
+<rect width="656" height="36" rx="10" fill="#181825"/>
+<rect y="26" width="656" height="10" fill="#181825"/>
+<circle cx="18" cy="18" r="6" fill="#f38ba8"/>
+<circle cx="38" cy="18" r="6" fill="#f9e2af"/>
+<circle cx="58" cy="18" r="6" fill="#a6e3a1"/>
+<text x="20" y="56" font-family="JetBrains Mono,Menlo,monospace" font-size="13"><tspan fill="#a6e3a1">$</tspan><tspan fill="#cdd6f4"> awesometree list</tspan></text>
+<text x="20" y="82" font-family="JetBrains Mono,Menlo,monospace" font-size="12"><tspan fill="#89b4fa" font-weight="bold">awesometree</tspan><tspan fill="#6c7086">  (/home/aleks/work/projects/awesometree/repo  branch:master)</tspan></text>
+<text x="20" y="100" font-family="JetBrains Mono,Menlo,monospace" font-size="12"><tspan fill="#cdd6f4">    [</tspan><tspan fill="#a6e3a1">UP</tspan><tspan fill="#cdd6f4"> aleks/make-docs-fancy </tspan><tspan fill="#6c7086">[tag awesometree:aleks/make-docs-fancy]</tspan></text>
+<text x="20" y="118" font-family="JetBrains Mono,Menlo,monospace" font-size="12"><tspan fill="#cdd6f4">    [  ] remote-protocol</tspan></text>
+<text x="20" y="136" font-family="JetBrains Mono,Menlo,monospace" font-size="12"><tspan fill="#cdd6f4">    [  ] systemd-integration</tspan></text>
+<text x="20" y="154" font-family="JetBrains Mono,Menlo,monospace" font-size="12"><tspan fill="#89b4fa" font-weight="bold">blockyard</tspan><tspan fill="#6c7086">  (/home/aleks/work/projects/blockyard/repo  branch:master)</tspan></text>
+<text x="20" y="172" font-family="JetBrains Mono,Menlo,monospace" font-size="12"><tspan fill="#cdd6f4">    [  ] fix-data-node-compliance</tspan></text>
+<text x="20" y="190" font-family="JetBrains Mono,Menlo,monospace" font-size="12"><tspan fill="#cdd6f4">    [  ] fix-integration-tests</tspan></text>
+<text x="20" y="208" font-family="JetBrains Mono,Menlo,monospace" font-size="12"><tspan fill="#cdd6f4">    [  ] fix-test-realism</tspan></text>
+<text x="20" y="226" font-family="JetBrains Mono,Menlo,monospace" font-size="12"><tspan fill="#cdd6f4">    [  ] fix-ublk-integrity</tspan></text>
+<text x="20" y="244" font-family="JetBrains Mono,Menlo,monospace" font-size="12"><tspan fill="#cdd6f4">    [  ] mgmt-api</tspan></text>
+<text x="20" y="262" font-family="JetBrains Mono,Menlo,monospace" font-size="12"><tspan fill="#cdd6f4">    [  ] persist-identity</tspan></text>
+<text x="20" y="280" font-family="JetBrains Mono,Menlo,monospace" font-size="12"><tspan fill="#cdd6f4">    [  ] ublk-driver</tspan></text>
+<text x="20" y="298" font-family="JetBrains Mono,Menlo,monospace" font-size="12"><tspan fill="#cdd6f4">    [  ] ublk-read-mount</tspan></text>
+<text x="20" y="316" font-family="JetBrains Mono,Menlo,monospace" font-size="12"><tspan fill="#cdd6f4">    [  ] ublk-tests</tspan></text>
+<text x="20" y="334" font-family="JetBrains Mono,Menlo,monospace" font-size="12"><tspan fill="#cdd6f4">    [  ] wire-server</tspan></text>
+<text x="20" y="352" font-family="JetBrains Mono,Menlo,monospace" font-size="12"><tspan fill="#89b4fa" font-weight="bold">crush</tspan><tspan fill="#6c7086">  (/home/aleks/work/projects/crush/repo  branch:main)</tspan></text>
+<text x="20" y="370" font-family="JetBrains Mono,Menlo,monospace" font-size="12"><tspan fill="#89b4fa" font-weight="bold">crush-mod</tspan><tspan fill="#6c7086">  (/home/aleks/work/projects/crush-modules/repo  branch:master)</tspan></text>
+<text x="20" y="388" font-family="JetBrains Mono,Menlo,monospace" font-size="12"><tspan fill="#cdd6f4">    [  ] fullmultiplayer</tspan></text>
+<text x="20" y="406" font-family="JetBrains Mono,Menlo,monospace" font-size="12"><tspan fill="#89b4fa" font-weight="bold">curri</tspan><tspan fill="#6c7086">  (/home/aleks/work/projects/curri/repo  branch:master)</tspan></text>
+<text x="20" y="424" font-family="JetBrains Mono,Menlo,monospace" font-size="12"><tspan fill="#cdd6f4">    [  ] aleks/booking-flow-slow</tspan></text>
+<text x="20" y="442" font-family="JetBrains Mono,Menlo,monospace" font-size="12"><tspan fill="#cdd6f4">    [  ] aleks/find-book-deliveries-n-plus-1</tspan></text>
+<text x="20" y="460" font-family="JetBrains Mono,Menlo,monospace" font-size="12"><tspan fill="#cdd6f4">    [  ] aleks/fix-endpoint</tspan></text>
+<text x="20" y="478" font-family="JetBrains Mono,Menlo,monospace" font-size="12"><tspan fill="#cdd6f4">    [  ] aleks/fix-pganalyze-thing</tspan></text>
+<text x="20" y="496" font-family="JetBrains Mono,Menlo,monospace" font-size="12"><tspan fill="#cdd6f4">    [  ] aleks/graphql-ast-lint</tspan></text>
+<text x="20" y="514" font-family="JetBrains Mono,Menlo,monospace" font-size="12"><tspan fill="#cdd6f4">    [  ] aleks/legacy-db</tspan></text>
+<text x="20" y="532" font-family="JetBrains Mono,Menlo,monospace" font-size="12"><tspan fill="#cdd6f4">    [  ] aleks/prisma-migration-agents</tspan></text>
+<text x="20" y="550" font-family="JetBrains Mono,Menlo,monospace" font-size="12"><tspan fill="#cdd6f4">    [</tspan><tspan fill="#a6e3a1">UP</tspan><tspan fill="#cdd6f4"> aleks/some-cool-thing </tspan><tspan fill="#6c7086">[tag curri:aleks/some-cool-thing]</tspan></text>
+<text x="20" y="568" font-family="JetBrains Mono,Menlo,monospace" font-size="12"><tspan fill="#cdd6f4">    [  ] aleks/try-bun-runtime-only</tspan></text>
+<text x="20" y="586" font-family="JetBrains Mono,Menlo,monospace" font-size="12"><tspan fill="#cdd6f4">    [  ] perf/fix-inf-perf-1</tspan></text>
+<text x="20" y="604" font-family="JetBrains Mono,Menlo,monospace" font-size="12"><tspan fill="#89b4fa" font-weight="bold">curri-agents</tspan><tspan fill="#6c7086">  (/home/aleks/work/projects/curri-agents/repo  branch:master)</tspan></text>
+<text x="20" y="622" font-family="JetBrains Mono,Menlo,monospace" font-size="12"><tspan fill="#cdd6f4">    [  ] aleks/flow-context</tspan></text>
+<text x="20" y="640" font-family="JetBrains Mono,Menlo,monospace" font-size="12"><tspan fill="#cdd6f4">    [  ] aleks/optimize-repo-clone</tspan></text>
+<text x="20" y="658" font-family="JetBrains Mono,Menlo,monospace" font-size="12"><tspan fill="#cdd6f4">    [</tspan><tspan fill="#a6e3a1">UP</tspan><tspan fill="#cdd6f4"> aleks/overmind-admin-spa </tspan><tspan fill="#6c7086">[tag curri-agents:aleks/overmind-admin-spa]</tspan></text>
+<text x="20" y="676" font-family="JetBrains Mono,Menlo,monospace" font-size="12"><tspan fill="#cdd6f4">    [</tspan><tspan fill="#a6e3a1">UP</tspan><tspan fill="#cdd6f4"> otlp-tracing </tspan><tspan fill="#6c7086">[tag curri-agents:otlp-tracing]</tspan></text>
+<text x="20" y="694" font-family="JetBrains Mono,Menlo,monospace" font-size="12"><tspan fill="#89b4fa" font-weight="bold">home</tspan><tspan fill="#6c7086">  (/home/aleks/work/projects/home_assist/repo  branch:master)</tspan></text>
+<text x="20" y="712" font-family="JetBrains Mono,Menlo,monospace" font-size="12"><tspan fill="#cdd6f4">    [</tspan><tspan fill="#a6e3a1">UP</tspan><tspan fill="#cdd6f4"> fix-display-again </tspan><tspan fill="#6c7086">[tag home:fix-display-again]</tspan></text>
+<text x="20" y="730" font-family="JetBrains Mono,Menlo,monospace" font-size="12"><tspan fill="#89b4fa" font-weight="bold">infra</tspan><tspan fill="#6c7086">  (/home/aleks/work/projects/infra/repo  branch:master)</tspan></text>
+<text x="20" y="748" font-family="JetBrains Mono,Menlo,monospace" font-size="12"><tspan fill="#cdd6f4">    [  ] aleks/moar-powah</tspan></text>
+<text x="20" y="766" font-family="JetBrains Mono,Menlo,monospace" font-size="12"><tspan fill="#89b4fa" font-weight="bold">streamlate</tspan><tspan fill="#6c7086">  (/home/aleks/work/projects/streamlate/repo  branch:master)</tspan></text>
+<text x="20" y="784" font-family="JetBrains Mono,Menlo,monospace" font-size="12"><tspan fill="#cdd6f4">    [</tspan><tspan fill="#a6e3a1">UP</tspan><tspan fill="#cdd6f4"> phase-3 </tspan><tspan fill="#6c7086">[tag streamlate:phase-3]</tspan></text>
+<text x="20" y="802" font-family="JetBrains Mono,Menlo,monospace" font-size="12"><tspan fill="#cdd6f4">    [</tspan><tspan fill="#a6e3a1">UP</tspan><tspan fill="#cdd6f4"> phase-4 </tspan><tspan fill="#6c7086">[tag streamlate:phase-4]</tspan></text>
+<text x="20" y="820" font-family="JetBrains Mono,Menlo,monospace" font-size="12"><tspan fill="#cdd6f4">    [</tspan><tspan fill="#a6e3a1">UP</tspan><tspan fill="#cdd6f4"> phase-5 </tspan><tspan fill="#6c7086">[tag streamlate:phase-5]</tspan></text>
+<text x="20" y="838" font-family="JetBrains Mono,Menlo,monospace" font-size="12"><tspan fill="#cdd6f4">    [</tspan><tspan fill="#a6e3a1">UP</tspan><tspan fill="#cdd6f4"> phase-6 </tspan><tspan fill="#6c7086">[tag streamlate:phase-6]</tspan></text>
+<text x="20" y="856" font-family="JetBrains Mono,Menlo,monospace" font-size="12"><tspan fill="#cdd6f4">    [</tspan><tspan fill="#a6e3a1">UP</tspan><tspan fill="#cdd6f4"> phase-7 </tspan><tspan fill="#6c7086">[tag streamlate:phase-7]</tspan></text>
+<text x="20" y="874" font-family="JetBrains Mono,Menlo,monospace" font-size="12"><tspan fill="#cdd6f4">    [</tspan><tspan fill="#a6e3a1">UP</tspan><tspan fill="#cdd6f4"> phase-8 </tspan><tspan fill="#6c7086">[tag streamlate:phase-8]</tspan></text>
+<text x="20" y="892" font-family="JetBrains Mono,Menlo,monospace" font-size="12"><tspan fill="#89b4fa" font-weight="bold">switchboard</tspan><tspan fill="#6c7086">  (/home/aleks/work/projects/switchboard/repo  branch:main)</tspan></text>
+<text x="20" y="910" font-family="JetBrains Mono,Menlo,monospace" font-size="12"><tspan fill="#89b4fa" font-weight="bold">translate</tspan><tspan fill="#6c7086">  (/home/aleks/work/projects/sermon_translate/repo  branch:master)</tspan></text>
+<text x="20" y="928" font-family="JetBrains Mono,Menlo,monospace" font-size="12"><tspan fill="#cdd6f4">    [</tspan><tspan fill="#a6e3a1">UP</tspan><tspan fill="#cdd6f4"> demo-to-joe </tspan><tspan fill="#6c7086">[tag translate:demo-to-joe]</tspan></text>
+</svg>

@@ -15,6 +15,10 @@ path = "src/main.rs"
 name = "awesometree-daemon"
 path = "src/daemon_main.rs"
 
+[[bin]]
+name = "screenshot"
+path = "src/bin/screenshot.rs"
+
 [dependencies]
 awesometree-core = { path = "core" }
 axum = "0.8"
