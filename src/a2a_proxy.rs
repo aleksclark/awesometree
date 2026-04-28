@@ -271,7 +271,8 @@ struct RoutingCriteria {
 
 #[derive(Deserialize)]
 struct RouteMessageRequest {
-    routing: RoutingCriteria,
+    #[serde(default)]
+    routing: Option<RoutingCriteria>,
     message: serde_json::Value,
 }
 
@@ -282,18 +283,21 @@ async fn route_send_message(
 ) -> Result<Response, Response> {
     let st = state::load().map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
 
-    let match_tags: Vec<String> = body
-        .routing
-        .tags
-        .unwrap_or_default()
-        .into_iter()
-        .chain(body.routing.capability.into_iter())
-        .collect();
+    let has_routing = body.routing.is_some();
+    let match_tags: Vec<String> = match body.routing {
+        Some(r) => r
+            .tags
+            .unwrap_or_default()
+            .into_iter()
+            .chain(r.capability.into_iter())
+            .collect(),
+        None => vec![],
+    };
 
-    if match_tags.is_empty() {
+    if match_tags.is_empty() && has_routing {
         return Err(err(
             StatusCode::BAD_REQUEST,
-            "at least one of 'routing.capability' or 'routing.tags' is required for routing",
+            "routing provided but no tags or capability specified",
         ));
     }
 
@@ -308,10 +312,14 @@ async fn route_send_message(
                 continue;
             }
 
-            let card = enriched_agent_card(agent, &ws.project);
-            let has_match = card.card.skills.iter().any(|s| {
-                s.tags.iter().any(|t| match_tags.contains(t))
-            });
+            let has_match = if match_tags.is_empty() {
+                true
+            } else {
+                let card = enriched_agent_card(agent, &ws.project);
+                card.card.skills.iter().any(|s| {
+                    s.tags.iter().any(|t| match_tags.contains(t))
+                })
+            };
 
             if !has_match {
                 continue;
