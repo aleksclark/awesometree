@@ -586,6 +586,7 @@ mod tests {
             workspace: ws.into(),
             status: AgentStatus::Ready,
             port,
+            host: None,
             pid: Some(1234),
             started_at: "2026-04-28T10:00:00Z".into(),
         }

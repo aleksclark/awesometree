@@ -262,11 +262,16 @@ async fn proxy_agent_request(
 }
 
 #[derive(Deserialize)]
-struct RouteMessageRequest {
-    #[serde(default)]
-    capability: Option<String>,
+struct RoutingCriteria {
     #[serde(default)]
     tags: Option<Vec<String>>,
+    #[serde(default)]
+    capability: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct RouteMessageRequest {
+    routing: RoutingCriteria,
     message: serde_json::Value,
 }
 
@@ -278,16 +283,17 @@ async fn route_send_message(
     let st = state::load().map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
 
     let match_tags: Vec<String> = body
+        .routing
         .tags
         .unwrap_or_default()
         .into_iter()
-        .chain(body.capability.into_iter())
+        .chain(body.routing.capability.into_iter())
         .collect();
 
     if match_tags.is_empty() {
         return Err(err(
             StatusCode::BAD_REQUEST,
-            "at least one of 'capability' or 'tags' is required for routing",
+            "at least one of 'routing.capability' or 'routing.tags' is required for routing",
         ));
     }
 
@@ -415,6 +421,7 @@ mod tests {
             workspace: "test-ws".into(),
             status,
             port,
+            host: None,
             pid: Some(1234),
             started_at: "2026-04-28T10:00:00Z".into(),
         }
