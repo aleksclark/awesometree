@@ -1,5 +1,7 @@
+#[cfg(feature = "gui")]
 use crate::theme;
 use futures_channel::mpsc;
+#[cfg(feature = "gui")]
 use gpui::*;
 use std::sync::{Mutex, OnceLock};
 use std::time::SystemTime;
@@ -67,8 +69,10 @@ pub fn subscribe() -> (Vec<LogEntry>, mpsc::UnboundedReceiver<LogEntry>) {
     (snapshot, rx)
 }
 
+#[cfg(feature = "gui")]
 static LOG_WINDOW_TX: OnceLock<mpsc::UnboundedSender<()>> = OnceLock::new();
 
+#[cfg(feature = "gui")]
 pub fn setup_log_listener(cx: &mut App) -> mpsc::UnboundedReceiver<()> {
     let (tx, rx) = mpsc::unbounded::<()>();
     let _ = LOG_WINDOW_TX.set(tx);
@@ -76,20 +80,28 @@ pub fn setup_log_listener(cx: &mut App) -> mpsc::UnboundedReceiver<()> {
     rx
 }
 
+#[cfg(feature = "gui")]
 pub fn request_log_window() {
     if let Some(tx) = LOG_WINDOW_TX.get() {
         let _ = tx.unbounded_send(());
     }
 }
 
+#[cfg(feature = "gui")]
 fn bg() -> Rgba { theme::bg() }
+#[cfg(feature = "gui")]
 fn fg() -> Rgba { theme::fg() }
+#[cfg(feature = "gui")]
 fn fg_dim() -> Rgba { theme::fg_dim() }
+#[cfg(feature = "gui")]
 fn border_color() -> Rgba { theme::border_color() }
+#[cfg(feature = "gui")]
 fn accent() -> Rgba { theme::accent() }
 
+#[cfg(feature = "gui")]
 actions!(log_viewer, [DismissLog]);
 
+#[cfg(feature = "gui")]
 struct LogView {
     entries: Vec<LogEntry>,
     focus: FocusHandle,
@@ -97,6 +109,7 @@ struct LogView {
     _subscription_task: Task<()>,
 }
 
+#[cfg(feature = "gui")]
 pub fn show_log_window(cx: &mut App) {
     let (snapshot, rx) = subscribe();
 
@@ -116,6 +129,7 @@ pub fn show_log_window(cx: &mut App) {
     .ok();
 }
 
+#[cfg(feature = "gui")]
 impl LogView {
     fn new(
         entries: Vec<LogEntry>,
@@ -151,6 +165,7 @@ impl LogView {
     }
 }
 
+#[cfg(feature = "gui")]
 impl Render for LogView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let count = self.entries.len();
@@ -237,6 +252,7 @@ impl Render for LogView {
     }
 }
 
+#[cfg(feature = "gui")]
 impl Focusable for LogView {
     fn focus_handle(&self, _: &App) -> FocusHandle {
         self.focus.clone()

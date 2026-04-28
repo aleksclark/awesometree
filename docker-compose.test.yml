@@ -1,0 +1,20 @@
+services:
+  arp-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "19099:9099"
+    environment:
+      - ARP_PORT=9099
+      - ARP_DISABLE_AUTH=1
+      - HOME=/home/testuser
+    volumes:
+      - ./test/fixtures/state.json:/home/testuser/.config/awesometree/state.json:ro
+      - ./test/fixtures/test-project.project.json:/home/testuser/.config/project-interop/projects/test-project.project.json:ro
+    healthcheck:
+      test: ["CMD-SHELL", "cat < /dev/tcp/localhost/9099 || exit 1"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+      start_period: 3s

@@ -1,0 +1,24 @@
+{
+  "workspaces": {
+    "arp-test": {
+      "project": "test-project",
+      "active": true,
+      "tag_index": 10,
+      "dir": "/workspace",
+      "acp_port": 9100,
+      "acp_url": "http://127.0.0.1:9100",
+      "agents": [
+        {
+          "id": "echo-agent-001",
+          "template": "echo",
+          "name": "echo-agent",
+          "workspace": "arp-test",
+          "status": "ready",
+          "port": 9200,
+          "pid": null,
+          "started_at": "2026-04-28T10:00:00Z"
+        }
+      ]
+    }
+  }
+}

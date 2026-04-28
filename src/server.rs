@@ -2,8 +2,11 @@ use crate::auth;
 use crate::interop::{self, Project};
 use crate::log as dlog;
 use crate::state::{self, Store};
+use crate::workspace;
+#[cfg(feature = "gui")]
 use crate::wm;
-use crate::workspace::{self, DownOptions, Manager};
+#[cfg(feature = "gui")]
+use crate::workspace::{DownOptions, Manager};
 use axum::body::Body;
 use axum::extract::{Path, Request, State};
 use axum::http::StatusCode;
@@ -75,6 +78,7 @@ fn err(status: StatusCode, msg: impl Into<String>) -> Response {
 )]
 struct ApiDoc;
 
+#[cfg(feature = "gui")]
 fn build_api_router() -> (axum::Router<AppState>, utoipa::openapi::OpenApi) {
     OpenApiRouter::with_openapi(ApiDoc::openapi())
         .routes(routes!(list_workspaces))
@@ -91,12 +95,33 @@ fn build_api_router() -> (axum::Router<AppState>, utoipa::openapi::OpenApi) {
         .split_for_parts()
 }
 
+#[cfg(not(feature = "gui"))]
+fn build_api_router() -> (axum::Router<AppState>, utoipa::openapi::OpenApi) {
+    OpenApiRouter::with_openapi(ApiDoc::openapi())
+        .routes(routes!(list_workspaces))
+        .routes(routes!(create_workspace))
+        .routes(routes!(get_workspace))
+        .routes(routes!(delete_workspace))
+        .routes(routes!(start_workspace))
+        .routes(routes!(stop_workspace_headless))
+        .routes(routes!(list_projects))
+        .routes(routes!(create_project))
+        .routes(routes!(get_project))
+        .routes(routes!(update_project))
+        .routes(routes!(delete_project))
+        .split_for_parts()
+}
+
 pub fn openapi_spec() -> String {
     let (_, api) = build_api_router();
     api.to_pretty_json().expect("OpenAPI JSON serialization")
 }
 
 async fn auth_middleware(req: Request, next: Next) -> Result<Response, Response> {
+    if std::env::var("ARP_DISABLE_AUTH").is_ok() {
+        return Ok(next.run(req).await);
+    }
+
     let is_local = req
         .extensions()
         .get::<axum::extract::ConnectInfo<SocketAddr>>()
@@ -444,6 +469,7 @@ async fn start_workspace(Path(name): Path<String>) -> Result<Json<WorkspaceInfo>
     Ok(Json(ws_to_info(&name, ws)))
 }
 
+#[cfg(feature = "gui")]
 #[utoipa::path(
     post,
     path = "/api/workspaces/{name}/stop",
@@ -474,6 +500,33 @@ async fn stop_workspace(Path(name): Path<String>) -> Result<Json<WorkspaceInfo>,
     dlog::log(format!("API: stopped workspace {name}"));
     let ws = mgr.state.workspace(&name).unwrap();
     Ok(Json(ws_to_info(&name, ws)))
+}
+
+#[cfg(not(feature = "gui"))]
+#[utoipa::path(
+    post,
+    path = "/api/workspaces/{name}/stop",
+    tag = "workspaces",
+    params(
+        ("name" = String, Path, description = "Workspace name"),
+    ),
+    responses(
+        (status = 200, description = "Workspace stopped", body = WorkspaceInfo),
+        (status = 404, description = "Workspace not found", body = ErrorBody),
+        (status = 501, description = "Not available in headless mode", body = ErrorBody),
+    )
+)]
+async fn stop_workspace_headless(Path(name): Path<String>) -> Result<Json<WorkspaceInfo>, Response> {
+    let st = load_state()?;
+
+    let _ws = st
+        .workspace(&name)
+        .ok_or_else(|| err(StatusCode::NOT_FOUND, format!("workspace not found: {name}")))?;
+
+    Err(err(
+        StatusCode::NOT_IMPLEMENTED,
+        "stop_workspace requires window manager (not available in headless mode)",
+    ))
 }
 
 #[utoipa::path(

@@ -1,0 +1,7 @@
+{
+  "$schema": "https://project-interop.dev/schemas/v1/project.schema.json",
+  "version": "1",
+  "name": "test-project",
+  "repo": "/workspace",
+  "branch": "main"
+}

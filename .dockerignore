@@ -1,0 +1,9 @@
+target/
+android/
+macos/
+packaging/
+docs/
+.git/
+.github/
+*.md
+test/results/
