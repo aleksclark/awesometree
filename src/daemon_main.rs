@@ -1,4 +1,5 @@
 use awesometree::acp_supervisor;
+use awesometree::agent_supervisor;
 use awesometree::daemon::{self, DaemonCmd};
 use awesometree::interop;
 use awesometree::log as dlog;
@@ -65,6 +66,7 @@ fn main() {
     thread::spawn(|| {
         let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
         acp_supervisor::init(rt.handle().clone());
+        agent_supervisor::init(rt.handle().clone());
         rt.block_on(async {
             acp_supervisor::start_active_workspaces();
             acp_supervisor::start_sync_loop(std::time::Duration::from_secs(5));

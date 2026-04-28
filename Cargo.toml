@@ -50,6 +50,10 @@ glob = "0.3"
 utoipa = "5"
 utoipa-axum = "0.2"
 base64 = "0.22"
+a2a-rs-core = "1.0"
+a2a-rs-client = "1.0"
+uuid = { version = "1", features = ["v4"] }
+chrono = { version = "0.4", features = ["serde"] }
 
 # Linux-only dependencies
 [target.'cfg(target_os = "linux")'.dependencies]

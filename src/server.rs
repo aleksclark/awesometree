@@ -121,13 +121,17 @@ async fn auth_middleware(req: Request, next: Next) -> Result<Response, Response>
 
 pub async fn run(port: u16) {
     let client = Client::builder(TokioExecutor::new()).build_http();
+    let client = Arc::new(client);
     let state = AppState {
-        client: Arc::new(client),
+        client: client.clone(),
     };
 
     let (router, api) = build_api_router();
 
     let spec = api.to_pretty_json().expect("OpenAPI JSON");
+
+    let a2a_state = crate::a2a_proxy::A2aProxyState::with_client(client);
+    let a2a_router = crate::a2a_proxy::router().with_state(a2a_state);
 
     let app = router
         .route(
@@ -170,6 +174,7 @@ pub async fn run(port: u16) {
             "/acp/{workspace}/{*rest}",
             axum::routing::any(acp_proxy_path),
         )
+        .merge(a2a_router)
         .layer(middleware::from_fn(auth_middleware))
         .with_state(state);
 
