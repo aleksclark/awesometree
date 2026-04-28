@@ -68,9 +68,28 @@ pub struct AgentInstanceState {
     pub status: AgentStatus,
     pub port: u16,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pid: Option<u32>,
     #[serde(default)]
     pub started_at: String,
+}
+
+impl AgentInstanceState {
+    /// Returns the base URL for this agent's A2A endpoints.
+    /// Uses `host` if set, otherwise falls back to 127.0.0.1:{port}.
+    pub fn base_url(&self) -> String {
+        match &self.host {
+            Some(h) => {
+                if h.starts_with("http") {
+                    h.clone()
+                } else {
+                    format!("http://{}:{}", h, self.port)
+                }
+            }
+            None => format!("http://127.0.0.1:{}", self.port),
+        }
+    }
 }
 
 pub const TAG_OFFSET: i32 = 10;

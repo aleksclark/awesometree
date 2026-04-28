@@ -15,6 +15,7 @@
           "workspace": "arp-test",
           "status": "ready",
           "port": 9200,
+          "host": "echo-agent",
           "pid": null,
           "started_at": "2026-04-28T10:00:00Z"
         }

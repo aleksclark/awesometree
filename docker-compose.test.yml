@@ -12,9 +12,28 @@ services:
     volumes:
       - ./test/fixtures/state.json:/home/testuser/.config/awesometree/state.json:ro
       - ./test/fixtures/test-project.project.json:/home/testuser/.config/project-interop/projects/test-project.project.json:ro
+    depends_on:
+      echo-agent:
+        condition: service_started
+    networks:
+      - arp-test
     healthcheck:
       test: ["CMD-SHELL", "cat < /dev/tcp/localhost/9099 || exit 1"]
       interval: 2s
       timeout: 3s
       retries: 15
       start_period: 3s
+
+  echo-agent:
+    build:
+      context: ./test/echo-agent
+      dockerfile: Dockerfile
+    environment:
+      - ECHO_AGENT_URL=http://echo-agent:9200
+      - ECHO_AGENT_ADDR=:9200
+    networks:
+      - arp-test
+
+networks:
+  arp-test:
+    driver: bridge

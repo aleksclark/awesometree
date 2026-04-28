@@ -162,7 +162,7 @@ fn resolve_agent(agent_id: &str) -> Result<ResolvedAgent, Response> {
     })?;
 
     Ok(ResolvedAgent {
-        url: format!("http://127.0.0.1:{}", agent.port),
+        url: agent.base_url(),
         agent: agent.clone(),
         project: ws.project.clone(),
     })
@@ -331,7 +331,7 @@ async fn route_send_message(
         )
     })?;
 
-    let base_url = format!("http://127.0.0.1:{}", agent.port);
+    let base_url = agent.base_url();
 
     let body_bytes = serde_json::to_vec(&body.message)
         .map_err(|e| err(StatusCode::BAD_REQUEST, format!("serialize message: {e}")))?;
