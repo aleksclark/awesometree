@@ -1,5 +1,6 @@
+use crate::auth::{Permission, scope_includes_project, session_matches};
 use crate::interop;
-use crate::mcp::ArpServer;
+use crate::mcp::{caller_token, check_project_access, ArpServer};
 use crate::state;
 use crate::workspace;
 use rmcp::handler::server::wrapper::Parameters;
@@ -43,6 +44,11 @@ impl ArpServer {
         &self,
         Parameters(params): Parameters<WorkspaceCreateParams>,
     ) -> Result<CallToolResult, ErrorData> {
+        let token = caller_token();
+
+        // workspace/create: session and project tokens need scope to include the project
+        check_project_access(&token, &params.project, &Permission::Session)?;
+
         let project = interop::load(&params.project)
             .map_err(|e| ErrorData::invalid_params(e, None))?;
         let dir = workspace::resolve_dir(&params.name, &project);
@@ -68,9 +74,21 @@ impl ArpServer {
         &self,
         Parameters(params): Parameters<WorkspaceListParams>,
     ) -> Result<CallToolResult, ErrorData> {
+        let token = caller_token();
         let st = state::load().map_err(|e| ErrorData::internal_error(e, None))?;
         let mut results: Vec<serde_json::Value> = Vec::new();
         for (name, ws) in &st.workspaces {
+            // Filter by project scope
+            if !scope_includes_project(&token.scope, &ws.project) {
+                continue;
+            }
+            // For session-scoped tokens, only show workspaces with own-session agents
+            if token.permission == Permission::Session {
+                let has_own_agent = ws.agents.iter().any(|a| session_matches(&token, a));
+                if !has_own_agent {
+                    continue;
+                }
+            }
             if let Some(ref proj) = params.project {
                 if &ws.project != proj {
                     continue;
@@ -103,10 +121,30 @@ impl ArpServer {
         &self,
         Parameters(params): Parameters<WorkspaceGetParams>,
     ) -> Result<CallToolResult, ErrorData> {
+        let token = caller_token();
         let st = state::load().map_err(|e| ErrorData::internal_error(e, None))?;
         let ws = st.workspace(&params.name).ok_or_else(|| {
             ErrorData::invalid_params(format!("workspace not found: {}", params.name), None)
         })?;
+
+        // Check project scope
+        if !scope_includes_project(&token.scope, &ws.project) {
+            return Err(ErrorData::invalid_params(
+                format!("token scope does not include project: {}", ws.project),
+                None,
+            ));
+        }
+        // For session-scoped tokens, workspace must have own-session agents
+        if token.permission == Permission::Session {
+            let has_own = ws.agents.iter().any(|a| session_matches(&token, a));
+            if !has_own {
+                return Err(ErrorData::invalid_params(
+                    format!("session-scoped token has no agents in workspace: {}", params.name),
+                    None,
+                ));
+            }
+        }
+
         let result = serde_json::json!({
             "name": params.name,
             "project": ws.project,
@@ -124,12 +162,31 @@ impl ArpServer {
         &self,
         Parameters(params): Parameters<WorkspaceDestroyParams>,
     ) -> Result<CallToolResult, ErrorData> {
+        let token = caller_token();
         let keep = params.keep_worktree.unwrap_or(false);
 
         let mut st = state::load().map_err(|e| ErrorData::internal_error(e, None))?;
         let ws = st.workspace(&params.name).ok_or_else(|| {
             ErrorData::invalid_params(format!("workspace not found: {}", params.name), None)
         })?;
+
+        // Check project scope
+        if !scope_includes_project(&token.scope, &ws.project) {
+            return Err(ErrorData::invalid_params(
+                format!("token scope does not include project: {}", ws.project),
+                None,
+            ));
+        }
+        // For session-scoped tokens, all agents must be own-session
+        if token.permission == Permission::Session {
+            let all_own = ws.agents.iter().all(|a| session_matches(&token, a));
+            if !all_own {
+                return Err(ErrorData::invalid_params(
+                    format!("session-scoped token cannot destroy workspace with other sessions' agents: {}", params.name),
+                    None,
+                ));
+            }
+        }
 
         for agent in &ws.agents {
             crate::agent_supervisor::stop_agent(&agent.id);

@@ -5,11 +5,85 @@ pub mod tools_discovery;
 pub mod prompts;
 pub mod resources;
 
+use crate::auth::{self, ScopedToken, Permission, scope_includes_project, permission_allows, session_matches};
+use crate::state::AgentInstanceState;
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::router::prompt::PromptRouter;
 use rmcp::model::*;
 use rmcp::service::RequestContext;
 use rmcp::{RoleServer, ServerHandler, ServiceExt};
+
+// ---------------------------------------------------------------------------
+// Scope enforcement helpers for MCP tools
+// ---------------------------------------------------------------------------
+
+/// Returns the caller's ScopedToken for MCP tool calls.
+///
+/// MCP is stdio-based so there's no HTTP request context with a bearer token.
+/// For now all MCP calls are treated as local/admin. This is a placeholder
+/// until MCP auth context (e.g. session tokens negotiated during initialize)
+/// is available.
+pub(crate) fn caller_token() -> ScopedToken {
+    auth::localhost_admin_token()
+}
+
+/// Check whether `token` is allowed to access a specific agent in `project`.
+///
+/// Returns `Ok(())` if:
+///   1. The token scope includes the project, AND
+///   2. For session-scoped tokens, the agent's session_id matches the token's.
+///
+/// Returns an appropriate `ErrorData` on failure.
+pub(crate) fn check_agent_access(
+    token: &ScopedToken,
+    agent: &AgentInstanceState,
+    project: &str,
+) -> Result<(), ErrorData> {
+    if !scope_includes_project(&token.scope, project) {
+        return Err(ErrorData::invalid_params(
+            format!("token scope does not include project: {project}"),
+            None,
+        ));
+    }
+    if !session_matches(token, agent) {
+        return Err(ErrorData::invalid_params(
+            format!(
+                "session-scoped token cannot access agent {} (session mismatch)",
+                agent.id
+            ),
+            None,
+        ));
+    }
+    Ok(())
+}
+
+/// Check whether `token` has the required permission and scope for a project.
+///
+/// Returns `Ok(())` if:
+///   1. The token permission is >= `required`, AND
+///   2. The token scope includes `project`.
+pub(crate) fn check_project_access(
+    token: &ScopedToken,
+    project: &str,
+    required: &Permission,
+) -> Result<(), ErrorData> {
+    if !permission_allows(&token.permission, required) {
+        return Err(ErrorData::invalid_params(
+            format!(
+                "insufficient permission: {:?} required, have {:?}",
+                required, token.permission
+            ),
+            None,
+        ));
+    }
+    if !scope_includes_project(&token.scope, project) {
+        return Err(ErrorData::invalid_params(
+            format!("token scope does not include project: {project}"),
+            None,
+        ));
+    }
+    Ok(())
+}
 
 #[derive(Clone)]
 pub struct ArpServer {
