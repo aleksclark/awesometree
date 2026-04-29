@@ -169,15 +169,8 @@ fn resolve_agent(agent_id: &str, token: &ScopedToken) -> Result<ResolvedAgent, R
     let st = state::load().map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
 
     let (ws_name, agent) = st
-        .find_agent(agent_id)
+        .resolve_agent_flexible(agent_id)
         .ok_or_else(|| err(StatusCode::NOT_FOUND, format!("agent not found: {agent_id}")))?;
-
-    if agent.status == AgentStatus::Stopped || agent.status == AgentStatus::Stopping {
-        return Err(err(
-            StatusCode::SERVICE_UNAVAILABLE,
-            format!("agent {} is {}", agent_id, agent.status),
-        ));
-    }
 
     let ws = st.workspace(ws_name).ok_or_else(|| {
         err(
@@ -1500,5 +1493,152 @@ mod integration_tests {
         let agents = json.as_array().unwrap();
         assert_eq!(agents.len(), 1, "discover should only return agents in scoped projects");
         assert_eq!(agents[0]["metadata"]["arp"]["agent_id"], "agent-a");
+    }
+
+    // --- Flexible routing integration tests ---
+
+    fn setup_multi_agent_home() -> tempfile::TempDir {
+        let tmp = tempfile::tempdir().expect("create temp dir");
+        let config_dir = tmp.path().join(".config/awesometree");
+        std::fs::create_dir_all(&config_dir).expect("create config dir");
+
+        let mut store = Store::default();
+        let ws1 = WorkspaceState {
+            project: "proj".into(),
+            active: true,
+            tag_index: 10,
+            dir: "/ws1".into(),
+            agents: vec![AgentInstanceState {
+                id: "agent-abc123".into(),
+                template: "crush".into(),
+                name: "coder".into(),
+                workspace: "feat-auth".into(),
+                status: AgentStatus::Ready,
+                port: 9200,
+                host: Some("agent-host-1".into()),
+                pid: None,
+                started_at: "2026-04-28T10:00:00Z".into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let ws2 = WorkspaceState {
+            project: "proj".into(),
+            active: true,
+            tag_index: 11,
+            dir: "/ws2".into(),
+            agents: vec![AgentInstanceState {
+                id: "agent-def456".into(),
+                template: "crush".into(),
+                name: "coder".into(),
+                workspace: "feat-ui".into(),
+                status: AgentStatus::Ready,
+                port: 9201,
+                host: Some("agent-host-2".into()),
+                pid: None,
+                started_at: "2026-04-28T10:00:00Z".into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        store.workspaces.insert("feat-auth".into(), ws1);
+        store.workspaces.insert("feat-ui".into(), ws2);
+
+        let json = serde_json::to_string_pretty(&store).expect("serialize");
+        std::fs::write(config_dir.join("state.json"), json).expect("write");
+        tmp
+    }
+
+    #[tokio::test]
+    async fn proxy_resolves_agent_by_name() {
+        let tmp = setup_multi_agent_home();
+        unsafe { std::env::set_var("HOME", tmp.path()) };
+
+        let app = build_test_app();
+        // Use the agent name "coder" instead of agent_id
+        let req = Request::builder()
+            .uri("/a2a/agents/coder/.well-known/agent-card.json")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(
+            resp.status(),
+            200,
+            "proxy should resolve agent by name 'coder'"
+        );
+
+        let json = body_json(resp.into_body()).await;
+        assert_eq!(json["name"], "coder");
+        // It should resolve to one of the two "coder" agents
+        let agent_id = json["metadata"]["arp"]["agent_id"].as_str().unwrap();
+        assert!(
+            agent_id == "agent-abc123" || agent_id == "agent-def456",
+            "should resolve to one of the coder agents, got: {agent_id}"
+        );
+    }
+
+    #[tokio::test]
+    async fn proxy_resolves_agent_by_ws_name() {
+        let tmp = setup_multi_agent_home();
+        unsafe { std::env::set_var("HOME", tmp.path()) };
+
+        let app = build_test_app();
+        // Use workspace/name composite key "feat-ui/coder"
+        let req = Request::builder()
+            .uri("/a2a/agents/feat-ui%2Fcoder/.well-known/agent-card.json")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(
+            resp.status(),
+            200,
+            "proxy should resolve agent by workspace/name 'feat-ui/coder'"
+        );
+
+        let json = body_json(resp.into_body()).await;
+        let agent_id = json["metadata"]["arp"]["agent_id"].as_str().unwrap();
+        assert_eq!(
+            agent_id, "agent-def456",
+            "feat-ui/coder should resolve to agent-def456"
+        );
+    }
+
+    #[tokio::test]
+    async fn proxy_resolves_agent_by_id_still_works() {
+        let tmp = setup_multi_agent_home();
+        unsafe { std::env::set_var("HOME", tmp.path()) };
+
+        let app = build_test_app();
+        let req = Request::builder()
+            .uri("/a2a/agents/agent-abc123/.well-known/agent-card.json")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(
+            resp.status(),
+            200,
+            "proxy should still resolve agent by exact id"
+        );
+
+        let json = body_json(resp.into_body()).await;
+        assert_eq!(json["metadata"]["arp"]["agent_id"], "agent-abc123");
+    }
+
+    #[tokio::test]
+    async fn proxy_ws_name_not_found_returns_404() {
+        let tmp = setup_multi_agent_home();
+        unsafe { std::env::set_var("HOME", tmp.path()) };
+
+        let app = build_test_app();
+        let req = Request::builder()
+            .uri("/a2a/agents/nonexistent-ws%2Fcoder/.well-known/agent-card.json")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(
+            resp.status(),
+            404,
+            "nonexistent workspace/name should return 404"
+        );
     }
 }
