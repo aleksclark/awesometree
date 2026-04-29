@@ -3,13 +3,18 @@ use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 use std::sync::mpsc;
 
-pub const SOCK_PATH: &str = "/tmp/awesometree.sock";
+pub fn sock_path() -> PathBuf {
+    let dir = crate::paths::home_dir().join(".config/awesometree");
+    let _ = std::fs::create_dir_all(&dir);
+    dir.join("daemon.sock")
+}
 
 #[derive(Debug)]
 pub enum DaemonCmd {
     Pick,
     Create,
     Projects,
+    Cleanup,
     LaunchAgent,
     Restart,
     Reload,
@@ -18,8 +23,9 @@ pub enum DaemonCmd {
 }
 
 pub fn send_command(cmd: &str) -> Result<String, String> {
+    let path = sock_path();
     let mut stream =
-        UnixStream::connect(SOCK_PATH).map_err(|e| format!("connect to daemon: {e}"))?;
+        UnixStream::connect(&path).map_err(|e| format!("connect to daemon: {e}"))?;
     stream
         .write_all(format!("{cmd}\n").as_bytes())
         .map_err(|e| format!("write to daemon: {e}"))?;
@@ -34,7 +40,8 @@ pub fn send_command(cmd: &str) -> Result<String, String> {
 }
 
 pub fn is_running() -> bool {
-    let stream = match UnixStream::connect(SOCK_PATH) {
+    let path = sock_path();
+    let stream = match UnixStream::connect(&path) {
         Ok(s) => s,
         Err(_) => return false,
     };
@@ -43,27 +50,51 @@ pub fn is_running() -> bool {
     let _ = stream.set_write_timeout(Some(timeout));
     let mut s = stream;
     if s.write_all(b"ping\n").is_err() {
-        let _ = std::fs::remove_file(SOCK_PATH);
         return false;
     }
     let _ = s.shutdown(std::net::Shutdown::Write);
     let mut buf = String::new();
     if BufReader::new(&s).read_line(&mut buf).is_err() {
-        let _ = std::fs::remove_file(SOCK_PATH);
         return false;
     }
     !buf.is_empty()
 }
 
 pub fn listen(tx: mpsc::Sender<DaemonCmd>) {
-    let sock = PathBuf::from(SOCK_PATH);
-    let _ = std::fs::remove_file(&sock);
+    loop {
+        let sock = sock_path();
+        let _ = std::fs::remove_file(&sock);
 
-    let listener = UnixListener::bind(&sock).expect("failed to bind daemon socket");
+        let listener = match UnixListener::bind(&sock) {
+            Ok(l) => l,
+            Err(e) => {
+                eprintln!("failed to bind daemon socket at {}: {e}", sock.display());
+                std::thread::sleep(std::time::Duration::from_secs(2));
+                continue;
+            }
+        };
 
-    for stream in listener.incoming().flatten() {
-        if let Some(cmd) = handle_client(stream, &tx) {
-            let _ = tx.send(cmd);
+        listener
+            .set_nonblocking(true)
+            .expect("set_nonblocking failed");
+
+        loop {
+            match listener.accept() {
+                Ok((stream, _)) => {
+                    let _ = stream.set_nonblocking(false);
+                    if let Some(cmd) = handle_client(stream, &tx) {
+                        let _ = tx.send(cmd);
+                    }
+                }
+                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+                Err(_) => break,
+            }
+
+            if !sock.exists() {
+                break;
+            }
+
+            std::thread::sleep(std::time::Duration::from_millis(50));
         }
     }
 }
@@ -93,12 +124,13 @@ pub fn parse_command(input: &str) -> Option<DaemonCmd> {
         "reload" => Some(DaemonCmd::Reload),
         "logs" => Some(DaemonCmd::Logs),
         "mobile-qr" => Some(DaemonCmd::MobileQr),
+        "cleanup" => Some(DaemonCmd::Cleanup),
         _ => None,
     }
 }
 
 pub fn cleanup() {
-    let _ = std::fs::remove_file(SOCK_PATH);
+    let _ = std::fs::remove_file(sock_path());
 }
 
 #[cfg(test)]
@@ -146,6 +178,11 @@ mod tests {
     }
 
     #[test]
+    fn parse_command_cleanup() {
+        assert!(matches!(parse_command("cleanup"), Some(DaemonCmd::Cleanup)));
+    }
+
+    #[test]
     fn parse_command_unknown() {
         assert!(parse_command("unknown").is_none());
     }
@@ -162,7 +199,9 @@ mod tests {
     }
 
     #[test]
-    fn sock_path_is_tmp() {
-        assert!(SOCK_PATH.starts_with("/tmp/"));
+    fn sock_path_ends_with_daemon_sock() {
+        let p = sock_path();
+        assert!(p.to_string_lossy().ends_with("daemon.sock"));
+        assert!(p.to_string_lossy().contains("awesometree"));
     }
 }

@@ -66,6 +66,7 @@ fn show_menu(position: PhysicalPosition<f64>) {
     menu.add(&TextEntry::of("pick", "Open Workspace"));
     menu.add(&Divider);
     menu.add(&TextEntry::of("projects", "Projects"));
+    menu.add(&TextEntry::of("cleanup", "Cleanup Workspaces"));
     menu.add(&TextEntry::of("mobile-qr", "Mobile Connect"));
     menu.add(&TextEntry::of("logs", "Logs"));
     menu.add(&Divider);
@@ -80,8 +81,8 @@ fn show_menu(position: PhysicalPosition<f64>) {
 #[cfg(target_os = "macos")]
 fn show_menu(_position: tray::dpi::PhysicalPosition<f64>) {
     let script = r#"
-set menuItems to {"Create Workspace", "Open Workspace", "-", "Projects", "Mobile Connect", "Logs", "-", "Restart", "Exit"}
-set menuIds to {"create", "pick", "", "projects", "mobile-qr", "logs", "", "restart", "exit"}
+set menuItems to {"Create Workspace", "Open Workspace", "-", "Projects", "Cleanup Workspaces", "Mobile Connect", "Logs", "-", "Restart", "Exit"}
+set menuIds to {"create", "pick", "", "projects", "cleanup", "mobile-qr", "logs", "", "restart", "exit"}
 set chosen to choose from list menuItems with prompt "awesometree" without multiple selections allowed and empty selection allowed
 if chosen is false then return ""
 set chosenItem to item 1 of chosen
@@ -113,6 +114,9 @@ fn handle_menu_action(id: &str) {
         }
         "projects" => {
             let _ = Command::new("awesometree").arg("projects-ui").spawn();
+        }
+        "cleanup" => {
+            let _ = Command::new("awesometree").arg("cleanup").spawn();
         }
         "mobile-qr" => {
             let _ = Command::new("awesometree").arg("mobile-qr").spawn();

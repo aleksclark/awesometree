@@ -229,9 +229,11 @@ impl Manager {
     }
 
     pub fn destroy(&mut self, ws_name: &str, opts: &DownOptions) -> Result<(), String> {
-        self.down(ws_name, opts)?;
+        let down_result = self.down(ws_name, opts);
         self.state.remove(ws_name);
-        state::save(&self.state)
+        let save_result = state::save(&self.state);
+        down_result?;
+        save_result
     }
 }
 
