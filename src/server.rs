@@ -117,8 +117,10 @@ pub fn openapi_spec() -> String {
     api.to_pretty_json().expect("OpenAPI JSON serialization")
 }
 
-async fn auth_middleware(req: Request, next: Next) -> Result<Response, Response> {
+async fn auth_middleware(mut req: Request, next: Next) -> Result<Response, Response> {
     if std::env::var("ARP_DISABLE_AUTH").is_ok() {
+        // Attach synthetic admin token for handlers that need it
+        req.extensions_mut().insert(auth::localhost_admin_token());
         return Ok(next.run(req).await);
     }
 
@@ -129,17 +131,30 @@ async fn auth_middleware(req: Request, next: Next) -> Result<Response, Response>
         .unwrap_or(false);
 
     if is_local {
+        // Localhost callers get a synthetic admin/* token
+        req.extensions_mut().insert(auth::localhost_admin_token());
         return Ok(next.run(req).await);
     }
 
     let auth_header = req
         .headers()
         .get("authorization")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Bearer "));
+        .and_then(|v| v.to_str().ok());
 
-    match auth_header {
-        Some(token) if auth::validate_token(token) => Ok(next.run(req).await),
+    // Try scoped token first
+    if let Some(scoped) = auth::resolve_token_from_header(auth_header) {
+        req.extensions_mut().insert(scoped);
+        return Ok(next.run(req).await);
+    }
+
+    // Fall back to legacy simple token
+    let bearer = auth_header.and_then(|v| v.strip_prefix("Bearer "));
+    match bearer {
+        Some(token) if auth::validate_token(token) => {
+            // Legacy token gets a synthetic admin/* token for backward compat
+            req.extensions_mut().insert(auth::localhost_admin_token());
+            Ok(next.run(req).await)
+        }
         _ => Err(err(StatusCode::UNAUTHORIZED, "invalid or missing token")),
     }
 }

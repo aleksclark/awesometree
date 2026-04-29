@@ -30,6 +30,7 @@ pub struct WorkspaceState {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Default)]
 #[serde(rename_all = "lowercase")]
 pub enum AgentStatus {
     Starting,
@@ -37,6 +38,7 @@ pub enum AgentStatus {
     Busy,
     Error,
     Stopping,
+    #[default]
     Stopped,
 }
 
@@ -53,11 +55,7 @@ impl std::fmt::Display for AgentStatus {
     }
 }
 
-impl Default for AgentStatus {
-    fn default() -> Self {
-        AgentStatus::Stopped
-    }
-}
+
 
 #[derive(Debug, Default, Serialize, Deserialize, Clone)]
 pub struct AgentInstanceState {
@@ -73,6 +71,12 @@ pub struct AgentInstanceState {
     pub pid: Option<u32>,
     #[serde(default)]
     pub started_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spawned_by: Option<String>,
 }
 
 impl AgentInstanceState {
@@ -589,6 +593,7 @@ mod tests {
             host: None,
             pid: Some(1234),
             started_at: "2026-04-28T10:00:00Z".into(),
+            ..Default::default()
         }
     }
 
