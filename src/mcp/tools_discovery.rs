@@ -1,4 +1,5 @@
-use crate::mcp::ArpServer;
+use crate::auth::{Permission, scope_includes_project, session_matches};
+use crate::mcp::{caller_token, ArpServer};
 use crate::state::{self, AgentStatus};
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::*;
@@ -23,6 +24,7 @@ impl ArpServer {
         &self,
         Parameters(params): Parameters<AgentDiscoverParams>,
     ) -> Result<CallToolResult, ErrorData> {
+        let token = caller_token();
         let scope = params.scope.as_deref().unwrap_or("local");
 
         let mut cards: Vec<serde_json::Value> = Vec::new();
@@ -33,8 +35,16 @@ impl ArpServer {
                 if !ws.active {
                     continue;
                 }
+                // Filter by project scope
+                if !scope_includes_project(&token.scope, &ws.project) {
+                    continue;
+                }
                 for agent in &ws.agents {
                     if agent.status != AgentStatus::Ready && agent.status != AgentStatus::Busy {
+                        continue;
+                    }
+                    // For session-scoped tokens, only show own-session agents (local discovery)
+                    if token.permission == Permission::Session && !session_matches(&token, agent) {
                         continue;
                     }
                     if let Some(ref cap) = params.capability {

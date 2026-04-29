@@ -1,10 +1,10 @@
 use crate::agent_supervisor;
 use crate::auth::{
-    Permission, TokenScope,
+    Permission, TokenScope, scope_includes_project, session_matches,
     create_child_token, create_scoped_token, encode_scoped_token,
     ensure_session, localhost_admin_token,
 };
-use crate::mcp::ArpServer;
+use crate::mcp::{caller_token, check_agent_access, check_project_access, ArpServer};
 use crate::state::{self, AgentInstanceState, AgentStatus};
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::*;
@@ -155,6 +155,23 @@ fn parse_permission(s: &str) -> Result<Permission, String> {
     }
 }
 
+/// Resolve an agent by ID and verify scope access for the given token.
+fn resolve_agent_with_access(
+    agent_id: &str,
+) -> Result<(String, AgentInstanceState, String), ErrorData> {
+    let token = caller_token();
+    let st = state::load().map_err(|e| ErrorData::internal_error(e, None))?;
+    let (ws_name, agent) = st.find_agent(agent_id).ok_or_else(|| {
+        ErrorData::invalid_params(format!("agent not found: {agent_id}"), None)
+    })?;
+    let ws = st.workspace(ws_name).unwrap();
+    let project = ws.project.clone();
+
+    check_agent_access(&token, agent, &project)?;
+
+    Ok((ws_name.to_string(), agent.clone(), project))
+}
+
 #[rmcp::tool_router(router = tool_router_agent, vis = "pub")]
 impl ArpServer {
     #[tool(name = "agent/spawn", description = "Spawn a new A2A agent in an existing workspace. Each agent gets its own port, context_id space, and AgentCard.")]
@@ -162,6 +179,8 @@ impl ArpServer {
         &self,
         Parameters(params): Parameters<AgentSpawnParams>,
     ) -> Result<CallToolResult, ErrorData> {
+        let token = caller_token();
+
         let st = state::load().map_err(|e| ErrorData::internal_error(e, None))?;
         let ws = st.workspace(&params.workspace).ok_or_else(|| {
             ErrorData::invalid_params(format!("workspace not found: {}", params.workspace), None)
@@ -173,6 +192,10 @@ impl ArpServer {
             ));
         }
         let project = ws.project.clone();
+
+        // agent/spawn: scope must include the project
+        check_project_access(&token, &project, &Permission::Session)?;
+
         let name = params.name.unwrap_or_else(|| params.template.clone());
 
         let port = st.allocate_agent_port().ok_or_else(|| {
@@ -259,16 +282,25 @@ impl ArpServer {
         &self,
         Parameters(params): Parameters<AgentListParams>,
     ) -> Result<CallToolResult, ErrorData> {
+        let token = caller_token();
         let st = state::load().map_err(|e| ErrorData::internal_error(e, None))?;
         let mut results: Vec<serde_json::Value> = Vec::new();
 
         for (ws_name, ws) in &st.workspaces {
+            // Filter by project scope
+            if !scope_includes_project(&token.scope, &ws.project) {
+                continue;
+            }
             if let Some(ref filter_ws) = params.workspace {
                 if ws_name != filter_ws {
                     continue;
                 }
             }
             for agent in &ws.agents {
+                // For session-scoped tokens, only show own-session agents
+                if token.permission == Permission::Session && !session_matches(&token, agent) {
+                    continue;
+                }
                 if let Some(ref filter_status) = params.status {
                     if agent.status.to_string() != *filter_status {
                         continue;
@@ -293,12 +325,8 @@ impl ArpServer {
         &self,
         Parameters(params): Parameters<AgentStatusParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let st = state::load().map_err(|e| ErrorData::internal_error(e, None))?;
-        let (ws_name, agent) = st.find_agent(&params.agent_id).ok_or_else(|| {
-            ErrorData::invalid_params(format!("agent not found: {}", params.agent_id), None)
-        })?;
-        let ws = st.workspace(ws_name).unwrap();
-        let json = agent_to_json(ws_name, agent, &ws.project);
+        let (ws_name, agent, project) = resolve_agent_with_access(&params.agent_id)?;
+        let json = agent_to_json(&ws_name, &agent, &project);
         let out = serde_json::to_string_pretty(&json)
             .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
         Ok(CallToolResult::success(vec![Content::text(out)]))
@@ -309,10 +337,7 @@ impl ArpServer {
         &self,
         Parameters(params): Parameters<AgentMessageParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let st = state::load().map_err(|e| ErrorData::internal_error(e, None))?;
-        let (_, agent) = st.find_agent(&params.agent_id).ok_or_else(|| {
-            ErrorData::invalid_params(format!("agent not found: {}", params.agent_id), None)
-        })?;
+        let (_, agent, _) = resolve_agent_with_access(&params.agent_id)?;
         let base_url = agent.base_url();
 
         let a2a_body = serde_json::json!({
@@ -343,10 +368,7 @@ impl ArpServer {
         &self,
         Parameters(params): Parameters<AgentTaskParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let st = state::load().map_err(|e| ErrorData::internal_error(e, None))?;
-        let (_, agent) = st.find_agent(&params.agent_id).ok_or_else(|| {
-            ErrorData::invalid_params(format!("agent not found: {}", params.agent_id), None)
-        })?;
+        let (_, agent, _) = resolve_agent_with_access(&params.agent_id)?;
         let base_url = agent.base_url();
 
         let a2a_body = serde_json::json!({
@@ -391,10 +413,7 @@ impl ArpServer {
         &self,
         Parameters(params): Parameters<AgentTaskStatusParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let st = state::load().map_err(|e| ErrorData::internal_error(e, None))?;
-        let (_, agent) = st.find_agent(&params.agent_id).ok_or_else(|| {
-            ErrorData::invalid_params(format!("agent not found: {}", params.agent_id), None)
-        })?;
+        let (_, agent, _) = resolve_agent_with_access(&params.agent_id)?;
         let base_url = agent.base_url();
 
         let mut url = format!("{base_url}/tasks/{}", params.task_id);
@@ -421,10 +440,7 @@ impl ArpServer {
         &self,
         Parameters(params): Parameters<AgentStopParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let st = state::load().map_err(|e| ErrorData::internal_error(e, None))?;
-        let _ = st.find_agent(&params.agent_id).ok_or_else(|| {
-            ErrorData::invalid_params(format!("agent not found: {}", params.agent_id), None)
-        })?;
+        let _ = resolve_agent_with_access(&params.agent_id)?;
 
         agent_supervisor::stop_agent(&params.agent_id);
 
@@ -439,12 +455,10 @@ impl ArpServer {
         &self,
         Parameters(params): Parameters<AgentRestartParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let st = state::load().map_err(|e| ErrorData::internal_error(e, None))?;
-        let (ws_name, agent) = st.find_agent(&params.agent_id).ok_or_else(|| {
-            ErrorData::invalid_params(format!("agent not found: {}", params.agent_id), None)
-        })?;
+        let (ws_name, agent, _project) = resolve_agent_with_access(&params.agent_id)?;
 
-        let ws = st.workspace(ws_name).unwrap();
+        let st = state::load().map_err(|e| ErrorData::internal_error(e, None))?;
+        let ws = st.workspace(&ws_name).unwrap();
         let template = agent.template.clone();
         let name = agent.name.clone();
         let workspace = ws_name.to_string();
