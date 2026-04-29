@@ -30,6 +30,7 @@ pub struct WorkspaceState {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Default)]
 #[serde(rename_all = "lowercase")]
 pub enum AgentStatus {
     Starting,
@@ -37,6 +38,7 @@ pub enum AgentStatus {
     Busy,
     Error,
     Stopping,
+    #[default]
     Stopped,
 }
 
@@ -53,11 +55,7 @@ impl std::fmt::Display for AgentStatus {
     }
 }
 
-impl Default for AgentStatus {
-    fn default() -> Self {
-        AgentStatus::Stopped
-    }
-}
+
 
 #[derive(Debug, Default, Serialize, Deserialize, Clone)]
 pub struct AgentInstanceState {
