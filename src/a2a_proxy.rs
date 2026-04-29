@@ -438,6 +438,7 @@ mod tests {
             host: None,
             pid: Some(1234),
             started_at: "2026-04-28T10:00:00Z".into(),
+            ..Default::default()
         }
     }
 
@@ -502,6 +503,7 @@ mod tests {
             host: Some("echo-agent".into()),
             pid: None,
             started_at: "2026-04-28T10:00:00Z".into(),
+        ..Default::default()
         };
         let ecard = enriched_agent_card(&agent, "test-project");
         let meta = ecard.metadata.unwrap();
@@ -544,6 +546,7 @@ mod tests {
             host: Some("echo-agent".into()),
             pid: None,
             started_at: "2026-04-28T10:00:00Z".into(),
+        ..Default::default()
         };
         let ecard = enriched_agent_card(&agent, "test-project");
         let meta = ecard.metadata.unwrap();
@@ -610,6 +613,7 @@ mod tests {
             host: None,
             pid: None,
             started_at: "2026-04-28T10:00:00Z".into(),
+        ..Default::default()
         };
 
         let card = enriched_agent_card(&agent, "proj");
@@ -649,6 +653,7 @@ mod tests {
             host: Some("echo-agent".into()),
             pid: None,
             started_at: "2026-04-28T10:00:00Z".into(),
+        ..Default::default()
         };
         assert_eq!(agent.base_url(), "http://echo-agent:9200");
     }
@@ -665,6 +670,7 @@ mod tests {
             host: Some("http://custom-host:8080".into()),
             pid: None,
             started_at: "2026-04-28T10:00:00Z".into(),
+        ..Default::default()
         };
         assert_eq!(agent.base_url(), "http://custom-host:8080");
     }
@@ -706,6 +712,7 @@ mod integration_tests {
                     host: Some("echo-agent".into()),
                     pid: None,
                     started_at: "2026-04-28T10:00:00Z".into(),
+                ..Default::default()
                 },
             ],
         };
@@ -1006,6 +1013,7 @@ mod integration_tests {
                     host: None,
                     pid: None,
                     started_at: "2026-04-28T10:00:00Z".into(),
+                ..Default::default()
                 },
                 AgentInstanceState {
                     id: "stopped-1".into(),
@@ -1017,6 +1025,7 @@ mod integration_tests {
                     host: None,
                     pid: None,
                     started_at: "2026-04-28T10:00:00Z".into(),
+                ..Default::default()
                 },
             ],
             ..Default::default()
