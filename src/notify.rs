@@ -18,13 +18,14 @@ fn btn_hover() -> Rgba { theme::btn_hover() }
 actions!(notify, [DismissError]);
 
 pub fn open_sentinel_window(cx: &mut App) {
-    let bounds = Bounds::new(point(px(-100.), px(-100.)), size(px(1.), px(1.)));
+    let bounds = Bounds::new(point(px(0.), px(0.)), size(px(1.), px(1.)));
     cx.open_window(
         WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(bounds)),
             titlebar: None,
             app_id: Some("awesometree-sentinel".into()),
             window_decorations: Some(WindowDecorations::Server),
+            window_min_size: Some(size(px(1.), px(1.))),
             ..Default::default()
         },
         |_window, cx| cx.new(|_cx| SentinelView),

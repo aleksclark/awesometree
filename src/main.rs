@@ -78,6 +78,7 @@ enum Commands {
     ProjectsUi,
     #[command(name = "agents-ui")]
     AgentsUi,
+    Cleanup,
     #[command(name = "restart-daemon")]
     RestartDaemon,
     Edit { name: String },
@@ -156,6 +157,7 @@ fn main() {
         Commands::Projects => cmd_projects(),
         Commands::ProjectsUi => cmd_projects_ui(),
         Commands::AgentsUi => cmd_agents_ui(),
+        Commands::Cleanup => send_daemon_cmd("cleanup"),
         Commands::RestartDaemon => cmd_restart_daemon(),
         Commands::Edit { name } => cmd_edit(&name),
         Commands::Daemon => cmd_daemon(),

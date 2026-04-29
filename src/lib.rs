@@ -23,6 +23,7 @@ pub mod projects_ui;
 #[cfg(feature = "gui")]
 pub mod agents_ui;
 #[cfg(feature = "gui")]
+pub mod cleanup_ui;
 pub mod text_input;
 #[cfg(feature = "gui")]
 pub mod tray;

@@ -6,7 +6,7 @@ After=graphical-session.target
 
 [Service]
 Type=simple
-ExecStartPre=-/bin/rm -f /tmp/awesometree.sock
+ExecStartPre=-/bin/rm -f %h/.config/awesometree/daemon.sock -f /tmp/awesometree.sock
 ExecStart=__PREFIX__/bin/awesometree-daemon
 Restart=on-failure
 RestartSec=3

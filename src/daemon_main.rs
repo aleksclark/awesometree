@@ -1,4 +1,5 @@
 use awesometree::agents_ui;
+use awesometree::cleanup_ui;
 use awesometree::acp_supervisor;
 use awesometree::agent_supervisor;
 use awesometree::daemon::{self, DaemonCmd};
@@ -26,8 +27,6 @@ fn main() {
         eprintln!("awesometree-daemon is already running");
         std::process::exit(1);
     }
-
-    daemon::cleanup();
 
     unsafe {
         libc::signal(libc::SIGTERM, handle_signal as *const () as libc::sighandler_t);
@@ -90,6 +89,7 @@ fn main() {
             KeyBinding::new("ctrl-n", picker::OpenCreate, None),
             KeyBinding::new("ctrl-d", picker::DestroySelected, None),
             KeyBinding::new("escape", projects_ui::Dismiss, None),
+            KeyBinding::new("escape", cleanup_ui::DismissCleanup, None),
             KeyBinding::new("escape", qr::DismissQr, None),
             KeyBinding::new("escape", agents_ui::DismissAgents, None),
             KeyBinding::new("enter", projects_ui::ConfirmAction, None),
@@ -183,6 +183,10 @@ fn main() {
                         dlog::log("Agents UI opened");
                         let _ = cx.update(agents_ui::open_agents_window);
                     }
+                    DaemonCmd::Cleanup => {
+                        dlog::log("Cleanup UI opened");
+                        let _ = cx.update(cleanup_ui::open_cleanup_window);
+                    }
                     DaemonCmd::LaunchAgent => {}
                     DaemonCmd::Restart => {
                         dlog::log("Daemon restarting");
@@ -204,12 +208,13 @@ fn main() {
         .detach();
     });
 
-    daemon::cleanup();
+    loop {
+        std::thread::sleep(std::time::Duration::from_secs(3600));
+    }
 }
 
 extern "C" fn handle_signal(_sig: libc::c_int) {
     acp_supervisor::stop_all();
-    daemon::cleanup();
     std::process::exit(0);
 }
 
