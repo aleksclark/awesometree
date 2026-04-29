@@ -335,7 +335,7 @@ pub fn ensure_worktree(ws_name: &str, project: &Project, dir: &PathBuf) -> Resul
     Ok(())
 }
 
-fn remove_worktree(project: &Project, dir: &PathBuf) -> Result<(), String> {
+pub fn remove_worktree(project: &Project, dir: &PathBuf) -> Result<(), String> {
     if project.branch.is_none() {
         return Ok(());
     }
