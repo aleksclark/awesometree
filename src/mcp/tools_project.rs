@@ -1,5 +1,6 @@
+use crate::auth::{Permission, scope_includes_project};
 use crate::interop;
-use crate::mcp::ArpServer;
+use crate::mcp::{caller_token, ArpServer};
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::*;
 use rmcp::tool;
@@ -23,8 +24,16 @@ pub struct ProjectUnregisterParams {
 impl ArpServer {
     #[tool(name = "project/list", description = "List all registered projects with their agent templates.")]
     pub fn project_list(&self) -> Result<CallToolResult, ErrorData> {
+        let token = caller_token();
         let projects = interop::list().map_err(|e| ErrorData::internal_error(e, None))?;
-        let json = serde_json::to_string_pretty(&projects)
+
+        // Filter projects by token scope
+        let filtered: Vec<_> = projects
+            .into_iter()
+            .filter(|p| scope_includes_project(&token.scope, &p.name))
+            .collect();
+
+        let json = serde_json::to_string_pretty(&filtered)
             .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
         Ok(CallToolResult::success(vec![Content::text(json)]))
     }
@@ -34,6 +43,23 @@ impl ArpServer {
         &self,
         Parameters(params): Parameters<ProjectRegisterParams>,
     ) -> Result<CallToolResult, ErrorData> {
+        let token = caller_token();
+
+        // project/register requires admin permission
+        if !crate::auth::permission_allows(&token.permission, &Permission::Admin) {
+            return Err(ErrorData::invalid_params(
+                "project/register requires admin permission",
+                None,
+            ));
+        }
+        // Scope must include the project being registered
+        if !scope_includes_project(&token.scope, &params.name) {
+            return Err(ErrorData::invalid_params(
+                format!("token scope does not include project: {}", params.name),
+                None,
+            ));
+        }
+
         let branch = params.branch.unwrap_or_else(|| "main".into());
         let project = interop::Project::new(&params.name, &params.repo, &branch);
         interop::save(&project).map_err(|e| ErrorData::internal_error(e, None))?;
@@ -47,6 +73,23 @@ impl ArpServer {
         &self,
         Parameters(params): Parameters<ProjectUnregisterParams>,
     ) -> Result<CallToolResult, ErrorData> {
+        let token = caller_token();
+
+        // project/unregister requires admin permission
+        if !crate::auth::permission_allows(&token.permission, &Permission::Admin) {
+            return Err(ErrorData::invalid_params(
+                "project/unregister requires admin permission",
+                None,
+            ));
+        }
+        // Scope must include the project being unregistered
+        if !scope_includes_project(&token.scope, &params.name) {
+            return Err(ErrorData::invalid_params(
+                format!("token scope does not include project: {}", params.name),
+                None,
+            ));
+        }
+
         interop::delete(&params.name).map_err(|e| ErrorData::internal_error(e, None))?;
         Ok(CallToolResult::success(vec![Content::text(format!(
             "Unregistered project: {}",
