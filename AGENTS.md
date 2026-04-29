@@ -56,6 +56,7 @@ The `eval` method on macOS accepts AppleScript instead of Lua.
 | QR code | `src/qr.rs` | QR code generation + GPUI display window |
 | Picker | `src/picker.rs` | GPUI fuzzy picker + create form |
 | Projects UI | `src/projects_ui.rs` | GPUI project CRUD window |
+| Agents UI | `src/agents_ui.rs` | GPUI agent status dashboard |
 | Tray | `src/tray.rs` | System tray icon + popup menu (GTK on Linux, osascript on macOS) |
 | Notifications | `src/notify.rs` | Error windows, background task runner |
 | Core lib | `core/` | Shared API client crate with UniFFI for Android |

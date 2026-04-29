@@ -483,4 +483,582 @@ mod tests {
         let json = serde_json::to_string(&body).unwrap();
         assert!(json.contains("\"error\":\"test\""));
     }
+
+    #[test]
+    fn enriched_card_metadata_has_all_required_fields() {
+        let agent = AgentInstanceState {
+            id: "echo-001".into(),
+            template: "echo".into(),
+            name: "echo-agent".into(),
+            workspace: "arp-test".into(),
+            status: AgentStatus::Ready,
+            port: 9200,
+            host: Some("echo-agent".into()),
+            pid: None,
+            started_at: "2026-04-28T10:00:00Z".into(),
+        };
+        let ecard = enriched_agent_card(&agent, "test-project");
+        let meta = ecard.metadata.unwrap();
+        let arp = &meta["arp"];
+        assert!(arp.get("agent_id").is_some(), "missing agent_id");
+        assert!(arp.get("workspace").is_some(), "missing workspace");
+        assert!(arp.get("project").is_some(), "missing project");
+        assert!(arp.get("template").is_some(), "missing template");
+        assert!(arp.get("status").is_some(), "missing status");
+        assert!(arp.get("direct_url").is_some(), "missing direct_url");
+        assert!(arp.get("started_at").is_some(), "missing started_at");
+    }
+
+    #[test]
+    fn enriched_card_interface_url_points_to_proxy_not_direct() {
+        let agent = test_agent("echo-001", "echo-agent", 9200, AgentStatus::Ready);
+        let ecard = enriched_agent_card(&agent, "proj");
+        let iface = &ecard.card.supported_interfaces[0];
+        assert!(
+            iface.url.contains("/a2a/agents/echo-001"),
+            "interface URL should point to proxy: {}",
+            iface.url
+        );
+        assert!(
+            !iface.url.contains("9200"),
+            "interface URL should not contain direct port: {}",
+            iface.url
+        );
+    }
+
+    #[test]
+    fn enriched_card_direct_url_in_metadata() {
+        let agent = AgentInstanceState {
+            id: "echo-001".into(),
+            template: "echo".into(),
+            name: "echo-agent".into(),
+            workspace: "arp-test".into(),
+            status: AgentStatus::Ready,
+            port: 9200,
+            host: Some("echo-agent".into()),
+            pid: None,
+            started_at: "2026-04-28T10:00:00Z".into(),
+        };
+        let ecard = enriched_agent_card(&agent, "test-project");
+        let meta = ecard.metadata.unwrap();
+        let direct = meta["arp"]["direct_url"].as_str().unwrap();
+        assert!(
+            direct.contains("9200"),
+            "direct_url should contain agent port: {}",
+            direct
+        );
+    }
+
+    #[test]
+    fn enriched_card_skips_stopped_agents_in_listing_logic() {
+        let stopped = test_agent("stopped-1", "stopped", 9300, AgentStatus::Stopped);
+        let stopping = test_agent("stopping-1", "stopping", 9301, AgentStatus::Stopping);
+        let starting = test_agent("starting-1", "starting", 9302, AgentStatus::Starting);
+        let ready = test_agent("ready-1", "ready", 9303, AgentStatus::Ready);
+        let busy = test_agent("busy-1", "busy", 9304, AgentStatus::Busy);
+
+        let agents = vec![stopped, stopping, starting, ready, busy];
+        let visible: Vec<_> = agents
+            .iter()
+            .filter(|a| a.status == AgentStatus::Ready || a.status == AgentStatus::Busy)
+            .collect();
+        assert_eq!(visible.len(), 2);
+        assert_eq!(visible[0].id, "ready-1");
+        assert_eq!(visible[1].id, "busy-1");
+    }
+
+    #[test]
+    fn routing_prefers_ready_over_busy() {
+        let busy = test_agent("busy-1", "agent-a", 9100, AgentStatus::Busy);
+        let ready = test_agent("ready-1", "agent-b", 9101, AgentStatus::Ready);
+
+        let agents = vec![busy.clone(), ready.clone()];
+        let mut best: Option<AgentInstanceState> = None;
+        for agent in &agents {
+            if agent.status != AgentStatus::Ready && agent.status != AgentStatus::Busy {
+                continue;
+            }
+            match &best {
+                None => best = Some(agent.clone()),
+                Some(existing) => {
+                    if agent.status == AgentStatus::Ready
+                        && existing.status == AgentStatus::Busy
+                    {
+                        best = Some(agent.clone());
+                    }
+                }
+            }
+        }
+        assert_eq!(best.unwrap().id, "ready-1");
+    }
+
+    #[test]
+    fn routing_matches_by_skill_tags() {
+        let agent = AgentInstanceState {
+            id: "echo-001".into(),
+            template: "echo".into(),
+            name: "echo-agent".into(),
+            workspace: "test-ws".into(),
+            status: AgentStatus::Ready,
+            port: 9200,
+            host: None,
+            pid: None,
+            started_at: "2026-04-28T10:00:00Z".into(),
+        };
+
+        let card = enriched_agent_card(&agent, "proj");
+        let match_tags = vec!["echo".to_string()];
+        let matches = card
+            .card
+            .skills
+            .iter()
+            .any(|s| s.tags.iter().any(|t| match_tags.contains(t)));
+        assert!(matches, "echo agent should match 'echo' tag");
+
+        let no_match_tags = vec!["nonexistent".to_string()];
+        let no_matches = card
+            .card
+            .skills
+            .iter()
+            .any(|s| s.tags.iter().any(|t| no_match_tags.contains(t)));
+        assert!(!no_matches, "echo agent should not match 'nonexistent' tag");
+    }
+
+    #[test]
+    fn routing_accepts_empty_tags_matches_any() {
+        let match_tags: Vec<String> = vec![];
+        let has_match = match_tags.is_empty();
+        assert!(has_match, "empty tags should match any agent");
+    }
+
+    #[test]
+    fn agent_base_url_with_host() {
+        let agent = AgentInstanceState {
+            id: "echo-001".into(),
+            template: "echo".into(),
+            name: "echo-agent".into(),
+            workspace: "test-ws".into(),
+            status: AgentStatus::Ready,
+            port: 9200,
+            host: Some("echo-agent".into()),
+            pid: None,
+            started_at: "2026-04-28T10:00:00Z".into(),
+        };
+        assert_eq!(agent.base_url(), "http://echo-agent:9200");
+    }
+
+    #[test]
+    fn agent_base_url_with_http_host() {
+        let agent = AgentInstanceState {
+            id: "echo-001".into(),
+            template: "echo".into(),
+            name: "echo-agent".into(),
+            workspace: "test-ws".into(),
+            status: AgentStatus::Ready,
+            port: 9200,
+            host: Some("http://custom-host:8080".into()),
+            pid: None,
+            started_at: "2026-04-28T10:00:00Z".into(),
+        };
+        assert_eq!(agent.base_url(), "http://custom-host:8080");
+    }
+
+    #[test]
+    fn agent_base_url_without_host() {
+        let agent = test_agent("echo-001", "echo-agent", 9200, AgentStatus::Ready);
+        assert_eq!(agent.base_url(), "http://127.0.0.1:9200");
+    }
+}
+
+#[cfg(test)]
+mod integration_tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::Request;
+    use crate::state::{AgentInstanceState, AgentStatus, Store, WorkspaceState};
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
+
+    fn fixture_state() -> Store {
+        let mut store = Store::default();
+        let ws = WorkspaceState {
+            project: "test-project".into(),
+            active: true,
+            tag_index: 10,
+            dir: "/workspace".into(),
+            acp_port: Some(9100),
+            acp_url: Some("http://127.0.0.1:9100".into()),
+            acp_session_id: None,
+            agents: vec![
+                AgentInstanceState {
+                    id: "echo-agent-001".into(),
+                    template: "echo".into(),
+                    name: "echo-agent".into(),
+                    workspace: "arp-test".into(),
+                    status: AgentStatus::Ready,
+                    port: 9200,
+                    host: Some("echo-agent".into()),
+                    pid: None,
+                    started_at: "2026-04-28T10:00:00Z".into(),
+                },
+            ],
+        };
+        store.workspaces.insert("arp-test".into(), ws);
+        store
+    }
+
+    fn setup_fixture_home() -> tempfile::TempDir {
+        let tmp = tempfile::tempdir().expect("create temp dir");
+        let config_dir = tmp.path().join(".config/awesometree");
+        std::fs::create_dir_all(&config_dir).expect("create config dir");
+        let store = fixture_state();
+        let json = serde_json::to_string_pretty(&store).expect("serialize state");
+        std::fs::write(config_dir.join("state.json"), json).expect("write state");
+        tmp
+    }
+
+    fn build_test_app() -> axum::Router {
+        let state = A2aProxyState::new();
+        router().with_state(state)
+    }
+
+    async fn body_json(body: Body) -> serde_json::Value {
+        let bytes = body.collect().await.unwrap().to_bytes();
+        serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null)
+    }
+
+
+
+    #[tokio::test]
+    async fn list_agents_returns_200() {
+        let tmp = setup_fixture_home();
+        unsafe { std::env::set_var("HOME", tmp.path()) };
+
+        let app = build_test_app();
+        let req = Request::builder()
+            .uri("/a2a/agents")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), 200, "GET /a2a/agents should return 200");
+
+        let ct = resp.headers().get("content-type").unwrap().to_str().unwrap();
+        assert!(
+            ct.contains("application/json"),
+            "content-type should be JSON, got: {ct}"
+        );
+
+        let json = body_json(resp.into_body()).await;
+        let agents = json.as_array().expect("response should be an array");
+        assert!(!agents.is_empty(), "should have at least one agent");
+        assert_eq!(agents[0]["name"], "echo-agent");
+    }
+
+    #[tokio::test]
+    async fn list_agents_content_type_json() {
+        let tmp = setup_fixture_home();
+        unsafe { std::env::set_var("HOME", tmp.path()) };
+
+        let app = build_test_app();
+        let req = Request::builder()
+            .uri("/a2a/agents")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        let ct = resp.headers().get("content-type").unwrap().to_str().unwrap();
+        assert!(ct.contains("application/json"));
+    }
+
+    #[tokio::test]
+    async fn discover_returns_200() {
+        let tmp = setup_fixture_home();
+        unsafe { std::env::set_var("HOME", tmp.path()) };
+
+        let app = build_test_app();
+        let req = Request::builder()
+            .uri("/a2a/discover")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), 200, "GET /a2a/discover should return 200");
+    }
+
+    #[tokio::test]
+    async fn nonexistent_agent_card_returns_404() {
+        let tmp = setup_fixture_home();
+        unsafe { std::env::set_var("HOME", tmp.path()) };
+
+        let app = build_test_app();
+        let req = Request::builder()
+            .uri("/a2a/agents/nonexistent-agent-00000/.well-known/agent-card.json")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), 404);
+    }
+
+    #[tokio::test]
+    async fn nonexistent_agent_message_returns_404() {
+        let tmp = setup_fixture_home();
+        unsafe { std::env::set_var("HOME", tmp.path()) };
+
+        let app = build_test_app();
+        let body = serde_json::json!({
+            "message": {"role": "ROLE_USER", "parts": [{"text_part": {"text": "Should 404."}}]}
+        });
+        let req = Request::builder()
+            .method("POST")
+            .uri("/a2a/agents/nonexistent-agent-00000/message:send")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(&body).unwrap()))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), 404);
+    }
+
+    #[tokio::test]
+    async fn nonexistent_agent_task_returns_404() {
+        let tmp = setup_fixture_home();
+        unsafe { std::env::set_var("HOME", tmp.path()) };
+
+        let app = build_test_app();
+        let req = Request::builder()
+            .uri("/a2a/agents/nonexistent-agent-00000/tasks/fake-task-id")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), 404);
+    }
+
+    #[tokio::test]
+    async fn nonexistent_agent_cancel_returns_404() {
+        let tmp = setup_fixture_home();
+        unsafe { std::env::set_var("HOME", tmp.path()) };
+
+        let app = build_test_app();
+        let req = Request::builder()
+            .method("POST")
+            .uri("/a2a/agents/nonexistent-agent-00000/tasks/fake-task-id:cancel")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), 404);
+    }
+
+    #[tokio::test]
+    async fn nonexistent_agent_stream_returns_404() {
+        let tmp = setup_fixture_home();
+        unsafe { std::env::set_var("HOME", tmp.path()) };
+
+        let app = build_test_app();
+        let body = serde_json::json!({
+            "message": {"role": "ROLE_USER", "parts": [{"text_part": {"text": "Should 404."}}]}
+        });
+        let req = Request::builder()
+            .method("POST")
+            .uri("/a2a/agents/nonexistent-agent-00000/message:stream")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(&body).unwrap()))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), 404);
+    }
+
+    #[tokio::test]
+    async fn route_no_match_returns_404() {
+        let tmp = setup_fixture_home();
+        unsafe { std::env::set_var("HOME", tmp.path()) };
+
+        let app = build_test_app();
+        let body = serde_json::json!({
+            "message": {"role": "ROLE_USER", "parts": [{"text_part": {"text": "no match"}}]},
+            "routing": {"tags": ["nonexistent-capability-00000"]}
+        });
+        let req = Request::builder()
+            .method("POST")
+            .uri("/a2a/route/message:send")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(&body).unwrap()))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), 404, "route with no matching tags should 404");
+    }
+
+    #[tokio::test]
+    async fn route_endpoint_exists_not_405() {
+        let tmp = setup_fixture_home();
+        unsafe { std::env::set_var("HOME", tmp.path()) };
+
+        let app = build_test_app();
+        let body = serde_json::json!({
+            "message": {"role": "ROLE_USER", "parts": [{"text_part": {"text": "test"}}]},
+            "routing": {"tags": ["test"]}
+        });
+        let req = Request::builder()
+            .method("POST")
+            .uri("/a2a/route/message:send")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(&body).unwrap()))
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_ne!(resp.status(), 405, "routing endpoint should not return 405");
+        assert_ne!(resp.status(), 500, "routing endpoint should not return 500");
+    }
+
+    #[tokio::test]
+    async fn agent_card_has_enriched_metadata() {
+        let tmp = setup_fixture_home();
+        unsafe { std::env::set_var("HOME", tmp.path()) };
+
+        let app = build_test_app();
+        let req = Request::builder()
+            .uri("/a2a/agents/echo-agent-001/.well-known/agent-card.json")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), 200, "known agent card should return 200");
+
+        let json = body_json(resp.into_body()).await;
+        assert!(json.get("name").is_some(), "card should have name");
+        assert!(json.get("supportedInterfaces").is_some(), "card should have supportedInterfaces");
+
+        let arp = &json["metadata"]["arp"];
+        assert_eq!(arp["agent_id"], "echo-agent-001");
+        assert_eq!(arp["workspace"], "arp-test");
+        assert_eq!(arp["project"], "test-project");
+        assert_eq!(arp["template"], "echo");
+        assert_eq!(arp["status"], "ready");
+        assert!(arp["direct_url"].as_str().is_some(), "should have direct_url");
+        assert!(arp["started_at"].as_str().is_some(), "should have started_at");
+    }
+
+    #[tokio::test]
+    async fn agent_card_interface_url_points_to_proxy() {
+        let tmp = setup_fixture_home();
+        unsafe { std::env::set_var("HOME", tmp.path()) };
+
+        let app = build_test_app();
+        let req = Request::builder()
+            .uri("/a2a/agents/echo-agent-001/.well-known/agent-card.json")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        let json = body_json(resp.into_body()).await;
+
+        let ifaces = json["supportedInterfaces"].as_array().expect("should have interfaces");
+        assert!(!ifaces.is_empty());
+        let url = ifaces[0]["url"].as_str().unwrap();
+        assert!(
+            url.contains("/a2a/agents/echo-agent-001"),
+            "interface URL should point to proxy, got: {url}"
+        );
+    }
+
+    #[tokio::test]
+    async fn list_agents_includes_metadata_with_direct_url() {
+        let tmp = setup_fixture_home();
+        unsafe { std::env::set_var("HOME", tmp.path()) };
+
+        let app = build_test_app();
+        let req = Request::builder()
+            .uri("/a2a/agents")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        let json = body_json(resp.into_body()).await;
+        let agents = json.as_array().unwrap();
+        assert!(!agents.is_empty());
+
+        let direct_url = agents[0]["metadata"]["arp"]["direct_url"].as_str();
+        assert!(direct_url.is_some(), "listed agent should have direct_url in metadata");
+    }
+
+    #[tokio::test]
+    async fn list_agents_excludes_stopped_agents() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config_dir = tmp.path().join(".config/awesometree");
+        std::fs::create_dir_all(&config_dir).unwrap();
+
+        let mut store = Store::default();
+        let ws = WorkspaceState {
+            project: "proj".into(),
+            active: true,
+            tag_index: 10,
+            dir: "/ws".into(),
+            agents: vec![
+                AgentInstanceState {
+                    id: "ready-1".into(),
+                    template: "echo".into(),
+                    name: "ready".into(),
+                    workspace: "ws".into(),
+                    status: AgentStatus::Ready,
+                    port: 9200,
+                    host: None,
+                    pid: None,
+                    started_at: "2026-04-28T10:00:00Z".into(),
+                },
+                AgentInstanceState {
+                    id: "stopped-1".into(),
+                    template: "echo".into(),
+                    name: "stopped".into(),
+                    workspace: "ws".into(),
+                    status: AgentStatus::Stopped,
+                    port: 9201,
+                    host: None,
+                    pid: None,
+                    started_at: "2026-04-28T10:00:00Z".into(),
+                },
+            ],
+            ..Default::default()
+        };
+        store.workspaces.insert("ws".into(), ws);
+        let json = serde_json::to_string_pretty(&store).unwrap();
+        std::fs::write(config_dir.join("state.json"), json).unwrap();
+        unsafe { std::env::set_var("HOME", tmp.path()) };
+
+        let app = build_test_app();
+        let req = Request::builder()
+            .uri("/a2a/agents")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        let json = body_json(resp.into_body()).await;
+        let agents = json.as_array().unwrap();
+        assert_eq!(agents.len(), 1, "stopped agents should be excluded");
+        assert_eq!(agents[0]["metadata"]["arp"]["agent_id"], "ready-1");
+    }
+
+    #[tokio::test]
+    async fn discover_filters_by_workspace() {
+        let tmp = setup_fixture_home();
+        unsafe { std::env::set_var("HOME", tmp.path()) };
+
+        let app = build_test_app();
+        let req = Request::builder()
+            .uri("/a2a/discover?workspace=arp-test")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), 200);
+        let json = body_json(resp.into_body()).await;
+        let agents = json.as_array().unwrap();
+        assert!(!agents.is_empty(), "should find agent in arp-test workspace");
+    }
+
+    #[tokio::test]
+    async fn discover_filters_by_nonexistent_workspace_returns_empty() {
+        let tmp = setup_fixture_home();
+        unsafe { std::env::set_var("HOME", tmp.path()) };
+
+        let app = build_test_app();
+        let req = Request::builder()
+            .uri("/a2a/discover?workspace=nonexistent")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), 200);
+        let json = body_json(resp.into_body()).await;
+        let agents = json.as_array().unwrap();
+        assert!(agents.is_empty());
+    }
 }

@@ -67,6 +67,11 @@ a2a-rs-client = "1.0"
 uuid = { version = "1", features = ["v4"] }
 chrono = { version = "0.4", features = ["serde"] }
 
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"
+tempfile = "3"
+
 # Linux-only dependencies (only used by GUI modules)
 [target.'cfg(target_os = "linux")'.dependencies]
 tray-menu = { version = "0.1", features = ["gtk"], optional = true }

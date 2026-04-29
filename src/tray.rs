@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::process::Command;
 use std::time::Duration;
 use tray::{Icon, TrayIconBuilder, TrayIconEvent, MouseButton, MouseButtonState};
@@ -66,6 +67,7 @@ fn show_menu(position: PhysicalPosition<f64>) {
     menu.add(&TextEntry::of("pick", "Open Workspace"));
     menu.add(&Divider);
     menu.add(&TextEntry::of("projects", "Projects"));
+    menu.add(&TextEntry::of("agents", "Agents"));
     menu.add(&TextEntry::of("mobile-qr", "Mobile Connect"));
     menu.add(&TextEntry::of("logs", "Logs"));
     menu.add(&Divider);
@@ -80,8 +82,8 @@ fn show_menu(position: PhysicalPosition<f64>) {
 #[cfg(target_os = "macos")]
 fn show_menu(_position: tray::dpi::PhysicalPosition<f64>) {
     let script = r#"
-set menuItems to {"Create Workspace", "Open Workspace", "-", "Projects", "Mobile Connect", "Logs", "-", "Restart", "Exit"}
-set menuIds to {"create", "pick", "", "projects", "mobile-qr", "logs", "", "restart", "exit"}
+set menuItems to {"Create Workspace", "Open Workspace", "-", "Projects", "Agents", "Mobile Connect", "Logs", "-", "Restart", "Exit"}
+set menuIds to {"create", "pick", "", "projects", "agents", "mobile-qr", "logs", "", "restart", "exit"}
 set chosen to choose from list menuItems with prompt "awesometree" without multiple selections allowed and empty selection allowed
 if chosen is false then return ""
 set chosenItem to item 1 of chosen
@@ -103,25 +105,36 @@ return ""
     }
 }
 
+fn awesometree_bin() -> PathBuf {
+    std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.join("awesometree")))
+        .unwrap_or_else(|| PathBuf::from("awesometree"))
+}
+
 fn handle_menu_action(id: &str) {
+    let bin = awesometree_bin();
     match id {
         "create" => {
-            let _ = Command::new("awesometree").arg("create-interactive").spawn();
+            let _ = Command::new(&bin).arg("create-interactive").spawn();
         }
         "pick" => {
-            let _ = Command::new("awesometree").arg("pick").spawn();
+            let _ = Command::new(&bin).arg("pick").spawn();
         }
         "projects" => {
-            let _ = Command::new("awesometree").arg("projects-ui").spawn();
+            let _ = Command::new(&bin).arg("projects-ui").spawn();
+        }
+        "agents" => {
+            let _ = Command::new(&bin).arg("agents-ui").spawn();
         }
         "mobile-qr" => {
-            let _ = Command::new("awesometree").arg("mobile-qr").spawn();
+            let _ = Command::new(&bin).arg("mobile-qr").spawn();
         }
         "logs" => {
             crate::log::request_log_window();
         }
         "restart" => {
-            let _ = Command::new("awesometree").arg("restart-daemon").spawn();
+            let _ = Command::new(&bin).arg("restart-daemon").spawn();
         }
         "exit" => std::process::exit(0),
         _ => {}

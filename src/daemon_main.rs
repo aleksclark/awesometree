@@ -1,3 +1,4 @@
+use awesometree::agents_ui;
 use awesometree::acp_supervisor;
 use awesometree::agent_supervisor;
 use awesometree::daemon::{self, DaemonCmd};
@@ -90,6 +91,7 @@ fn main() {
             KeyBinding::new("ctrl-d", picker::DestroySelected, None),
             KeyBinding::new("escape", projects_ui::Dismiss, None),
             KeyBinding::new("escape", qr::DismissQr, None),
+            KeyBinding::new("escape", agents_ui::DismissAgents, None),
             KeyBinding::new("enter", projects_ui::ConfirmAction, None),
             KeyBinding::new("tab", projects_ui::NextField, None),
             KeyBinding::new("shift-tab", projects_ui::PrevField, None),
@@ -176,6 +178,10 @@ fn main() {
                     DaemonCmd::Projects => {
                         dlog::log("Projects UI opened");
                         let _ = cx.update(projects_ui::open_projects_window);
+                    }
+                    DaemonCmd::Agents => {
+                        dlog::log("Agents UI opened");
+                        let _ = cx.update(agents_ui::open_agents_window);
                     }
                     DaemonCmd::LaunchAgent => {}
                     DaemonCmd::Restart => {

@@ -30,7 +30,8 @@ else
 	install -m 755 target/release/awesometree $(PREFIX)/bin/awesometree
 	install -m 755 target/release/awesometree-daemon $(PREFIX)/bin/awesometree-daemon
 	install -d $(SYSTEMD_USER_DIR)
-	install -m 644 $(SERVICE_NAME) $(SYSTEMD_USER_DIR)/$(SERVICE_NAME)
+	sed 's|__PREFIX__|$(PREFIX)|g' $(SERVICE_NAME) > $(SYSTEMD_USER_DIR)/$(SERVICE_NAME)
+	chmod 644 $(SYSTEMD_USER_DIR)/$(SERVICE_NAME)
 	systemctl --user daemon-reload
 	systemctl --user restart $(SERVICE_NAME)
 endif

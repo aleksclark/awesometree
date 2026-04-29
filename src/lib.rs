@@ -21,6 +21,8 @@ pub mod picker;
 #[cfg(feature = "gui")]
 pub mod projects_ui;
 #[cfg(feature = "gui")]
+pub mod agents_ui;
+#[cfg(feature = "gui")]
 pub mod text_input;
 #[cfg(feature = "gui")]
 pub mod tray;

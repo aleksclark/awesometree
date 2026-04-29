@@ -11,6 +11,7 @@ pub enum DaemonCmd {
     Create,
     Projects,
     LaunchAgent,
+    Agents,
     Restart,
     Reload,
     Logs,
@@ -89,6 +90,7 @@ pub fn parse_command(input: &str) -> Option<DaemonCmd> {
         "create" => Some(DaemonCmd::Create),
         "projects" => Some(DaemonCmd::Projects),
         "launch-agent" => Some(DaemonCmd::LaunchAgent),
+        "agents" => Some(DaemonCmd::Agents),
         "restart" => Some(DaemonCmd::Restart),
         "reload" => Some(DaemonCmd::Reload),
         "logs" => Some(DaemonCmd::Logs),
@@ -123,6 +125,11 @@ mod tests {
     #[test]
     fn parse_command_launch_agent() {
         assert!(matches!(parse_command("launch-agent"), Some(DaemonCmd::LaunchAgent)));
+    }
+
+    #[test]
+    fn parse_command_agents() {
+        assert!(matches!(parse_command("agents"), Some(DaemonCmd::Agents)));
     }
 
     #[test]
