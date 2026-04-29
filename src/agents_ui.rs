@@ -443,6 +443,7 @@ mod tests {
                 host: None,
                 pid: None,
                 started_at: String::new(),
+                ..Default::default()
             },
             workspace: "ws".into(),
             project: "proj".into(),
