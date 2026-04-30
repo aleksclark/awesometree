@@ -30,6 +30,7 @@ pub struct WorkspaceState {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Default)]
 #[serde(rename_all = "lowercase")]
 pub enum AgentStatus {
     Starting,
@@ -37,6 +38,7 @@ pub enum AgentStatus {
     Busy,
     Error,
     Stopping,
+    #[default]
     Stopped,
 }
 
@@ -53,11 +55,7 @@ impl std::fmt::Display for AgentStatus {
     }
 }
 
-impl Default for AgentStatus {
-    fn default() -> Self {
-        AgentStatus::Stopped
-    }
-}
+
 
 #[derive(Debug, Default, Serialize, Deserialize, Clone)]
 pub struct AgentInstanceState {
@@ -73,6 +71,12 @@ pub struct AgentInstanceState {
     pub pid: Option<u32>,
     #[serde(default)]
     pub started_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spawned_by: Option<String>,
 }
 
 impl AgentInstanceState {
@@ -291,6 +295,92 @@ impl Store {
             }
         }
         None
+    }
+
+    /// Search all workspaces for an agent whose `name` field matches.
+    /// Prefers `Ready` over `Busy`. Skips `Stopped`/`Stopping` agents.
+    pub fn find_agent_by_name(&self, name: &str) -> Option<(&str, &AgentInstanceState)> {
+        let mut best: Option<(&str, &AgentInstanceState)> = None;
+        for (ws_name, ws) in &self.workspaces {
+            for agent in &ws.agents {
+                if agent.name != name {
+                    continue;
+                }
+                if agent.status == AgentStatus::Stopped || agent.status == AgentStatus::Stopping {
+                    continue;
+                }
+                match &best {
+                    None => best = Some((ws_name.as_str(), agent)),
+                    Some((_, existing)) => {
+                        if agent.status == AgentStatus::Ready
+                            && existing.status != AgentStatus::Ready
+                        {
+                            best = Some((ws_name.as_str(), agent));
+                        }
+                    }
+                }
+            }
+        }
+        best
+    }
+
+    /// Look in a specific workspace for an agent by name.
+    /// Skips `Stopped`/`Stopping` agents. Prefers `Ready` over `Busy`.
+    pub fn find_agent_by_ws_name(
+        &self,
+        workspace: &str,
+        name: &str,
+    ) -> Option<(&str, &AgentInstanceState)> {
+        let (ws_key, ws) = self.workspaces.get_key_value(workspace)?;
+        let mut best: Option<&AgentInstanceState> = None;
+        for agent in &ws.agents {
+            if agent.name != name {
+                continue;
+            }
+            if agent.status == AgentStatus::Stopped || agent.status == AgentStatus::Stopping {
+                continue;
+            }
+            match &best {
+                None => best = Some(agent),
+                Some(existing) => {
+                    if agent.status == AgentStatus::Ready
+                        && existing.status != AgentStatus::Ready
+                    {
+                        best = Some(agent);
+                    }
+                }
+            }
+        }
+        best.map(|agent| (ws_key.as_str(), agent))
+    }
+
+    /// Flexible agent resolution following the ARP spec order:
+    /// 1. By `agent_id` — exact match
+    /// 2. If identifier contains `/`, split into `workspace/name` and try `find_agent_by_ws_name`
+    /// 3. By `name` — name match across all workspaces
+    ///
+    /// Skips agents with status `Stopped`/`Stopping`, prefers `Ready` over `Busy`.
+    pub fn resolve_agent_flexible(&self, identifier: &str) -> Option<(&str, &AgentInstanceState)> {
+        // 1. Exact agent_id match
+        if let Some((ws, agent)) = self.find_agent(identifier) {
+            if agent.status != AgentStatus::Stopped && agent.status != AgentStatus::Stopping {
+                return Some((ws, agent));
+            }
+        }
+
+        // 2. workspace/name composite key
+        if let Some(slash_pos) = identifier.find('/') {
+            let workspace = &identifier[..slash_pos];
+            let name = &identifier[slash_pos + 1..];
+            if !workspace.is_empty() && !name.is_empty() {
+                if let Some(result) = self.find_agent_by_ws_name(workspace, name) {
+                    return Some(result);
+                }
+            }
+        }
+
+        // 3. Name match across all workspaces
+        self.find_agent_by_name(identifier)
     }
 
     pub fn find_agent_mut(&mut self, agent_id: &str) -> Option<&mut AgentInstanceState> {
@@ -589,6 +679,7 @@ mod tests {
             host: None,
             pid: Some(1234),
             started_at: "2026-04-28T10:00:00Z".into(),
+            ..Default::default()
         }
     }
 
@@ -709,5 +800,243 @@ mod tests {
         let ws = s.workspace("ws1").unwrap();
         assert!(ws.agents.is_empty());
         assert_eq!(ws.acp_port, Some(9100));
+    }
+
+    fn make_agent_with_status(
+        id: &str,
+        name: &str,
+        ws: &str,
+        port: u16,
+        status: AgentStatus,
+    ) -> AgentInstanceState {
+        AgentInstanceState {
+            id: id.into(),
+            template: "crush".into(),
+            name: name.into(),
+            workspace: ws.into(),
+            status,
+            port,
+            host: None,
+            pid: Some(1234),
+            started_at: "2026-04-28T10:00:00Z".into(),
+            ..Default::default()
+        }
+    }
+
+    // --- find_agent_by_name tests ---
+
+    #[test]
+    fn find_agent_by_name_returns_match() {
+        let mut s = make_store();
+        s.set_active("ws1", "proj", 10, "/tmp", None, None);
+        s.add_agent("ws1", make_agent("agent-1", "coder", "ws1", 9100));
+        let (ws, agent) = s.find_agent_by_name("coder").unwrap();
+        assert_eq!(ws, "ws1");
+        assert_eq!(agent.id, "agent-1");
+    }
+
+    #[test]
+    fn find_agent_by_name_no_match() {
+        let mut s = make_store();
+        s.set_active("ws1", "proj", 10, "/tmp", None, None);
+        s.add_agent("ws1", make_agent("agent-1", "coder", "ws1", 9100));
+        assert!(s.find_agent_by_name("reviewer").is_none());
+    }
+
+    #[test]
+    fn find_agent_by_name_prefers_ready_over_busy() {
+        let mut s = make_store();
+        s.set_active("ws1", "proj", 10, "/tmp", None, None);
+        s.set_active("ws2", "proj", 11, "/tmp2", None, None);
+        s.add_agent(
+            "ws1",
+            make_agent_with_status("busy-1", "coder", "ws1", 9100, AgentStatus::Busy),
+        );
+        s.add_agent(
+            "ws2",
+            make_agent_with_status("ready-1", "coder", "ws2", 9101, AgentStatus::Ready),
+        );
+        let (_, agent) = s.find_agent_by_name("coder").unwrap();
+        assert_eq!(agent.id, "ready-1");
+    }
+
+    #[test]
+    fn find_agent_by_name_skips_stopped() {
+        let mut s = make_store();
+        s.set_active("ws1", "proj", 10, "/tmp", None, None);
+        s.add_agent(
+            "ws1",
+            make_agent_with_status("stopped-1", "coder", "ws1", 9100, AgentStatus::Stopped),
+        );
+        assert!(s.find_agent_by_name("coder").is_none());
+    }
+
+    #[test]
+    fn find_agent_by_name_skips_stopping() {
+        let mut s = make_store();
+        s.set_active("ws1", "proj", 10, "/tmp", None, None);
+        s.add_agent(
+            "ws1",
+            make_agent_with_status("stopping-1", "coder", "ws1", 9100, AgentStatus::Stopping),
+        );
+        assert!(s.find_agent_by_name("coder").is_none());
+    }
+
+    // --- find_agent_by_ws_name tests ---
+
+    #[test]
+    fn find_agent_by_ws_name_returns_match() {
+        let mut s = make_store();
+        s.set_active("ws1", "proj", 10, "/tmp", None, None);
+        s.add_agent("ws1", make_agent("agent-1", "coder", "ws1", 9100));
+        let (ws, agent) = s.find_agent_by_ws_name("ws1", "coder").unwrap();
+        assert_eq!(ws, "ws1");
+        assert_eq!(agent.id, "agent-1");
+    }
+
+    #[test]
+    fn find_agent_by_ws_name_wrong_workspace() {
+        let mut s = make_store();
+        s.set_active("ws1", "proj", 10, "/tmp", None, None);
+        s.add_agent("ws1", make_agent("agent-1", "coder", "ws1", 9100));
+        assert!(s.find_agent_by_ws_name("ws2", "coder").is_none());
+    }
+
+    #[test]
+    fn find_agent_by_ws_name_wrong_name() {
+        let mut s = make_store();
+        s.set_active("ws1", "proj", 10, "/tmp", None, None);
+        s.add_agent("ws1", make_agent("agent-1", "coder", "ws1", 9100));
+        assert!(s.find_agent_by_ws_name("ws1", "reviewer").is_none());
+    }
+
+    #[test]
+    fn find_agent_by_ws_name_skips_stopped() {
+        let mut s = make_store();
+        s.set_active("ws1", "proj", 10, "/tmp", None, None);
+        s.add_agent(
+            "ws1",
+            make_agent_with_status("a1", "coder", "ws1", 9100, AgentStatus::Stopped),
+        );
+        assert!(s.find_agent_by_ws_name("ws1", "coder").is_none());
+    }
+
+    #[test]
+    fn find_agent_by_ws_name_prefers_ready() {
+        let mut s = make_store();
+        s.set_active("ws1", "proj", 10, "/tmp", None, None);
+        s.add_agent(
+            "ws1",
+            make_agent_with_status("busy-1", "coder", "ws1", 9100, AgentStatus::Busy),
+        );
+        s.add_agent(
+            "ws1",
+            make_agent_with_status("ready-1", "coder", "ws1", 9101, AgentStatus::Ready),
+        );
+        let (_, agent) = s.find_agent_by_ws_name("ws1", "coder").unwrap();
+        assert_eq!(agent.id, "ready-1");
+    }
+
+    // --- resolve_agent_flexible tests ---
+
+    #[test]
+    fn resolve_flexible_by_id() {
+        let mut s = make_store();
+        s.set_active("ws1", "proj", 10, "/tmp", None, None);
+        s.add_agent("ws1", make_agent("agent-abc123", "coder", "ws1", 9100));
+        let (ws, agent) = s.resolve_agent_flexible("agent-abc123").unwrap();
+        assert_eq!(ws, "ws1");
+        assert_eq!(agent.id, "agent-abc123");
+    }
+
+    #[test]
+    fn resolve_flexible_by_name() {
+        let mut s = make_store();
+        s.set_active("ws1", "proj", 10, "/tmp", None, None);
+        s.add_agent("ws1", make_agent("agent-abc123", "coder", "ws1", 9100));
+        let (_, agent) = s.resolve_agent_flexible("coder").unwrap();
+        assert_eq!(agent.id, "agent-abc123");
+    }
+
+    #[test]
+    fn resolve_flexible_by_ws_name() {
+        let mut s = make_store();
+        s.set_active("ws1", "proj", 10, "/tmp", None, None);
+        s.set_active("ws2", "proj", 11, "/tmp2", None, None);
+        s.add_agent("ws1", make_agent("a1", "coder", "ws1", 9100));
+        s.add_agent("ws2", make_agent("a2", "coder", "ws2", 9101));
+        // "ws2/coder" should resolve to agent in ws2
+        let (ws, agent) = s.resolve_agent_flexible("ws2/coder").unwrap();
+        assert_eq!(ws, "ws2");
+        assert_eq!(agent.id, "a2");
+    }
+
+    #[test]
+    fn resolve_flexible_id_takes_priority_over_name() {
+        let mut s = make_store();
+        s.set_active("ws1", "proj", 10, "/tmp", None, None);
+        // Agent whose id happens to match another agent's name
+        s.add_agent("ws1", make_agent("coder", "some-other-name", "ws1", 9100));
+        s.add_agent("ws1", make_agent("agent-2", "coder", "ws1", 9101));
+        // Resolving "coder" should match the agent_id first (agent with id="coder")
+        let (_, agent) = s.resolve_agent_flexible("coder").unwrap();
+        assert_eq!(agent.id, "coder");
+    }
+
+    #[test]
+    fn resolve_flexible_skips_stopped_agent_by_id() {
+        let mut s = make_store();
+        s.set_active("ws1", "proj", 10, "/tmp", None, None);
+        s.add_agent(
+            "ws1",
+            make_agent_with_status("agent-1", "coder", "ws1", 9100, AgentStatus::Stopped),
+        );
+        assert!(s.resolve_agent_flexible("agent-1").is_none());
+    }
+
+    #[test]
+    fn resolve_flexible_skips_stopped_falls_through_to_name() {
+        let mut s = make_store();
+        s.set_active("ws1", "proj", 10, "/tmp", None, None);
+        s.set_active("ws2", "proj", 11, "/tmp2", None, None);
+        // Agent with matching id is stopped
+        s.add_agent(
+            "ws1",
+            make_agent_with_status("coder", "some-name", "ws1", 9100, AgentStatus::Stopped),
+        );
+        // Different agent with matching name is ready
+        s.add_agent(
+            "ws2",
+            make_agent_with_status("agent-2", "coder", "ws2", 9101, AgentStatus::Ready),
+        );
+        let (_, agent) = s.resolve_agent_flexible("coder").unwrap();
+        assert_eq!(agent.id, "agent-2");
+    }
+
+    #[test]
+    fn resolve_flexible_ws_name_takes_priority_over_bare_name() {
+        let mut s = make_store();
+        s.set_active("ws1", "proj", 10, "/tmp", None, None);
+        s.set_active("ws2", "proj", 11, "/tmp2", None, None);
+        s.add_agent("ws1", make_agent("a1", "coder", "ws1", 9100));
+        s.add_agent("ws2", make_agent("a2", "coder", "ws2", 9101));
+        // "ws1/coder" should target ws1, not just any "coder"
+        let (ws, agent) = s.resolve_agent_flexible("ws1/coder").unwrap();
+        assert_eq!(ws, "ws1");
+        assert_eq!(agent.id, "a1");
+    }
+
+    #[test]
+    fn resolve_flexible_ws_name_not_found() {
+        let mut s = make_store();
+        s.set_active("ws1", "proj", 10, "/tmp", None, None);
+        s.add_agent("ws1", make_agent("a1", "coder", "ws1", 9100));
+        assert!(s.resolve_agent_flexible("ws2/coder").is_none());
+    }
+
+    #[test]
+    fn resolve_flexible_no_match_returns_none() {
+        let s = make_store();
+        assert!(s.resolve_agent_flexible("nonexistent").is_none());
     }
 }
