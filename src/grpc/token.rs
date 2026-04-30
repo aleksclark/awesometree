@@ -148,3 +148,50 @@ impl TokenService for TokenServiceImpl {
         }))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn proto_permission_values() {
+        // Verify the proto enum values match what we expect
+        assert_eq!(Permission::Session as i32, 1);
+        assert_eq!(Permission::Project as i32, 2);
+        assert_eq!(Permission::Admin as i32, 3);
+    }
+
+    #[test]
+    fn proto_scope_global() {
+        let scope = Scope {
+            global: true,
+            projects: vec![],
+        };
+        assert!(scope.global);
+        assert!(scope.projects.is_empty());
+    }
+
+    #[test]
+    fn proto_scope_projects() {
+        let scope = Scope {
+            global: false,
+            projects: vec!["proj-a".into(), "proj-b".into()],
+        };
+        assert!(!scope.global);
+        assert_eq!(scope.projects.len(), 2);
+        assert_eq!(scope.projects[0], "proj-a");
+    }
+
+    #[test]
+    fn proto_permission_try_from() {
+        assert_eq!(Permission::try_from(1), Ok(Permission::Session));
+        assert_eq!(Permission::try_from(2), Ok(Permission::Project));
+        assert_eq!(Permission::try_from(3), Ok(Permission::Admin));
+        assert!(Permission::try_from(99).is_err());
+    }
+
+    #[test]
+    fn token_service_impl_is_default() {
+        let _svc = TokenServiceImpl::default();
+    }
+}

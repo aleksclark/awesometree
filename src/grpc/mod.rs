@@ -42,3 +42,84 @@ pub fn grpc_router() -> tonic::transport::server::Router {
         .add_service(arp_proto::discovery_service_server::DiscoveryServiceServer::new(DiscoveryServiceImpl))
         .add_service(arp_proto::token_service_server::TokenServiceServer::new(TokenServiceImpl))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extract_token_returns_admin_for_missing_auth() {
+        let req = tonic::Request::new(());
+        let token = extract_token(&req);
+        assert_eq!(token.permission, auth::Permission::Admin);
+    }
+
+    #[test]
+    fn extract_token_with_valid_bearer() {
+        let scoped = auth::create_scoped_token(
+            "test-user",
+            auth::TokenScope::Projects(vec!["myproject".into()]),
+            auth::Permission::Project,
+            None,
+        );
+        let bearer = auth::encode_scoped_token(&scoped);
+
+        let mut req = tonic::Request::new(());
+        req.metadata_mut().insert(
+            "authorization",
+            format!("Bearer {bearer}").parse().unwrap(),
+        );
+        let token = extract_token(&req);
+        assert_eq!(token.subject, "test-user");
+        assert_eq!(token.permission, auth::Permission::Project);
+    }
+
+    #[test]
+    fn extract_token_with_invalid_bearer_falls_back() {
+        let mut req = tonic::Request::new(());
+        req.metadata_mut().insert(
+            "authorization",
+            "Bearer invalid-token-data".parse().unwrap(),
+        );
+        let token = extract_token(&req);
+        // Should fall back to admin
+        assert_eq!(token.permission, auth::Permission::Admin);
+    }
+
+    #[test]
+    fn extract_token_with_global_scope() {
+        let scoped = auth::create_scoped_token(
+            "admin-user",
+            auth::TokenScope::Global,
+            auth::Permission::Admin,
+            None,
+        );
+        let bearer = auth::encode_scoped_token(&scoped);
+
+        let mut req = tonic::Request::new(());
+        req.metadata_mut().insert(
+            "authorization",
+            format!("Bearer {bearer}").parse().unwrap(),
+        );
+        let token = extract_token(&req);
+        assert_eq!(token.subject, "admin-user");
+        assert!(matches!(token.scope, auth::TokenScope::Global));
+    }
+
+    #[test]
+    fn extract_token_no_bearer_prefix_falls_back() {
+        let mut req = tonic::Request::new(());
+        req.metadata_mut().insert(
+            "authorization",
+            "Basic dXNlcjpwYXNz".parse().unwrap(),
+        );
+        let token = extract_token(&req);
+        // Not a Bearer token, should fall back to admin
+        assert_eq!(token.permission, auth::Permission::Admin);
+    }
+
+    #[test]
+    fn grpc_router_builds() {
+        let _ = grpc_router();
+    }
+}

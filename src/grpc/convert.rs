@@ -131,3 +131,241 @@ fn json_to_prost_value(val: &serde_json::Value) -> Option<prost_types::Value> {
     };
     Some(prost_types::Value { kind: Some(kind) })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::{AgentInstanceState, AgentStatus};
+
+    #[test]
+    fn agent_status_to_proto_maps_correctly() {
+        assert_eq!(agent_status_to_proto(&AgentStatus::Starting), arp_proto::AgentStatus::Starting as i32);
+        assert_eq!(agent_status_to_proto(&AgentStatus::Ready), arp_proto::AgentStatus::Ready as i32);
+        assert_eq!(agent_status_to_proto(&AgentStatus::Busy), arp_proto::AgentStatus::Busy as i32);
+        assert_eq!(agent_status_to_proto(&AgentStatus::Error), arp_proto::AgentStatus::Error as i32);
+        assert_eq!(agent_status_to_proto(&AgentStatus::Stopping), arp_proto::AgentStatus::Stopping as i32);
+        assert_eq!(agent_status_to_proto(&AgentStatus::Stopped), arp_proto::AgentStatus::Stopped as i32);
+    }
+
+    #[test]
+    fn agent_instance_to_proto_basic() {
+        let agent = AgentInstanceState {
+            id: "test-abc123".into(),
+            template: "crush".into(),
+            name: "coder".into(),
+            workspace: "feat-auth".into(),
+            status: AgentStatus::Ready,
+            port: 9100,
+            host: None,
+            pid: Some(1234),
+            started_at: "2026-04-28T10:00:00Z".into(),
+            ..Default::default()
+        };
+        let proto = agent_instance_to_proto(&agent);
+        assert_eq!(proto.id, "test-abc123");
+        assert_eq!(proto.template, "crush");
+        assert_eq!(proto.workspace, "feat-auth");
+        assert_eq!(proto.port, 9100);
+        assert_eq!(proto.pid, 1234);
+        assert_eq!(proto.status, arp_proto::AgentStatus::Ready as i32);
+        assert!(proto.direct_url.contains("9100"), "direct_url should contain port: {}", proto.direct_url);
+    }
+
+    #[test]
+    fn agent_instance_to_proto_with_host() {
+        let agent = AgentInstanceState {
+            id: "test-xyz".into(),
+            template: "echo".into(),
+            name: "echo-agent".into(),
+            workspace: "ws".into(),
+            status: AgentStatus::Busy,
+            port: 9200,
+            host: Some("custom-host".into()),
+            pid: None,
+            started_at: "2026-04-28T10:00:00Z".into(),
+            ..Default::default()
+        };
+        let proto = agent_instance_to_proto(&agent);
+        assert!(proto.direct_url.contains("custom-host"), "direct_url should use host: {}", proto.direct_url);
+        assert_eq!(proto.pid, 0, "pid should default to 0 when None");
+        assert_eq!(proto.status, arp_proto::AgentStatus::Busy as i32);
+    }
+
+    #[test]
+    fn agent_instance_to_proto_started_at_parses() {
+        let agent = AgentInstanceState {
+            id: "test-ts".into(),
+            started_at: "2026-04-28T10:00:00Z".into(),
+            ..Default::default()
+        };
+        let proto = agent_instance_to_proto(&agent);
+        assert!(proto.started_at.is_some(), "valid RFC3339 should produce a timestamp");
+        let ts = proto.started_at.unwrap();
+        assert!(ts.seconds > 0, "timestamp seconds should be positive");
+    }
+
+    #[test]
+    fn agent_instance_to_proto_bad_started_at() {
+        let agent = AgentInstanceState {
+            id: "test-bad-ts".into(),
+            started_at: "not-a-date".into(),
+            ..Default::default()
+        };
+        let proto = agent_instance_to_proto(&agent);
+        assert!(proto.started_at.is_none(), "invalid date should produce None timestamp");
+    }
+
+    #[test]
+    fn workspace_to_proto_basic() {
+        use crate::state::WorkspaceState;
+        let ws = WorkspaceState {
+            project: "myproject".into(),
+            active: true,
+            tag_index: 5,
+            dir: "/home/user/project".into(),
+            agents: vec![
+                AgentInstanceState {
+                    id: "agent-1".into(),
+                    template: "crush".into(),
+                    name: "coder".into(),
+                    workspace: "ws-1".into(),
+                    status: AgentStatus::Ready,
+                    port: 9100,
+                    started_at: "2026-04-28T10:00:00Z".into(),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        let proto = workspace_to_proto("ws-1", &ws);
+        assert_eq!(proto.name, "ws-1");
+        assert_eq!(proto.project, "myproject");
+        assert_eq!(proto.dir, "/home/user/project");
+        assert_eq!(proto.status, arp_proto::WorkspaceStatus::Active as i32);
+        assert_eq!(proto.agents.len(), 1);
+        assert_eq!(proto.agents[0].id, "agent-1");
+    }
+
+    #[test]
+    fn workspace_to_proto_inactive() {
+        use crate::state::WorkspaceState;
+        let ws = WorkspaceState {
+            project: "proj".into(),
+            active: false,
+            agents: vec![],
+            ..Default::default()
+        };
+        let proto = workspace_to_proto("ws-inactive", &ws);
+        assert_eq!(proto.status, arp_proto::WorkspaceStatus::Inactive as i32);
+        assert!(proto.agents.is_empty());
+    }
+
+    #[test]
+    fn json_to_prost_struct_handles_nested_objects() {
+        let json = serde_json::json!({
+            "name": "test-agent",
+            "status": "ready",
+            "metadata": {
+                "arp": {
+                    "agent_id": "abc123"
+                }
+            }
+        });
+        let result = json_to_prost_struct(&json);
+        assert!(result.is_some());
+        let s = result.unwrap();
+        assert!(s.fields.contains_key("name"));
+        assert!(s.fields.contains_key("metadata"));
+    }
+
+    #[test]
+    fn json_to_prost_struct_null_returns_none() {
+        let json = serde_json::Value::Null;
+        assert!(json_to_prost_struct(&json).is_none());
+    }
+
+    #[test]
+    fn json_to_prost_struct_array_returns_none() {
+        let json = serde_json::json!([1, 2, 3]);
+        assert!(json_to_prost_struct(&json).is_none());
+    }
+
+    #[test]
+    fn json_to_prost_struct_string_returns_none() {
+        let json = serde_json::json!("just a string");
+        assert!(json_to_prost_struct(&json).is_none());
+    }
+
+    #[test]
+    fn json_to_prost_struct_empty_object() {
+        let json = serde_json::json!({});
+        let result = json_to_prost_struct(&json);
+        assert!(result.is_some());
+        assert!(result.unwrap().fields.is_empty());
+    }
+
+    #[test]
+    fn json_to_prost_value_covers_all_types() {
+        // Null
+        let v = json_to_prost_value(&serde_json::Value::Null);
+        assert!(v.is_some());
+
+        // Bool
+        let v = json_to_prost_value(&serde_json::json!(true));
+        assert!(v.is_some());
+
+        // Number
+        let v = json_to_prost_value(&serde_json::json!(42.5));
+        assert!(v.is_some());
+
+        // String
+        let v = json_to_prost_value(&serde_json::json!("hello"));
+        assert!(v.is_some());
+
+        // Array
+        let v = json_to_prost_value(&serde_json::json!([1, "two", null]));
+        assert!(v.is_some());
+
+        // Object
+        let v = json_to_prost_value(&serde_json::json!({"key": "value"}));
+        assert!(v.is_some());
+    }
+
+    #[test]
+    fn interop_project_to_proto_basic() {
+        let proj = crate::interop::Project {
+            name: "myproject".into(),
+            version: "1.0".into(),
+            repo: Some("https://github.com/example/repo".into()),
+            branch: Some("main".into()),
+            context: None,
+            ..Default::default()
+        };
+        let proto = interop_project_to_proto(&proj);
+        assert_eq!(proto.name, "myproject");
+        assert_eq!(proto.repo, "https://github.com/example/repo");
+        assert_eq!(proto.branch, "main");
+        assert!(proto.context.is_none());
+    }
+
+    #[test]
+    fn interop_project_to_proto_with_context() {
+        let proj = crate::interop::Project {
+            name: "proj".into(),
+            version: "1.0".into(),
+            context: Some(crate::interop::ContextConfig {
+                files: Some(vec!["README.md".into(), "src/main.rs".into()]),
+                repo_includes: Some(vec!["*.rs".into()]),
+                max_bytes: Some(1024),
+            }),
+            ..Default::default()
+        };
+        let proto = interop_project_to_proto(&proj);
+        assert_eq!(proto.repo, "");
+        assert_eq!(proto.branch, "");
+        let ctx = proto.context.unwrap();
+        assert_eq!(ctx.files.len(), 2);
+        assert_eq!(ctx.repo_includes, vec!["*.rs"]);
+        assert_eq!(ctx.max_bytes, 1024);
+    }
+}
