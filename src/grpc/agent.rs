@@ -59,8 +59,29 @@ impl AgentService for AgentServiceImpl {
             req.name.clone()
         };
 
+        // Parse optional scope narrowing from request
+        let child_scope = req.scope.map(|s| {
+            if s.global {
+                auth::TokenScope::Global
+            } else {
+                auth::TokenScope::Projects(s.projects)
+            }
+        });
+
+        // Parse optional permission narrowing from request
+        let child_perm = if req.permission != 0 {
+            match Permission::try_from(req.permission) {
+                Ok(Permission::Session) => Some(auth::Permission::Session),
+                Ok(Permission::Project) => Some(auth::Permission::Project),
+                Ok(Permission::Admin) => Some(auth::Permission::Admin),
+                _ => None,
+            }
+        } else {
+            None
+        };
+
         // Create child token for the agent
-        let child_token = auth::create_child_token(&token, None, None)
+        let child_token = auth::create_child_token(&token, child_scope, child_perm)
             .map_err(|e| Status::internal(format!("failed to create child token: {e}")))?;
         let mut child_token_with_session = child_token;
         let session_id = auth::ensure_session(&mut child_token_with_session);
@@ -105,6 +126,72 @@ impl AgentService for AgentServiceImpl {
             st.add_agent(&req.workspace, agent);
         })
         .map_err(|e| Status::internal(format!("failed to persist agent: {e}")))?;
+
+        // If a prompt was provided, send it to the agent after it becomes ready
+        if !req.prompt.is_empty() {
+            let prompt = req.prompt.clone();
+            let agent_id = result.agent_id.clone();
+            let port = result.port;
+            tokio::spawn(async move {
+                // Wait for agent to become ready (poll state)
+                let timeout = tokio::time::Duration::from_secs(120);
+                let start = tokio::time::Instant::now();
+                let interval = tokio::time::Duration::from_secs(2);
+                loop {
+                    if start.elapsed() > timeout {
+                        crate::log::log(format!(
+                            "SpawnAgent: timeout waiting for {} to become ready for initial prompt",
+                            agent_id
+                        ));
+                        return;
+                    }
+                    tokio::time::sleep(interval).await;
+                    if let Ok(st) = state::load() {
+                        if let Some((_, agent)) = st.find_agent(&agent_id) {
+                            match agent.status {
+                                state::AgentStatus::Ready | state::AgentStatus::Busy => break,
+                                state::AgentStatus::Error | state::AgentStatus::Stopped | state::AgentStatus::Stopping => {
+                                    crate::log::log(format!(
+                                        "SpawnAgent: agent {} in terminal state, skipping prompt",
+                                        agent_id
+                                    ));
+                                    return;
+                                }
+                                _ => continue,
+                            }
+                        } else {
+                            return; // Agent removed from state
+                        }
+                    }
+                }
+
+                // Send the initial prompt via A2A HTTP+JSON
+                let base_url = format!("http://127.0.0.1:{port}");
+                let body = serde_json::json!({
+                    "message": {
+                        "role": "user",
+                        "parts": [{"text": prompt}],
+                    }
+                });
+                let client = reqwest::Client::new();
+                match client.post(format!("{base_url}/message:send")).json(&body).send().await {
+                    Ok(resp) => {
+                        if !resp.status().is_success() {
+                            crate::log::log(format!(
+                                "SpawnAgent: initial prompt to {} failed: {}",
+                                agent_id, resp.status()
+                            ));
+                        }
+                    }
+                    Err(e) => {
+                        crate::log::log(format!(
+                            "SpawnAgent: failed to send initial prompt to {}: {e}",
+                            agent_id
+                        ));
+                    }
+                }
+            });
+        }
 
         Ok(Response::new(proto_agent))
     }
