@@ -8,6 +8,21 @@ use std::time::Duration;
 use tokio::process::{Child, Command};
 use tokio::sync::Notify;
 
+/// Events broadcast by the supervisor for real-time Watch streaming.
+/// Named `SupervisorEvent` to avoid conflict with the proto `AgentEvent`.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SupervisorEvent {
+    StatusChanged {
+        agent_id: String,
+        status: AgentStatus,
+        workspace: String,
+    },
+    Stopped {
+        agent_id: String,
+        workspace: String,
+    },
+}
+
 const HEALTH_CHECK_INTERVAL: Duration = Duration::from_secs(5);
 const HEALTH_CHECK_TIMEOUT: Duration = Duration::from_secs(3);
 const HEALTH_CHECK_RETRIES: u32 = 3;
@@ -32,6 +47,7 @@ struct ManagedAgent {
 pub struct AgentSupervisor {
     agents: Arc<Mutex<HashMap<String, Arc<ManagedAgent>>>>,
     rt: tokio::runtime::Handle,
+    event_tx: tokio::sync::broadcast::Sender<SupervisorEvent>,
 }
 
 pub struct SpawnOptions {
@@ -51,10 +67,17 @@ pub struct SpawnResult {
 
 impl AgentSupervisor {
     pub fn new(rt: tokio::runtime::Handle) -> Self {
+        let (event_tx, _) = tokio::sync::broadcast::channel(256);
         Self {
             agents: Arc::new(Mutex::new(HashMap::new())),
             rt,
+            event_tx,
         }
+    }
+
+    /// Subscribe to real-time supervisor events.
+    pub fn subscribe(&self) -> tokio::sync::broadcast::Receiver<SupervisorEvent> {
+        self.event_tx.subscribe()
     }
 
     pub fn spawn(&self, opts: SpawnOptions) -> SpawnResult {
@@ -89,8 +112,15 @@ impl AgentSupervisor {
 
         let agents_map = self.agents.clone();
         let aid = agent_id.clone();
+        let event_tx = self.event_tx.clone();
+        let workspace = opts.workspace.clone();
 
         update_agent_state(&aid, AgentStatus::Starting, Some(opts.port));
+        let _ = event_tx.send(SupervisorEvent::StatusChanged {
+            agent_id: aid.clone(),
+            status: AgentStatus::Starting,
+            workspace: workspace.clone(),
+        });
 
         self.rt.spawn(async move {
             dlog::log(format!(
@@ -104,6 +134,11 @@ impl AgentSupervisor {
                 Err(e) => {
                     dlog::log(format!("Agent supervisor: {} spawn failed: {e}", aid));
                     update_agent_state(&aid, AgentStatus::Error, None);
+                    let _ = event_tx.send(SupervisorEvent::StatusChanged {
+                        agent_id: aid.clone(),
+                        status: AgentStatus::Error,
+                        workspace: workspace.clone(),
+                    });
                     agents_map.lock().unwrap().remove(&aid);
                     return;
                 }
@@ -123,6 +158,11 @@ impl AgentSupervisor {
             if !health_ok {
                 dlog::log(format!("Agent supervisor: {} health check failed", aid));
                 update_agent_state(&aid, AgentStatus::Error, None);
+                let _ = event_tx.send(SupervisorEvent::StatusChanged {
+                    agent_id: aid.clone(),
+                    status: AgentStatus::Error,
+                    workspace: workspace.clone(),
+                });
                 graceful_stop(&mut child).await;
                 agents_map.lock().unwrap().remove(&aid);
                 return;
@@ -134,6 +174,11 @@ impl AgentSupervisor {
             }
 
             update_agent_state(&aid, AgentStatus::Ready, None);
+            let _ = event_tx.send(SupervisorEvent::StatusChanged {
+                agent_id: aid.clone(),
+                status: AgentStatus::Ready,
+                workspace: workspace.clone(),
+            });
             dlog::log(format!("Agent supervisor: {} is ready", aid));
 
             tokio::select! {
@@ -144,12 +189,26 @@ impl AgentSupervisor {
                         aid, code
                     ));
                     update_agent_state(&aid, AgentStatus::Error, None);
+                    let _ = event_tx.send(SupervisorEvent::StatusChanged {
+                        agent_id: aid.clone(),
+                        status: AgentStatus::Error,
+                        workspace: workspace.clone(),
+                    });
                 }
                 _ = stop_signal.notified() => {
                     dlog::log(format!("Agent supervisor: stopping {} (pid {})", aid, pid));
                     update_agent_state(&aid, AgentStatus::Stopping, None);
+                    let _ = event_tx.send(SupervisorEvent::StatusChanged {
+                        agent_id: aid.clone(),
+                        status: AgentStatus::Stopping,
+                        workspace: workspace.clone(),
+                    });
                     graceful_stop(&mut child).await;
                     update_agent_state(&aid, AgentStatus::Stopped, None);
+                    let _ = event_tx.send(SupervisorEvent::Stopped {
+                        agent_id: aid.clone(),
+                        workspace: workspace.clone(),
+                    });
                     dlog::log(format!("Agent supervisor: {} stopped", aid));
                 }
             }
@@ -393,6 +452,11 @@ pub fn agent_port(agent_id: &str) -> Option<u16> {
     get().and_then(|sup| sup.agent_port(agent_id))
 }
 
+/// Subscribe to real-time supervisor events from the global instance.
+pub fn subscribe_events() -> Option<tokio::sync::broadcast::Receiver<SupervisorEvent>> {
+    get().map(|sup| sup.subscribe())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -417,5 +481,45 @@ mod tests {
         let rt = tokio::runtime::Runtime::new().unwrap();
         let sup = AgentSupervisor::new(rt.handle().clone());
         assert!(sup.agent_port("nonexistent").is_none());
+    }
+
+    #[test]
+    fn subscribe_returns_receiver() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let sup = AgentSupervisor::new(rt.handle().clone());
+        let _rx = sup.subscribe();
+        // Should not panic; receiver is valid
+    }
+
+    #[test]
+    fn broadcast_event_received() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let sup = AgentSupervisor::new(rt.handle().clone());
+        let mut rx = sup.subscribe();
+        let _ = sup.event_tx.send(SupervisorEvent::StatusChanged {
+            agent_id: "test-agent".into(),
+            status: AgentStatus::Ready,
+            workspace: "ws1".into(),
+        });
+        let event = rx.try_recv().unwrap();
+        match event {
+            SupervisorEvent::StatusChanged { agent_id, status, workspace } => {
+                assert_eq!(agent_id, "test-agent");
+                assert_eq!(status, AgentStatus::Ready);
+                assert_eq!(workspace, "ws1");
+            }
+            _ => panic!("expected StatusChanged event"),
+        }
+    }
+
+    #[test]
+    fn broadcast_no_receivers_does_not_panic() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let sup = AgentSupervisor::new(rt.handle().clone());
+        // Sending with no receivers should not panic
+        let _ = sup.event_tx.send(SupervisorEvent::Stopped {
+            agent_id: "test-agent".into(),
+            workspace: "ws1".into(),
+        });
     }
 }
