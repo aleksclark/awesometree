@@ -240,7 +240,7 @@ impl AgentService for AgentServiceImpl {
 
         let base_url = agent.base_url();
 
-        // Build A2A SendMessage JSON-RPC request
+        // Build A2A v1.0 HTTP+JSON SendMessage request
         let context_id = if req.context_id.is_empty() {
             uuid::Uuid::new_v4().to_string()
         } else {
@@ -248,21 +248,16 @@ impl AgentService for AgentServiceImpl {
         };
 
         let a2a_body = serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": uuid::Uuid::new_v4().to_string(),
-            "method": "message/send",
-            "params": {
-                "message": {
-                    "role": "user",
-                    "parts": [{"kind": "text", "text": req.message}],
-                    "contextId": context_id
-                }
+            "message": {
+                "role": "user",
+                "parts": [{"text": req.message}],
+                "contextId": context_id
             }
         });
 
         let client = reqwest::Client::new();
         let resp = client
-            .post(format!("{base_url}/"))
+            .post(format!("{base_url}/message:send"))
             .json(&a2a_body)
             .send()
             .await
@@ -281,14 +276,11 @@ impl AgentService for AgentServiceImpl {
             .await
             .map_err(|e| Status::internal(format!("failed to parse agent response: {e}")))?;
 
-        // Extract "result" from JSON-RPC response
-        let result_val = resp_json.get("result").unwrap_or(&resp_json);
-
         // Determine if it's a task or message based on presence of "id" field (tasks have ids)
-        let prost_struct = convert::json_to_prost_struct(result_val)
+        let prost_struct = convert::json_to_prost_struct(&resp_json)
             .unwrap_or_default();
 
-        let result = if result_val.get("id").is_some() {
+        let result = if resp_json.get("id").is_some() {
             // Looks like a task
             Some(send_agent_message_response::Result::Task(prost_struct))
         } else {
@@ -343,23 +335,18 @@ impl AgentService for AgentServiceImpl {
             req.context_id.clone()
         };
 
-        // A2A SendMessage — same as above, but we always return a task
+        // A2A v1.0 HTTP+JSON SendMessage — same as above, but we always return a task
         let a2a_body = serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": uuid::Uuid::new_v4().to_string(),
-            "method": "message/send",
-            "params": {
-                "message": {
-                    "role": "user",
-                    "parts": [{"kind": "text", "text": req.message}],
-                    "contextId": context_id
-                }
+            "message": {
+                "role": "user",
+                "parts": [{"text": req.message}],
+                "contextId": context_id
             }
         });
 
         let client = reqwest::Client::new();
         let resp = client
-            .post(format!("{base_url}/"))
+            .post(format!("{base_url}/message:send"))
             .json(&a2a_body)
             .send()
             .await
@@ -378,18 +365,16 @@ impl AgentService for AgentServiceImpl {
             .await
             .map_err(|e| Status::internal(format!("failed to parse agent response: {e}")))?;
 
-        let result_val = resp_json.get("result").unwrap_or(&resp_json);
-
-        // If the result already has an "id", it's a task. Otherwise, wrap it.
-        let task_json = if result_val.get("id").is_some() {
-            result_val.clone()
+        // If the response already has an "id", it's a task. Otherwise, wrap it.
+        let task_json = if resp_json.get("id").is_some() {
+            resp_json
         } else {
             // Wrap in a synthetic completed task
             serde_json::json!({
                 "id": uuid::Uuid::new_v4().to_string(),
                 "contextId": context_id,
                 "status": {"state": "completed"},
-                "result": result_val
+                "result": resp_json
             })
         };
 
@@ -437,21 +422,15 @@ impl AgentService for AgentServiceImpl {
 
         let base_url = agent.base_url();
 
-        // A2A tasks/get JSON-RPC request
-        let a2a_body = serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": uuid::Uuid::new_v4().to_string(),
-            "method": "tasks/get",
-            "params": {
-                "id": req.task_id,
-                "historyLength": req.history_length
-            }
-        });
+        // A2A v1.0 HTTP+JSON — GET /tasks/{task_id}
+        let mut url = format!("{base_url}/tasks/{}", req.task_id);
+        if req.history_length > 0 {
+            url = format!("{url}?historyLength={}", req.history_length);
+        }
 
         let client = reqwest::Client::new();
         let resp = client
-            .post(format!("{base_url}/"))
-            .json(&a2a_body)
+            .get(&url)
             .send()
             .await
             .map_err(|e| Status::unavailable(format!("failed to reach agent: {e}")))?;
@@ -469,8 +448,7 @@ impl AgentService for AgentServiceImpl {
             .await
             .map_err(|e| Status::internal(format!("failed to parse agent response: {e}")))?;
 
-        let result_val = resp_json.get("result").unwrap_or(&resp_json);
-        let prost_struct = convert::json_to_prost_struct(result_val)
+        let prost_struct = convert::json_to_prost_struct(&resp_json)
             .unwrap_or_default();
 
         Ok(Response::new(prost_struct))
