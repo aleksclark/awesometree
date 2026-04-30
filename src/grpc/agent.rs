@@ -22,9 +22,9 @@ impl AgentService for AgentServiceImpl {
         let token = extract_token(&request);
         let req = request.into_inner();
 
-        // Require project-level permission
-        if !auth::permission_allows(&token.permission, &auth::Permission::Project) {
-            return Err(Status::permission_denied("project permission required"));
+        // Session-scoped tokens can spawn agents within scoped projects
+        if !auth::permission_allows(&token.permission, &auth::Permission::Session) {
+            return Err(Status::permission_denied("insufficient permission"));
         }
 
         if req.workspace.is_empty() {
@@ -238,6 +238,19 @@ impl AgentService for AgentServiceImpl {
             return Err(Status::permission_denied("session mismatch"));
         }
 
+        // Agent readiness check — must be Ready or Busy to accept messages
+        if agent.status != state::AgentStatus::Ready && agent.status != state::AgentStatus::Busy {
+            return Err(Status::failed_precondition(format!(
+                "agent '{}' is not ready (status: {})",
+                req.agent_id, agent.status
+            )));
+        }
+
+        // NOTE: The `blocking` field (proto3 bool, default false) conflicts with the spec
+        // default of true. Since we cannot distinguish "not set" from "set to false" in
+        // proto3, we always block (current behavior matches spec default). A non-blocking
+        // fire-and-forget path can be added when the proto is updated to `optional bool`.
+
         let base_url = agent.base_url();
 
         // Build A2A SendMessage JSON-RPC request
@@ -333,6 +346,14 @@ impl AgentService for AgentServiceImpl {
             && !auth::session_matches(&token, agent)
         {
             return Err(Status::permission_denied("session mismatch"));
+        }
+
+        // Agent readiness check — must be Ready or Busy to accept tasks
+        if agent.status != state::AgentStatus::Ready && agent.status != state::AgentStatus::Busy {
+            return Err(Status::failed_precondition(format!(
+                "agent '{}' is not ready (status: {})",
+                req.agent_id, agent.status
+            )));
         }
 
         let base_url = agent.base_url();
@@ -487,11 +508,6 @@ impl AgentService for AgentServiceImpl {
             return Err(Status::invalid_argument("agent_id is required"));
         }
 
-        // Require project-level permission
-        if !auth::permission_allows(&token.permission, &auth::Permission::Project) {
-            return Err(Status::permission_denied("project permission required"));
-        }
-
         let store = state::load()
             .map_err(|e| Status::internal(format!("failed to load state: {e}")))?;
 
@@ -507,6 +523,23 @@ impl AgentService for AgentServiceImpl {
         if !auth::scope_includes_project(&token.scope, &ws.project) {
             return Err(Status::permission_denied("token scope mismatch"));
         }
+
+        // Session-scoped tokens can only stop own-session agents
+        if token.permission == auth::Permission::Session && !auth::session_matches(&token, agent) {
+            return Err(Status::permission_denied("session-scoped token can only stop own-session agents"));
+        }
+
+        // TODO: Cancel working A2A tasks before stopping. Task tracking is not yet in
+        // AgentInstanceState, so we skip best-effort cancel for now.
+
+        if req.grace_period_ms > 0 {
+            crate::log::log(format!(
+                "StopAgent: grace_period_ms={} requested (using supervisor default)",
+                req.grace_period_ms
+            ));
+        }
+        // TODO: Pass grace_period_ms through to supervisor. Currently the supervisor
+        // uses a hardcoded 5-second grace period in its graceful_stop task.
 
         // Stop via supervisor
         agent_supervisor::stop_agent(&req.agent_id);
@@ -534,11 +567,6 @@ impl AgentService for AgentServiceImpl {
             return Err(Status::invalid_argument("agent_id is required"));
         }
 
-        // Require project-level permission
-        if !auth::permission_allows(&token.permission, &auth::Permission::Project) {
-            return Err(Status::permission_denied("project permission required"));
-        }
-
         let store = state::load()
             .map_err(|e| Status::internal(format!("failed to load state: {e}")))?;
 
@@ -555,12 +583,27 @@ impl AgentService for AgentServiceImpl {
             return Err(Status::permission_denied("token scope mismatch"));
         }
 
-        // Capture the agent config before stopping
+        // Session-scoped tokens can only restart own-session agents
+        if token.permission == auth::Permission::Session && !auth::session_matches(&token, agent) {
+            return Err(Status::permission_denied("session-scoped token can only restart own-session agents"));
+        }
+
+        // Capture the agent config and identity before stopping
         let template = agent.template.clone();
         let name = agent.name.clone();
         let workspace = agent.workspace.clone();
         let ws_dir = ws.dir.clone();
-        let old_env: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+        let old_token_id = agent.token_id.clone();
+        let old_session_id = agent.session_id.clone();
+        let old_spawned_by = agent.spawned_by.clone();
+
+        // Reconstruct env with ARP_TOKEN from the old agent's token
+        let mut old_env: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+        if let Some(ref tid) = old_token_id {
+            if let Some(old_token) = auth::get_token_by_id(tid) {
+                old_env.insert("ARP_TOKEN".to_string(), auth::encode_scoped_token(&old_token));
+            }
+        }
 
         // Stop the old agent
         agent_supervisor::stop_agent(&req.agent_id);
@@ -602,9 +645,9 @@ impl AgentService for AgentServiceImpl {
             host: None,
             pid: None,
             started_at: chrono::Utc::now().to_rfc3339(),
-            token_id: None,
-            session_id: None,
-            spawned_by: Some(token.id.clone()),
+            token_id: old_token_id,
+            session_id: old_session_id,
+            spawned_by: old_spawned_by,
         };
 
         let proto_agent = convert::agent_instance_to_proto(&new_agent);
