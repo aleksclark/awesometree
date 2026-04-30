@@ -32,7 +32,7 @@ impl DiscoveryService for DiscoveryServiceImpl {
             let store = state::load()
                 .map_err(|e| Status::internal(format!("failed to load state: {e}")))?;
 
-            for (_ws_name, ws) in &store.workspaces {
+            for ws in store.workspaces.values() {
                 if !ws.active {
                     continue;
                 }
