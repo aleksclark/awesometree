@@ -70,6 +70,7 @@ fn main() {
         rt.block_on(async {
             acp_supervisor::start_active_workspaces();
             acp_supervisor::start_sync_loop(std::time::Duration::from_secs(5));
+            tokio::spawn(server::run_grpc(server::DEFAULT_GRPC_PORT));
             server::run(server::DEFAULT_PORT).await;
         });
     });

@@ -22,6 +22,7 @@ use utoipa_axum::router::OpenApiRouter;
 use utoipa_axum::routes;
 
 pub const DEFAULT_PORT: u16 = 9099;
+pub const DEFAULT_GRPC_PORT: u16 = 9098;
 
 #[derive(Clone)]
 struct AppState {
@@ -236,6 +237,18 @@ pub async fn run(port: u16) {
     .await
     {
         dlog::log(format!("HTTP server error: {e}"));
+    }
+}
+
+/// Start the gRPC server on the given port.
+pub async fn run_grpc(port: u16) {
+    let addr = SocketAddr::from(([0, 0, 0, 0], port));
+    dlog::log(format!("gRPC server listening on {addr}"));
+    if let Err(e) = crate::grpc::grpc_router()
+        .serve(addr)
+        .await
+    {
+        dlog::log(format!("gRPC server error: {e}"));
     }
 }
 

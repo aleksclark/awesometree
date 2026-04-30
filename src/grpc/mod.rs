@@ -8,11 +8,15 @@ pub mod convert;
 pub mod project;
 pub mod workspace;
 pub mod agent;
+pub mod discovery;
+pub mod token;
 
 // Re-export service impl structs for convenience.
 pub use project::ProjectServiceImpl;
 pub use workspace::WorkspaceServiceImpl;
 pub use agent::AgentServiceImpl;
+pub use discovery::DiscoveryServiceImpl;
+pub use token::TokenServiceImpl;
 
 use crate::auth;
 
@@ -27,4 +31,14 @@ pub fn extract_token<T>(req: &tonic::Request<T>) -> auth::ScopedToken {
         .and_then(|s| s.strip_prefix("Bearer "))
         .and_then(auth::validate_scoped_token)
         .unwrap_or_else(auth::localhost_admin_token)
+}
+
+/// Build the tonic gRPC Router with all ARP services.
+pub fn grpc_router() -> tonic::transport::server::Router {
+    tonic::transport::Server::builder()
+        .add_service(arp_proto::project_service_server::ProjectServiceServer::new(ProjectServiceImpl))
+        .add_service(arp_proto::workspace_service_server::WorkspaceServiceServer::new(WorkspaceServiceImpl))
+        .add_service(arp_proto::agent_service_server::AgentServiceServer::new(AgentServiceImpl))
+        .add_service(arp_proto::discovery_service_server::DiscoveryServiceServer::new(DiscoveryServiceImpl))
+        .add_service(arp_proto::token_service_server::TokenServiceServer::new(TokenServiceImpl))
 }
