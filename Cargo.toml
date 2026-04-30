@@ -31,10 +31,6 @@ required-features = ["gui"]
 name = "arp-test-server"
 path = "src/bin/arp_test_server.rs"
 
-[[bin]]
-name = "awesometree-mcp"
-path = "src/bin/mcp_server.rs"
-
 [dependencies]
 awesometree-core = { path = "core" }
 axum = "0.8"
@@ -70,8 +66,6 @@ a2a-rs-core = "1.0"
 a2a-rs-client = "1.0"
 uuid = { version = "1", features = ["v4"] }
 chrono = { version = "0.4", features = ["serde"] }
-rmcp = { version = "1.5", features = ["server", "macros", "transport-io"] }
-schemars = "1"
 anyhow = "1"
 
 [dev-dependencies]

@@ -1,24 +1,24 @@
 ---
 title: "ARP — Overview"
-version: 0.3.0
+version: 0.4.0
 created: 2026-04-06
-updated: 2026-04-28
+updated: 2026-05-01
 status: draft
-tags: [arp, a2a, mcp, agent-lifecycle, multi-agent, awesometree]
+tags: [arp, a2a, grpc, protobuf, agent-lifecycle, multi-agent, awesometree]
 ---
 
 # Agent Registry Protocol (ARP) — Overview
 
-An MCP server that manages the full lifecycle of AI agents within workspaces and provides a unified registry for A2A agent discovery and communication. Fills the gap between MCP (agent-to-tool) and A2A (agent-to-agent): neither protocol defines how to **create, start, stop, or destroy** agent instances. ARP does.
+A gRPC service that manages the full lifecycle of AI agents within workspaces and provides a unified registry for A2A agent discovery and communication. Fills the gap between the control plane (how you **create, start, stop, and destroy** agent instances) and A2A (how agents **talk to each other**). ARP is the control plane; A2A is the wire protocol.
 
 ## Problem Statement
 
 The current agent protocol landscape has a lifecycle gap:
 
-- **MCP** connects models to tools. No concept of agent management.
 - **A2A** connects agents to each other. Assumes agents already exist — no spawn, no lifecycle.
+- **No standard control plane** exists for agent lifecycle management.
 
-Every team building multi-agent systems reinvents agent lifecycle management. ARP standardizes it as an MCP server, making agent management available as tools to any MCP-capable host (Claude, Cursor, Zed, VS Code, custom agents). It also exposes managed agents as a standard A2A registry, so any A2A client can discover and communicate with them.
+Every team building multi-agent systems reinvents agent lifecycle management. ARP standardizes it as a gRPC service with full protobuf definitions, making agent management available to any gRPC client — CLI tools, orchestrators, dashboards, or other agents. It also exposes managed agents as a standard A2A registry, so any A2A client can discover and communicate with them.
 
 ## Design Principles
 
@@ -26,7 +26,7 @@ Every team building multi-agent systems reinvents agent lifecycle management. AR
 
 2. **A2A is the wire protocol.** Every managed agent speaks A2A v1.0. The ARP server creates agents, and those agents are standard A2A agents — discoverable via `AgentCard`, communicable via `SendMessage` / `SendStreamingMessage`.
 
-3. **MCP is the control plane.** Agent lifecycle operations (spawn, stop, restart) are MCP tools. This means any MCP host can manage agents without custom integrations.
+3. **gRPC is the control plane.** Agent lifecycle operations (spawn, stop, restart) are gRPC RPCs defined in protobuf. Any gRPC client can manage agents without custom integrations. HTTP/JSON access is available via gRPC-Web transcoding with `google.api.http` annotations on every RPC.
 
 4. **Multi-agent workspaces.** A workspace can host multiple agents (e.g., a coding agent + a review agent + a test agent). Each gets its own port, A2A `context_id` space, and `AgentCard`.
 
@@ -34,17 +34,17 @@ Every team building multi-agent systems reinvents agent lifecycle management. AR
 
 6. **Backend-agnostic.** The spec defines the interface, not the implementation. Backends can be local processes, Docker containers, remote VMs, or cloud services.
 
-7. **Scoped authority flows downward.** Every caller authenticates with a token carrying project scopes and a permission level. Agents inherit tokens from their spawner — scope can only narrow, permission can only lower. This creates a monotonically decreasing privilege chain with no escalation path. See [Identity & Scopes](identity-and-scopes.md).
+7. **Scoped authority flows downward.** Every caller authenticates with a token passed via gRPC metadata (`authorization` key). Tokens carry project scopes and a permission level. Agents inherit tokens from their spawner — scope can only narrow, permission can only lower. This creates a monotonically decreasing privilege chain with no escalation path. See [Identity & Scopes](identity-and-scopes.md).
 
-## Tool Groups
+## gRPC Service Groups
 
-| Group | Tools | Spec |
-|-------|-------|------|
-| Project Management | `project/list`, `project/register`, `project/unregister` | [tools-project.md](tools-project.md) |
-| Workspace Management | `workspace/create`, `workspace/list`, `workspace/get`, `workspace/destroy` | [tools-workspace.md](tools-workspace.md) |
-| Agent Lifecycle | `agent/spawn`, `agent/list`, `agent/status`, `agent/message`, `agent/task`, `agent/task_status`, `agent/stop`, `agent/restart` | [tools-agent.md](tools-agent.md) |
-| Discovery & Patterns | `agent/discover`, MCP resources, MCP prompts | [tools-discovery.md](tools-discovery.md) |
-| Identity & Scopes | `token/create`, scope enforcement, federation | [identity-and-scopes.md](identity-and-scopes.md) |
+| Group | Service | RPCs | Spec |
+|-------|---------|------|------|
+| Project Management | `ProjectService` | `ListProjects`, `RegisterProject`, `UnregisterProject` | [services-project.md](services-project.md) |
+| Workspace Management | `WorkspaceService` | `CreateWorkspace`, `ListWorkspaces`, `GetWorkspace`, `DestroyWorkspace` | [services-workspace.md](services-workspace.md) |
+| Agent Lifecycle | `AgentService` | `SpawnAgent`, `ListAgents`, `GetAgentStatus`, `SendAgentMessage`, `CreateAgentTask`, `GetAgentTaskStatus`, `StopAgent`, `RestartAgent` | [services-agent.md](services-agent.md) |
+| Discovery & Routing | `DiscoveryService` | `DiscoverAgents`, `WatchAgent`, `WatchWorkspace` | [services-discovery.md](services-discovery.md) |
+| Identity & Scopes | `TokenService` | `CreateToken`; scope enforcement, federation | [identity-and-scopes.md](identity-and-scopes.md) |
 
 ## A2A v1.0 Reference
 
@@ -91,13 +91,13 @@ This spec builds on the A2A v1.0 protocol (`lf.a2a.v1`). Key types and RPCs refe
 
 ```
 ┌────────────────────────────────────────────────────────────┐
-│                       MCP HOST                              │
-│  (Claude, Cursor, Zed, custom agent, etc.)                 │
+│                     gRPC CLIENTS                            │
+│  (CLI tools, orchestrators, dashboards, other agents)       │
 │                                                             │
-│  Lifecycle tools:   workspace/create, agent/spawn, ...      │
-│  Communication:     agent/message, agent/task, ...          │
+│  Lifecycle RPCs:  SpawnAgent, StopAgent, RestartAgent, ...  │
+│  Communication:   SendAgentMessage, CreateAgentTask, ...    │
 └──────────┬─────────────────────────────────────────────────┘
-           │ MCP (stdio or HTTP)
+           │ gRPC (H2) or gRPC-Web (HTTP/1.1 transcoding)
            ▼
 ┌────────────────────────────────────────────────────────────┐
 │                    ARP SERVER                                │
@@ -152,7 +152,7 @@ A2A v1.0 HTTP+JSON Endpoints:
 **When to use direct access:**
 - Lowest latency — no proxy hop
 - Agent-to-agent communication where both agents are local
-- When the client already knows the agent URL (from `agent/spawn` or `agent/discover`)
+- When the client already knows the agent URL (from `SpawnAgent` response or `DiscoverAgents`)
 - Long-lived SSE connections (`SubscribeToTask`, `SendStreamingMessage`)
 
 **Limitations:**
@@ -178,11 +178,13 @@ Proxied A2A endpoints (per-agent, mirrors A2A v1.0 HTTP bindings):
   GET  /a2a/agents/{agent_id}/tasks/{task_id}:subscribe     SubscribeToTask
   GET  /a2a/agents/{agent_id}/extendedAgentCard             GetExtendedAgentCard
 
-Registry endpoints (ARP-specific):
+Registry endpoints (ARP-specific, also exposed via gRPC-Web HTTP transcoding):
   GET  /a2a/agents                          List all AgentCards for ready agents
   POST /a2a/route/message:send              Route SendMessage by skill/capability match
   GET  /a2a/discover                        Filtered discovery (by capability, workspace, status)
 ```
+
+These HTTP endpoints are defined as `google.api.http` annotations on the gRPC RPCs in the protobuf definitions. See the individual service specs for the full bindings.
 
 **When to use proxied access:**
 - External A2A clients discovering agents for the first time
@@ -198,9 +200,9 @@ The ARP proxy resolves agents in this order:
 1. **By agent_id** — exact match to a managed agent instance
 2. **By name** — matches against the `AgentCard.name` field
 3. **By workspace/name** — `{workspace}/{instance_name}` composite key
-4. **By skill** — matches `AgentSkill.tags` on the agent's `AgentCard.skills[]`; routes to the first agent with status `ready` whose skills match
+4. **By skill** — matches `AgentSkill.tags` on the agent's `AgentCard.skills[]`; routes to the first agent with status `AGENT_STATUS_READY` whose skills match
 
-If multiple agents match, the proxy prefers agents with status `ready` over `busy`.
+If multiple agents match, the proxy prefers agents with status `AGENT_STATUS_READY` over `AGENT_STATUS_BUSY`.
 
 ### Agent Card Enrichment
 
@@ -249,23 +251,27 @@ When serving `AgentCard` through the proxy, the ARP server enriches it with life
 
 The `supported_interfaces[0].url` in the enriched card points to the **proxied** endpoint. The `metadata.arp.direct_url` gives clients the option to bypass the proxy and connect to the agent's `AgentInterface` directly.
 
-## Data Model
+## Protobuf Data Model
+
+All ARP data types are defined as proto3 messages in `arp/v1/arp.proto`. The following are the core message types; full protobuf definitions are in the individual service specs.
 
 ### Project
 
 A project is a code repository with configuration for how agents should operate within it.
 
-```typescript
-interface Project {
-  name: string;                    // Unique project identifier
-  repo: string;                    // Path to the git repository
-  branch?: string;                 // Default branch (default: "main")
-  agents?: AgentTemplate[];        // Agent templates available for this project
-  context?: {
-    files?: string[];              // Context files fed to agents
-    repo_includes?: string[];      // Glob patterns for repo context
-    max_bytes?: number;            // Max context size
-  };
+```protobuf
+message Project {
+  string name = 1 [(google.api.field_behavior) = REQUIRED];     // Unique project identifier
+  string repo = 2 [(google.api.field_behavior) = REQUIRED];     // Path to the git repository
+  string branch = 3;                                             // Default branch (default: "main")
+  repeated AgentTemplate agents = 4;                             // Agent templates available
+  ProjectContext context = 5;                                    // Context configuration
+}
+
+message ProjectContext {
+  repeated string files = 1;           // Context files fed to agents
+  repeated string repo_includes = 2;   // Glob patterns for repo context
+  int64 max_bytes = 3;                 // Max context size
 }
 ```
 
@@ -273,59 +279,53 @@ interface Project {
 
 A workspace is an isolated working directory (typically a git worktree) that hosts one or more agents.
 
-```typescript
-interface Workspace {
-  name: string;                    // Unique workspace identifier
-  project: string;                 // Parent project name
-  dir: string;                     // Absolute path to workspace directory
-  status: "active" | "inactive";   // Workspace lifecycle state
-  agents: AgentInstance[];         // Agents running in this workspace
-  created_at: string;              // ISO 8601 timestamp
-  metadata?: Record<string, any>;  // Extensible metadata
+```protobuf
+message Workspace {
+  string name = 1 [(google.api.field_behavior) = REQUIRED];     // Unique workspace identifier
+  string project = 2 [(google.api.field_behavior) = REQUIRED];  // Parent project name
+  string dir = 3;                                                // Absolute path to workspace directory
+  WorkspaceStatus status = 4;                                    // Workspace lifecycle state
+  repeated AgentInstance agents = 5;                             // Agents running in this workspace
+  google.protobuf.Timestamp created_at = 6;                     // Creation timestamp
+  google.protobuf.Struct metadata = 7;                          // Extensible metadata
+}
+
+enum WorkspaceStatus {
+  WORKSPACE_STATUS_UNSPECIFIED = 0;
+  WORKSPACE_STATUS_ACTIVE = 1;
+  WORKSPACE_STATUS_INACTIVE = 2;
 }
 ```
 
 ### AgentTemplate
 
-Defines how to spawn a particular type of agent. Templates are configured per-project or globally. The `a2a` field populates the `AgentCard` that ARP generates or enriches for this agent.
+Defines how to spawn a particular type of agent. Templates are configured per-project or globally. The `a2a_card_config` field populates the `AgentCard` that ARP generates or enriches for this agent.
 
-```typescript
-interface AgentTemplate {
-  name: string;                    // Template name (e.g., "crush", "claude-code", "reviewer")
-  command: string;                 // Command to start the agent process
-  port_env?: string;               // Env var name for port assignment (e.g., "A2A_PORT")
-  health_check?: {
-    path: string;                  // Health endpoint (e.g., "/.well-known/agent-card.json")
-    interval_ms?: number;          // Check interval (default: 5000)
-    timeout_ms?: number;           // Timeout per check (default: 3000)
-    retries?: number;              // Retries before marking unhealthy (default: 3)
-  };
-  env?: Record<string, string>;    // Additional environment variables
-  capabilities?: string[];         // Declared capabilities (e.g., ["code", "review", "test"])
-  a2a?: {
-    // Fields map to A2A AgentCard:
-    name?: string;                 // AgentCard.name override
-    description?: string;          // AgentCard.description
-    skills?: AgentSkill[];         // AgentCard.skills[]
-    input_modes?: string[];        // AgentCard.default_input_modes[]
-    output_modes?: string[];       // AgentCard.default_output_modes[]
-    capabilities?: {               // AgentCard.capabilities (AgentCapabilities)
-      streaming?: boolean;
-      push_notifications?: boolean;
-      state_transition_history?: boolean;
-    };
-  };
+```protobuf
+message AgentTemplate {
+  string name = 1 [(google.api.field_behavior) = REQUIRED];     // Template name (e.g., "crush", "claude-code")
+  string command = 2 [(google.api.field_behavior) = REQUIRED];  // Command to start the agent process
+  string port_env = 3;                                           // Env var name for port assignment
+  HealthCheckConfig health_check = 4;                            // Health check configuration
+  map<string, string> env = 5;                                   // Additional environment variables
+  repeated string capabilities = 6;                              // Declared capabilities
+  A2ACardConfig a2a_card_config = 7;                             // Fields for AgentCard generation
 }
 
-// Maps directly to A2A AgentSkill message
-interface AgentSkill {
-  id: string;                      // AgentSkill.id
-  name: string;                    // AgentSkill.name
-  description: string;             // AgentSkill.description
-  tags?: string[];                 // AgentSkill.tags[]
-  examples?: string[];             // AgentSkill.examples[]
-  input_modes?: string[];          // AgentSkill.input_modes[] (overrides AgentCard defaults)
-  output_modes?: string[];         // AgentSkill.output_modes[] (overrides AgentCard defaults)
+message HealthCheckConfig {
+  string path = 1;            // Health endpoint (e.g., "/.well-known/agent-card.json")
+  int32 interval_ms = 2;     // Check interval (default: 5000)
+  int32 timeout_ms = 3;      // Timeout per check (default: 3000)
+  int32 retries = 4;         // Retries before marking unhealthy (default: 3)
+}
+
+message A2ACardConfig {
+  string name = 1;                                    // AgentCard.name override
+  string description = 2;                             // AgentCard.description
+  repeated lf.a2a.v1.AgentSkill skills = 3;           // AgentCard.skills[]
+  repeated string input_modes = 4;                    // AgentCard.default_input_modes[]
+  repeated string output_modes = 5;                   // AgentCard.default_output_modes[]
+  lf.a2a.v1.AgentCapabilities capabilities = 6;       // AgentCard.capabilities
 }
 ```
 
@@ -333,35 +333,35 @@ interface AgentSkill {
 
 A running agent within a workspace.
 
-```typescript
-interface AgentInstance {
-  id: string;                      // Unique instance identifier (server-generated)
-  template: string;                // Template name used to spawn
-  workspace: string;               // Parent workspace name
-  status: AgentStatus;             // Current lifecycle state (ARP-specific, not A2A TaskState)
-  port: number;                    // Assigned port number
-  direct_url: string;              // Direct A2A endpoint (e.g., "http://localhost:9100")
-  proxy_url: string;               // Proxied A2A endpoint (e.g., "http://localhost:9099/a2a/agents/{id}")
-  pid?: number;                    // Process ID (if local backend)
-  context_id?: string;             // Current A2A context_id for multi-turn conversations
-  a2a_agent_card?: AgentCard;      // Resolved A2A AgentCard (with ARP metadata)
-  token_id: string;                // ARP token issued to this agent (see Identity & Scopes)
-  session_id: string;              // Session this agent belongs to (see Identity & Scopes)
-  spawned_by: string;              // Token ID of the caller that spawned this agent
-  started_at: string;              // ISO 8601 timestamp
-  metadata?: Record<string, any>;  // Extensible metadata
+```protobuf
+message AgentInstance {
+  string id = 1;                                      // Unique instance identifier (server-generated)
+  string template = 2;                                // Template name used to spawn
+  string workspace = 3;                               // Parent workspace name
+  AgentStatus status = 4;                             // Current lifecycle state
+  int32 port = 5;                                     // Assigned port number
+  string direct_url = 6;                              // Direct A2A endpoint
+  string proxy_url = 7;                               // Proxied A2A endpoint via ARP
+  int32 pid = 8;                                      // Process ID (if local backend)
+  string context_id = 9;                              // Current A2A context_id
+  lf.a2a.v1.AgentCard a2a_agent_card = 10;            // Resolved A2A AgentCard (with ARP metadata)
+  string token_id = 11;                               // ARP token issued to this agent
+  string session_id = 12;                             // Session this agent belongs to
+  string spawned_by = 13;                             // Token ID of the caller that spawned this agent
+  google.protobuf.Timestamp started_at = 14;          // Start timestamp
+  google.protobuf.Struct metadata = 15;               // Extensible metadata
 }
-```
 
-```typescript
 // ARP lifecycle states — distinct from A2A TaskState which tracks task execution
-type AgentStatus =
-  | "starting"      // Process launched, waiting for health check
-  | "ready"         // Health check passed, accepting A2A SendMessage
-  | "busy"          // Currently processing (has tasks in WORKING state)
-  | "error"         // Health check failed or process crashed
-  | "stopping"      // Graceful shutdown initiated (SIGTERM sent)
-  | "stopped";      // Process terminated
+enum AgentStatus {
+  AGENT_STATUS_UNSPECIFIED = 0;
+  AGENT_STATUS_STARTING = 1;     // Process launched, waiting for health check
+  AGENT_STATUS_READY = 2;        // Health check passed, accepting A2A SendMessage
+  AGENT_STATUS_BUSY = 3;         // Currently processing (has tasks in WORKING state)
+  AGENT_STATUS_ERROR = 4;        // Health check failed or process crashed
+  AGENT_STATUS_STOPPING = 5;     // Graceful shutdown initiated (SIGTERM sent)
+  AGENT_STATUS_STOPPED = 6;      // Process terminated
+}
 ```
 
 ### AgentStatus State Machine
@@ -395,7 +395,7 @@ type AgentStatus =
                        period
 ```
 
-Note: ARP `AgentStatus` tracks the **process** lifecycle. A2A `TaskState` tracks **task** execution within the agent. An agent in `ready` status may have completed tasks (`TASK_STATE_COMPLETED`) in its history. An agent transitions to `busy` when it has at least one task in `TASK_STATE_WORKING`.
+Note: ARP `AgentStatus` tracks the **process** lifecycle. A2A `TaskState` tracks **task** execution within the agent. An agent in `AGENT_STATUS_READY` may have completed tasks (`TASK_STATE_COMPLETED`) in its history. An agent transitions to `AGENT_STATUS_BUSY` when it has at least one task in `TASK_STATE_WORKING`.
 
 ## Configuration
 
@@ -411,7 +411,7 @@ The ARP server is configured via a JSON file:
       "command": "crush serve",
       "port_env": "A2A_PORT",
       "health_check": { "path": "/.well-known/agent-card.json", "interval_ms": 5000 },
-      "a2a": {
+      "a2a_card_config": {
         "name": "Crush",
         "description": "AI coding assistant",
         "skills": [
@@ -460,7 +460,7 @@ The ARP server is configured via a JSON file:
 ARP generalizes awesometree's workspace and agent supervisor model. An awesometree-backed implementation would:
 - Use awesometree's `Manager` for workspace creation (git worktrees, WM tags)
 - Extend the agent `Supervisor` to manage multiple agents per workspace (currently one)
-- Expose both the existing REST API and the new MCP tools
+- Expose both the existing REST API and the new gRPC service
 - Serve the A2A registry and proxy endpoints from the existing HTTP server (port 9099)
 - Maintain backward compatibility with the current single-agent-per-workspace model
 
@@ -468,6 +468,6 @@ ARP generalizes awesometree's workspace and agent supervisor model. An awesometr
 
 ARP is both an A2A client (sending `SendMessageRequest` to managed agents) and an A2A server (exposing `AgentCard` registry and proxying A2A RPCs for managed agents). It fills the lifecycle gap that A2A explicitly does not cover: A2A defines how to *talk* to agents; ARP defines how to *create and manage* them. The two are complementary — ARP creates agents that speak standard A2A v1.0.
 
-### MCP
+### gRPC + HTTP Transcoding
 
-ARP is an MCP server. The lifecycle tools (spawn, stop, restart) are MCP tools callable by any MCP host. This means Claude, Cursor, Zed, or any custom agent can manage a fleet of A2A agents through standard MCP tool calls — no custom API integration required.
+ARP's control plane is a set of gRPC services defined in protobuf. Every RPC carries `google.api.http` annotations, so the same server can serve both native gRPC clients (high-performance, streaming) and HTTP/JSON clients (via gRPC-Web transcoding or an Envoy/grpc-gateway sidecar). This mirrors the pattern used by A2A v1.0 itself, which defines its RPCs in protobuf with HTTP bindings.
