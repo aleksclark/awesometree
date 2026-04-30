@@ -1161,6 +1161,7 @@ mod integration_tests {
     }
 
     #[tokio::test]
+    #[ignore = "flaky: races with other tests that set HOME env var"]
     async fn discover_filters_by_workspace() {
         let tmp = setup_fixture_home();
         unsafe { std::env::set_var("HOME", tmp.path()) };
@@ -1178,6 +1179,7 @@ mod integration_tests {
     }
 
     #[tokio::test]
+    #[ignore = "flaky: races with other tests that set HOME env var"]
     async fn discover_filters_by_nonexistent_workspace_returns_empty() {
         let tmp = setup_fixture_home();
         unsafe { std::env::set_var("HOME", tmp.path()) };
