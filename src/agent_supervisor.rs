@@ -285,6 +285,7 @@ async fn spawn_agent_process(managed: &ManagedAgent) -> Result<Child, String> {
         .env("PORT", &port_str)
         .env("A2A_PORT", &port_str)
         .env("CRUSH_ACP_PORT", &port_str)
+        .env("CRUSH_A2A_PORT", &port_str)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
