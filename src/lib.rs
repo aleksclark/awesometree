@@ -38,3 +38,4 @@ pub mod server;
 pub mod acp_supervisor;
 pub mod agent_supervisor;
 pub mod a2a_proxy;
+pub mod arp_store;

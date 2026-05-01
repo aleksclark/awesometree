@@ -19,6 +19,57 @@ The daemon also runs an HTTP server (port 9099) with a REST API for
 workspace/project CRUD and an ACP reverse proxy. The mobile app
 connects by scanning a QR code from the tray menu.
 
+## Agent Registry Protocol (ARP)
+
+awesometree implements the Agent Registry Protocol — an MCP server
+that manages the full lifecycle of A2A agents within workspaces.
+ARP fills the gap between MCP (agent-to-tool) and A2A
+(agent-to-agent): neither protocol defines how to create, start,
+stop, or destroy agent instances. ARP does.
+
+The spec lives in `arp-spec/`. Protobuf definitions in `proto/arp/v1/`.
+
+### Interfaces
+
+- **MCP tools** — lifecycle operations callable by any MCP host
+- **A2A proxy** — HTTP endpoints at `/a2a/agents/` that proxy
+  standard A2A v1.0 RPCs to managed agents
+
+### Tool Groups
+
+| Group | Tools | Spec |
+|-------|-------|------|
+| Project | `project/list`, `project/register`, `project/unregister` | `arp-spec/tools-project.md` |
+| Workspace | `workspace/create`, `workspace/list`, `workspace/get`, `workspace/destroy` | `arp-spec/tools-workspace.md` |
+| Agent Lifecycle | `agent/spawn`, `agent/list`, `agent/status`, `agent/message`, `agent/task`, `agent/task_status`, `agent/stop`, `agent/restart` | `arp-spec/tools-agent.md` |
+| Discovery | `agent/discover`, MCP resources, MCP prompts | `arp-spec/tools-discovery.md` |
+| Identity | `token/create`, scope enforcement, federation | `arp-spec/identity-and-scopes.md` |
+
+### Agent Lifecycle State Machine
+
+`starting` → `ready` ↔ `busy` → `stopping` → `stopped`
+
+Any state can transition to `error` on crash/health failure.
+See `arp-spec/overview.md` for the full diagram.
+
+### Key Implementation Files
+
+| Layer | Source | Role |
+|-------|--------|------|
+| ARP spec | `arp-spec/` | Protocol specification documents |
+| Agent supervisor | `src/agent_supervisor.rs` | Process spawn, health check, SIGTERM/SIGKILL, task cancellation |
+| ARP store | `src/arp_store.rs` | SQLite-backed state for workspaces, agents, and task tracking |
+| A2A proxy | `src/a2a_proxy.rs` | A2A v1.0 HTTP proxy + AgentCard enrichment |
+| Auth | `src/auth.rs` | HMAC token generation/validation for remote clients |
+| State (legacy) | `src/state.rs` | JSON-based workspace/agent state (being migrated to ArpStore) |
+
+### Identity & Scopes
+
+Tokens carry project scopes and permission levels (`session`,
+`project`, `admin`). Agents inherit scoped tokens from their
+spawner — scope can only narrow, never widen. See
+`arp-spec/identity-and-scopes.md`.
+
 ## Platform Support
 
 | Platform | WM Adapter | Tray | Daemon Service | Install |
@@ -52,6 +103,9 @@ The `eval` method on macOS accepts AppleScript instead of Lua.
 | Workspace | `src/workspace.rs` | `Manager` — worktree, tag, app lifecycle |
 | WM adapter | `src/wm.rs` | `Adapter` trait; Linux `AwesomeAdapter`, macOS `MacosAdapter` |
 | HTTP/ACP | `src/server.rs` | REST API, ACP reverse proxy (axum + tokio) |
+| Agent supervisor | `src/agent_supervisor.rs` | Agent process lifecycle, health checks, graceful stop |
+| ARP store | `src/arp_store.rs` | SQLite-backed state for workspaces, agents, task tracking |
+| A2A proxy | `src/a2a_proxy.rs` | A2A v1.0 HTTP proxy + AgentCard enrichment |
 | Auth | `src/auth.rs` | HMAC token generation/validation for remote clients |
 | QR code | `src/qr.rs` | QR code generation + GPUI display window |
 | Picker | `src/picker.rs` | GPUI fuzzy picker + create form |
@@ -106,6 +160,7 @@ Screens: Workspaces, Projects, ACP Agent Chat, Settings/QR Scanner.
 - [CLI Reference](docs/workspace-system/ws-cli.md)
 - [Configuration](docs/workspace-system/configuration.md)
 - [WM Integration](docs/workspace-system/lua-module.md)
+- [ARP Spec](arp-spec/index.md)
 
 ## CI/CD
 

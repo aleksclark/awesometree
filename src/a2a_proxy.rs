@@ -679,6 +679,8 @@ mod integration_tests {
     use http_body_util::BodyExt;
     use tower::ServiceExt;
 
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     fn fixture_state() -> Store {
         let mut store = Store::default();
         let ws = WorkspaceState {
@@ -732,6 +734,7 @@ mod integration_tests {
     #[tokio::test]
     async fn list_agents_returns_200() {
         let tmp = setup_fixture_home();
+        let _guard = ENV_LOCK.lock().unwrap();
         unsafe { std::env::set_var("HOME", tmp.path()) };
 
         let app = build_test_app();
@@ -757,6 +760,7 @@ mod integration_tests {
     #[tokio::test]
     async fn list_agents_content_type_json() {
         let tmp = setup_fixture_home();
+        let _guard = ENV_LOCK.lock().unwrap();
         unsafe { std::env::set_var("HOME", tmp.path()) };
 
         let app = build_test_app();
@@ -772,6 +776,7 @@ mod integration_tests {
     #[tokio::test]
     async fn discover_returns_200() {
         let tmp = setup_fixture_home();
+        let _guard = ENV_LOCK.lock().unwrap();
         unsafe { std::env::set_var("HOME", tmp.path()) };
 
         let app = build_test_app();
@@ -786,6 +791,7 @@ mod integration_tests {
     #[tokio::test]
     async fn nonexistent_agent_card_returns_404() {
         let tmp = setup_fixture_home();
+        let _guard = ENV_LOCK.lock().unwrap();
         unsafe { std::env::set_var("HOME", tmp.path()) };
 
         let app = build_test_app();
@@ -800,6 +806,7 @@ mod integration_tests {
     #[tokio::test]
     async fn nonexistent_agent_message_returns_404() {
         let tmp = setup_fixture_home();
+        let _guard = ENV_LOCK.lock().unwrap();
         unsafe { std::env::set_var("HOME", tmp.path()) };
 
         let app = build_test_app();
@@ -819,6 +826,7 @@ mod integration_tests {
     #[tokio::test]
     async fn nonexistent_agent_task_returns_404() {
         let tmp = setup_fixture_home();
+        let _guard = ENV_LOCK.lock().unwrap();
         unsafe { std::env::set_var("HOME", tmp.path()) };
 
         let app = build_test_app();
@@ -833,6 +841,7 @@ mod integration_tests {
     #[tokio::test]
     async fn nonexistent_agent_cancel_returns_404() {
         let tmp = setup_fixture_home();
+        let _guard = ENV_LOCK.lock().unwrap();
         unsafe { std::env::set_var("HOME", tmp.path()) };
 
         let app = build_test_app();
@@ -848,6 +857,7 @@ mod integration_tests {
     #[tokio::test]
     async fn nonexistent_agent_stream_returns_404() {
         let tmp = setup_fixture_home();
+        let _guard = ENV_LOCK.lock().unwrap();
         unsafe { std::env::set_var("HOME", tmp.path()) };
 
         let app = build_test_app();
@@ -867,6 +877,7 @@ mod integration_tests {
     #[tokio::test]
     async fn route_no_match_returns_404() {
         let tmp = setup_fixture_home();
+        let _guard = ENV_LOCK.lock().unwrap();
         unsafe { std::env::set_var("HOME", tmp.path()) };
 
         let app = build_test_app();
@@ -887,6 +898,7 @@ mod integration_tests {
     #[tokio::test]
     async fn route_endpoint_exists_not_405() {
         let tmp = setup_fixture_home();
+        let _guard = ENV_LOCK.lock().unwrap();
         unsafe { std::env::set_var("HOME", tmp.path()) };
 
         let app = build_test_app();
@@ -908,6 +920,7 @@ mod integration_tests {
     #[tokio::test]
     async fn agent_card_has_enriched_metadata() {
         let tmp = setup_fixture_home();
+        let _guard = ENV_LOCK.lock().unwrap();
         unsafe { std::env::set_var("HOME", tmp.path()) };
 
         let app = build_test_app();
@@ -935,6 +948,7 @@ mod integration_tests {
     #[tokio::test]
     async fn agent_card_interface_url_points_to_proxy() {
         let tmp = setup_fixture_home();
+        let _guard = ENV_LOCK.lock().unwrap();
         unsafe { std::env::set_var("HOME", tmp.path()) };
 
         let app = build_test_app();
@@ -957,6 +971,7 @@ mod integration_tests {
     #[tokio::test]
     async fn list_agents_includes_metadata_with_direct_url() {
         let tmp = setup_fixture_home();
+        let _guard = ENV_LOCK.lock().unwrap();
         unsafe { std::env::set_var("HOME", tmp.path()) };
 
         let app = build_test_app();
@@ -976,6 +991,7 @@ mod integration_tests {
     #[tokio::test]
     async fn list_agents_excludes_stopped_agents() {
         let tmp = tempfile::tempdir().unwrap();
+        let _guard = ENV_LOCK.lock().unwrap();
         let config_dir = tmp.path().join(".config/awesometree");
         std::fs::create_dir_all(&config_dir).unwrap();
 
@@ -1031,6 +1047,7 @@ mod integration_tests {
     #[tokio::test]
     async fn discover_filters_by_workspace() {
         let tmp = setup_fixture_home();
+        let _guard = ENV_LOCK.lock().unwrap();
         unsafe { std::env::set_var("HOME", tmp.path()) };
 
         let app = build_test_app();
@@ -1048,6 +1065,7 @@ mod integration_tests {
     #[tokio::test]
     async fn discover_filters_by_nonexistent_workspace_returns_empty() {
         let tmp = setup_fixture_home();
+        let _guard = ENV_LOCK.lock().unwrap();
         unsafe { std::env::set_var("HOME", tmp.path()) };
 
         let app = build_test_app();
