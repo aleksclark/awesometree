@@ -10,6 +10,7 @@ pub mod workspace;
 pub mod agent;
 pub mod discovery;
 pub mod token;
+pub mod http_bridge;
 
 // Re-export service impl structs for convenience.
 pub use project::ProjectServiceImpl;

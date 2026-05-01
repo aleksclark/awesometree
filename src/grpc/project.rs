@@ -66,7 +66,12 @@ impl ProjectService for ProjectServiceImpl {
             req.branch.clone()
         };
 
-        let project = interop::Project::new(&req.name, &req.repo, &branch);
+        let mut project = interop::Project::new(&req.name, &req.repo, &branch);
+
+        // Persist agent templates from the request
+        if let Some(agents_json) = convert::proto_agents_to_json(&req.agents) {
+            project.agents = Some(agents_json);
+        }
 
         interop::save(&project)
             .map_err(|e| Status::internal(format!("failed to save project: {e}")))?;

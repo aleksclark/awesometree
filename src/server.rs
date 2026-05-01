@@ -174,6 +174,9 @@ pub async fn run(port: u16) {
     let a2a_state = crate::a2a_proxy::A2aProxyState::with_client(client);
     let a2a_router = crate::a2a_proxy::router().with_state(a2a_state);
 
+    // HTTP bridge for gRPC /v1/* routes (transcoding)
+    let grpc_bridge = crate::grpc::http_bridge::router();
+
     let app = router
         .route(
             "/api/openapi.json",
@@ -217,7 +220,8 @@ pub async fn run(port: u16) {
         )
         .merge(a2a_router)
         .layer(middleware::from_fn(auth_middleware))
-        .with_state(state);
+        .with_state(state)
+        .merge(grpc_bridge);
 
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
     dlog::log(format!("HTTP server listening on {addr}"));

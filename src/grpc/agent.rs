@@ -59,6 +59,19 @@ impl AgentService for AgentServiceImpl {
             req.name.clone()
         };
 
+        // Look up the template from the project's registered templates.
+        let project = crate::interop::load(&ws.project)
+            .ok();
+        let tmpl_cfg = project
+            .as_ref()
+            .and_then(|p| p.agent_template(&req.template));
+
+        // Build the command: use template config if found, else fall back to `{template} serve`
+        let command = match &tmpl_cfg {
+            Some(cfg) if cfg.command.is_some() => cfg.command.clone().unwrap(),
+            _ => format!("{} serve", req.template),
+        };
+
         // Create child token for the agent
         let child_token = auth::create_child_token(&token, None, None)
             .map_err(|e| Status::internal(format!("failed to create child token: {e}")))?;
@@ -69,7 +82,18 @@ impl AgentService for AgentServiceImpl {
         let mut env = req.env;
         env.insert("ARP_TOKEN".to_string(), token_str);
 
-        let command = format!("{} serve", req.template);
+        // Merge template env if available (request env takes precedence)
+        if let Some(ref cfg) = tmpl_cfg {
+            for (k, v) in &cfg.env {
+                env.entry(k.clone()).or_insert_with(|| v.clone());
+            }
+            // Inject port via port_env if configured
+            if let Some(ref port_env) = cfg.port_env {
+                if !port_env.is_empty() {
+                    env.insert(port_env.clone(), port.to_string());
+                }
+            }
+        }
         let opts = agent_supervisor::SpawnOptions {
             workspace: req.workspace.clone(),
             dir: ws.dir.clone(),
@@ -620,7 +644,29 @@ impl AgentService for AgentServiceImpl {
             Status::resource_exhausted("no available ports for agent")
         })?;
 
-        let command = format!("{template} serve");
+        // Look up the template from the project's registered templates for restart.
+        let project = crate::interop::load(&ws.project).ok();
+        let tmpl_cfg = project
+            .as_ref()
+            .and_then(|p| p.agent_template(&template));
+
+        let command = match &tmpl_cfg {
+            Some(cfg) if cfg.command.is_some() => cfg.command.clone().unwrap(),
+            _ => format!("{template} serve"),
+        };
+
+        // Merge template env into old_env
+        if let Some(ref cfg) = tmpl_cfg {
+            for (k, v) in &cfg.env {
+                old_env.entry(k.clone()).or_insert_with(|| v.clone());
+            }
+            if let Some(ref port_env) = cfg.port_env {
+                if !port_env.is_empty() {
+                    old_env.insert(port_env.clone(), port.to_string());
+                }
+            }
+        }
+
         let opts = agent_supervisor::SpawnOptions {
             workspace: workspace.clone(),
             dir: ws_dir,

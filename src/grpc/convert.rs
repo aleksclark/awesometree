@@ -83,13 +83,97 @@ pub fn interop_project_to_proto(
         max_bytes: ctx.max_bytes.map(|b| b as i64).unwrap_or(0),
     });
 
+    let agents = interop_agents_to_proto(proj);
+
     arp_proto::Project {
         name: proj.name.clone(),
         repo: proj.repo.clone().unwrap_or_default(),
         branch: proj.branch.clone().unwrap_or_default(),
-        agents: Vec::new(),
+        agents,
         context,
     }
+}
+
+/// Convert interop Project agents JSON to proto AgentTemplate vec.
+pub fn interop_agents_to_proto(
+    proj: &crate::interop::Project,
+) -> Vec<arp_proto::AgentTemplate> {
+    let templates = proj.agent_templates();
+    templates
+        .into_iter()
+        .map(|(name, cfg)| {
+            let health_check = cfg.health_check.map(|hc| arp_proto::HealthCheckConfig {
+                path: hc.path.unwrap_or_default(),
+                interval_ms: hc.interval_ms.unwrap_or(0),
+                timeout_ms: hc.timeout_ms.unwrap_or(0),
+                retries: hc.retries.unwrap_or(0),
+            });
+            arp_proto::AgentTemplate {
+                name,
+                command: cfg.command.unwrap_or_default(),
+                port_env: cfg.port_env.unwrap_or_default(),
+                health_check,
+                env: cfg.env,
+                capabilities: cfg.capabilities,
+                a2a_card_config: None,
+            }
+        })
+        .collect()
+}
+
+/// Convert proto AgentTemplate list to JSON Value for interop Project.agents.
+pub fn proto_agents_to_json(
+    agents: &[arp_proto::AgentTemplate],
+) -> Option<serde_json::Value> {
+    if agents.is_empty() {
+        return None;
+    }
+    let mut map = serde_json::Map::new();
+    for tmpl in agents {
+        let mut cfg = serde_json::Map::new();
+        if !tmpl.command.is_empty() {
+            cfg.insert("command".into(), serde_json::Value::String(tmpl.command.clone()));
+        }
+        if !tmpl.port_env.is_empty() {
+            cfg.insert("portEnv".into(), serde_json::Value::String(tmpl.port_env.clone()));
+        }
+        if let Some(hc) = &tmpl.health_check {
+            let mut hc_map = serde_json::Map::new();
+            if !hc.path.is_empty() {
+                hc_map.insert("path".into(), serde_json::Value::String(hc.path.clone()));
+            }
+            if hc.interval_ms != 0 {
+                hc_map.insert("intervalMs".into(), serde_json::json!(hc.interval_ms));
+            }
+            if hc.timeout_ms != 0 {
+                hc_map.insert("timeoutMs".into(), serde_json::json!(hc.timeout_ms));
+            }
+            if hc.retries != 0 {
+                hc_map.insert("retries".into(), serde_json::json!(hc.retries));
+            }
+            if !hc_map.is_empty() {
+                cfg.insert("healthCheck".into(), serde_json::Value::Object(hc_map));
+            }
+        }
+        if !tmpl.env.is_empty() {
+            let env_obj: serde_json::Map<String, serde_json::Value> = tmpl
+                .env
+                .iter()
+                .map(|(k, v)| (k.clone(), serde_json::Value::String(v.clone())))
+                .collect();
+            cfg.insert("env".into(), serde_json::Value::Object(env_obj));
+        }
+        if !tmpl.capabilities.is_empty() {
+            cfg.insert(
+                "capabilities".into(),
+                serde_json::Value::Array(
+                    tmpl.capabilities.iter().map(|c| serde_json::Value::String(c.clone())).collect(),
+                ),
+            );
+        }
+        map.insert(tmpl.name.clone(), serde_json::Value::Object(cfg));
+    }
+    Some(serde_json::Value::Object(map))
 }
 
 /// Convert a `serde_json::Value` to a `prost_types::Struct`.

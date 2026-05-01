@@ -81,6 +81,42 @@ pub struct AcpConfig {
     pub verify_on_open: bool,
 }
 
+/// Structured agent template stored in the project `agents` JSON map.
+/// The key in the JSON object is the template name.
+#[derive(Debug, Default, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentTemplateConfig {
+    /// Shell command to start the agent process.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+    /// Environment variable name where the allocated port is injected.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub port_env: Option<String>,
+    /// Health check configuration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub health_check: Option<HealthCheckCfg>,
+    /// Additional environment variables passed to the agent process.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub env: HashMap<String, String>,
+    /// Capability tags advertised in the agent's A2A AgentCard skills.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub capabilities: Vec<String>,
+}
+
+/// Health check configuration for readiness probing.
+#[derive(Debug, Default, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct HealthCheckCfg {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interval_ms: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_ms: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retries: Option<i32>,
+}
+
 fn default_true() -> bool { true }
 fn is_true(b: &bool) -> bool { *b }
 
@@ -248,6 +284,20 @@ impl Project {
 
     pub fn acp_config(&self) -> Option<AcpConfig> {
         self.awesometree_ext().acp
+    }
+
+    /// Parse the `agents` JSON field into a map of template name → config.
+    /// Returns an empty map if agents is None or not a JSON object.
+    pub fn agent_templates(&self) -> HashMap<String, AgentTemplateConfig> {
+        self.agents
+            .as_ref()
+            .and_then(|v| serde_json::from_value::<HashMap<String, AgentTemplateConfig>>(v.clone()).ok())
+            .unwrap_or_default()
+    }
+
+    /// Look up a single agent template by name.
+    pub fn agent_template(&self, name: &str) -> Option<AgentTemplateConfig> {
+        self.agent_templates().remove(name)
     }
 }
 
