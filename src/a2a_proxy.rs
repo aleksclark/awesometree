@@ -60,6 +60,10 @@ pub fn router() -> axum::Router<A2aProxyState> {
             axum::routing::get(get_agent_card),
         )
         .route(
+            "/a2a/agents/{agent_id}",
+            axum::routing::any(proxy_agent_root),
+        )
+        .route(
             "/a2a/agents/{agent_id}/{*rest}",
             axum::routing::any(proxy_agent_request),
         )
@@ -310,6 +314,16 @@ async fn get_agent_card(
     let val = serde_json::to_value(&card)
         .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("serialize: {e}")))?;
     Ok(Json(val))
+}
+
+async fn proxy_agent_root(
+    Path(agent_id): Path<String>,
+    State(state): State<A2aProxyState>,
+    req: Request,
+) -> Result<Response, Response> {
+    let token = extract_token(&req);
+    let resolved = resolve_agent(&agent_id, &token)?;
+    proxy_to_agent(&resolved.url, "/", req, &state).await
 }
 
 async fn proxy_agent_request(

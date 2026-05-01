@@ -287,9 +287,10 @@ impl AgentService for AgentServiceImpl {
         let a2a_body = serde_json::json!({
             "jsonrpc": "2.0",
             "id": uuid::Uuid::new_v4().to_string(),
-            "method": "message/send",
+            "method": "SendMessage",
             "params": {
                 "message": {
+                    "messageId": uuid::Uuid::new_v4().to_string(),
                     "role": "user",
                     "parts": [{"kind": "text", "text": req.message}],
                     "contextId": context_id
@@ -392,9 +393,10 @@ impl AgentService for AgentServiceImpl {
         let a2a_body = serde_json::json!({
             "jsonrpc": "2.0",
             "id": uuid::Uuid::new_v4().to_string(),
-            "method": "message/send",
+            "method": "SendMessage",
             "params": {
                 "message": {
+                    "messageId": uuid::Uuid::new_v4().to_string(),
                     "role": "user",
                     "parts": [{"kind": "text", "text": req.message}],
                     "contextId": context_id
@@ -486,7 +488,7 @@ impl AgentService for AgentServiceImpl {
         let a2a_body = serde_json::json!({
             "jsonrpc": "2.0",
             "id": uuid::Uuid::new_v4().to_string(),
-            "method": "tasks/get",
+            "method": "GetTask",
             "params": {
                 "id": req.task_id,
                 "historyLength": req.history_length
