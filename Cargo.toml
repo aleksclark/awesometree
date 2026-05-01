@@ -76,6 +76,7 @@ anyhow = "1"
 tonic = "0.13"
 prost = "0.13"
 prost-types = "0.13"
+rusqlite = { version = "0.39.0", features = ["bundled"] }
 
 [build-dependencies]
 tonic-build = "0.13"

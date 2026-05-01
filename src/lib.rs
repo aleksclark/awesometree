@@ -41,3 +41,4 @@ pub mod agent_supervisor;
 pub mod a2a_proxy;
 pub mod grpc;
 pub mod mcp;
+pub mod arp_store;
