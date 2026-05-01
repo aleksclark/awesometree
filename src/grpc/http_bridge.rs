@@ -494,8 +494,8 @@ pub fn router() -> axum::Router {
         .route("/v1/agents/{agent_id}/messages", post(send_agent_message))
         .route("/v1/agents/{agent_id}/tasks", post(create_agent_task))
         .route("/v1/agents/{agent_id}/tasks/{task_id}", get(get_agent_task_status))
-        .route("/v1/agents/{agent_id}:stop", post(stop_agent))
-        .route("/v1/agents/{agent_id}:restart", post(restart_agent))
+        .route("/v1/agents/{agent_id}/stop", post(stop_agent))
+        .route("/v1/agents/{agent_id}/restart", post(restart_agent))
         // Discovery
         .route("/v1/discover", get(discover_agents))
         // Tokens
