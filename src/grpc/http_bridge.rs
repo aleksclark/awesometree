@@ -57,7 +57,7 @@ pub async fn list_projects() -> impl IntoResponse {
             let projects: Vec<serde_json::Value> = inner
                 .projects
                 .iter()
-                .map(|p| project_to_json(p))
+                .map(project_to_json)
                 .collect();
             (StatusCode::OK, Json(serde_json::json!({ "projects": projects }))).into_response()
         }
