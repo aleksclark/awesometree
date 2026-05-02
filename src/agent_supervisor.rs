@@ -42,6 +42,7 @@ struct ManagedAgent {
     env: HashMap<String, String>,
     stop_signal: Arc<Notify>,
     agent_card: Arc<Mutex<Option<AgentCard>>>,
+    grace_override: Arc<Mutex<Option<Duration>>>,
 }
 
 pub struct AgentSupervisor {
@@ -89,6 +90,7 @@ impl AgentSupervisor {
 
         let stop_signal = Arc::new(Notify::new());
         let agent_card = Arc::new(Mutex::new(None));
+        let grace_override = Arc::new(Mutex::new(None));
 
         let managed = Arc::new(ManagedAgent {
             agent_id: agent_id.clone(),
@@ -101,6 +103,7 @@ impl AgentSupervisor {
             env: opts.env.clone(),
             stop_signal: stop_signal.clone(),
             agent_card: agent_card.clone(),
+            grace_override: grace_override.clone(),
         });
 
         let port = opts.port;
@@ -163,7 +166,7 @@ impl AgentSupervisor {
                     status: AgentStatus::Error,
                     workspace: workspace.clone(),
                 });
-                graceful_stop(&mut child).await;
+                graceful_stop(&mut child, STOP_GRACE).await;
                 agents_map.lock().unwrap().remove(&aid);
                 return;
             }
@@ -203,7 +206,12 @@ impl AgentSupervisor {
                         status: AgentStatus::Stopping,
                         workspace: workspace.clone(),
                     });
-                    graceful_stop(&mut child).await;
+
+                    cancel_agent_tasks(&aid, managed.port).await;
+
+                    let grace = managed.grace_override.lock().unwrap().take()
+                        .unwrap_or(STOP_GRACE);
+                    graceful_stop(&mut child, grace).await;
                     update_agent_state(&aid, AgentStatus::Stopped, None);
                     let _ = event_tx.send(SupervisorEvent::Stopped {
                         agent_id: aid.clone(),
@@ -223,8 +231,15 @@ impl AgentSupervisor {
     }
 
     pub fn stop(&self, agent_id: &str) {
+        self.stop_with_grace(agent_id, None);
+    }
+
+    pub fn stop_with_grace(&self, agent_id: &str, grace_period: Option<Duration>) {
         let agents = self.agents.lock().unwrap();
         if let Some(managed) = agents.get(agent_id) {
+            if let Some(gp) = grace_period {
+                *managed.grace_override.lock().unwrap() = Some(gp);
+            }
             managed.stop_signal.notify_one();
         }
     }
@@ -365,7 +380,53 @@ async fn fetch_agent_card(port: u16) -> Option<AgentCard> {
     serde_json::from_str(&text).ok()
 }
 
-async fn graceful_stop(child: &mut Child) {
+async fn cancel_agent_tasks(agent_id: &str, port: u16) {
+    let task_ids: Vec<String> = {
+        match crate::arp_store::ArpStore::global() {
+            Some(s) => s
+                .active_tasks(agent_id)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|t| t.task_id)
+                .collect(),
+            None => return,
+        }
+    };
+
+    if task_ids.is_empty() {
+        return;
+    }
+
+    let base_url = format!("http://127.0.0.1:{port}");
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(3))
+        .build()
+        .unwrap_or_default();
+
+    for task_id in &task_ids {
+        dlog::log(format!(
+            "Agent supervisor: canceling task {} on agent {}",
+            task_id, agent_id
+        ));
+        let cancel_body = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": uuid::Uuid::new_v4().to_string(),
+            "method": "tasks/cancel",
+            "params": { "id": task_id }
+        });
+        let _ = client
+            .post(format!("{base_url}/"))
+            .json(&cancel_body)
+            .send()
+            .await;
+    }
+
+    if let Some(s) = crate::arp_store::ArpStore::global() {
+        let _ = s.clear_agent_tasks(agent_id);
+    }
+}
+
+async fn graceful_stop(child: &mut Child, grace: Duration) {
     #[cfg(unix)]
     {
         if let Some(pid) = child.id() {
@@ -375,7 +436,7 @@ async fn graceful_stop(child: &mut Child) {
         }
     }
 
-    match tokio::time::timeout(STOP_GRACE, child.wait()).await {
+    match tokio::time::timeout(grace, child.wait()).await {
         Ok(_) => {}
         Err(_) => {
             dlog::log("Agent supervisor: grace period expired, killing");
@@ -430,6 +491,13 @@ pub fn spawn_agent(opts: SpawnOptions) -> Option<SpawnResult> {
 pub fn stop_agent(agent_id: &str) {
     if let Some(sup) = get() {
         sup.stop(agent_id);
+    }
+}
+
+pub fn stop_agent_with_grace(agent_id: &str, grace_period_ms: u32) {
+    if let Some(sup) = get() {
+        let grace = Duration::from_millis(grace_period_ms as u64);
+        sup.stop_with_grace(agent_id, Some(grace));
     }
 }
 

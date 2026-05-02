@@ -24,6 +24,7 @@ pub mod projects_ui;
 pub mod agents_ui;
 #[cfg(feature = "gui")]
 pub mod cleanup_ui;
+#[cfg(feature = "gui")]
 pub mod text_input;
 #[cfg(feature = "gui")]
 pub mod tray;
@@ -41,3 +42,4 @@ pub mod agent_supervisor;
 pub mod a2a_proxy;
 pub mod grpc;
 pub mod mcp;
+pub mod arp_store;
