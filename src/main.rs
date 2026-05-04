@@ -575,6 +575,7 @@ fn cmd_daemon() {
         eprintln!("awesometree-daemon is already running");
         process::exit(1);
     }
+    awesometree::user_env::snapshot();
     let exe = std::env::current_exe()
         .ok()
         .and_then(|p| p.parent().map(|d| d.join("awesometree-daemon")))

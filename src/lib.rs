@@ -8,6 +8,7 @@
 )]
 
 pub mod paths;
+pub mod user_env;
 #[cfg(feature = "gui")]
 pub mod theme;
 #[cfg(feature = "gui")]

@@ -75,6 +75,7 @@ fn main() {
         });
     });
 
+    awesometree::user_env::load();
     dlog::log("Daemon starting");
 
     let app = Application::new();
