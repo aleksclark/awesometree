@@ -243,6 +243,7 @@ pub fn launch_apps(project: &Project, dir: &PathBuf, acp_port: Option<u16>) {
     } else {
         ext.apps.clone()
     };
+
     for app_cmd in &apps {
         let expanded = interop::interpolate_with_port(app_cmd, &project.name, &dir_str, acp_port);
         dlog::log(format!("Launching app: {expanded}"));
@@ -251,10 +252,29 @@ pub fn launch_apps(project: &Project, dir: &PathBuf, acp_port: Option<u16>) {
             .current_dir(dir)
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped())
             .spawn()
         {
-            Ok(_child) => dlog::log(format!("Spawned: {expanded}")),
+            Ok(child) => {
+                let cmd_label = expanded.clone();
+                std::thread::spawn(move || {
+                    match child.wait_with_output() {
+                        Ok(output) if output.status.success() => {}
+                        Ok(output) => {
+                            let stderr = String::from_utf8_lossy(&output.stderr);
+                            let msg = stderr.trim();
+                            if msg.is_empty() {
+                                dlog::log(format!("App exited with {}: {cmd_label}", output.status));
+                            } else {
+                                dlog::log(format!("App exited with {}: {cmd_label}: {msg}", output.status));
+                            }
+                        }
+                        Err(e) => {
+                            dlog::log(format!("App wait failed: {cmd_label}: {e}"));
+                        }
+                    }
+                });
+            }
             Err(e) => dlog::log(format!("Failed to spawn app: {expanded}: {e}")),
         }
     }
