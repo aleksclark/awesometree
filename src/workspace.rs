@@ -78,6 +78,8 @@ impl Manager {
             dlog::log(format!("Creating tag: {tag} (index: {tag_idx}, layout: {layout})"));
             if let Err(e) = self.wm.create_tag(&tag, tag_idx, layout) {
                 dlog::log(format!("Warning: create tag failed: {e} — continuing with app launch"));
+            } else {
+                let _ = self.wm.switch_tag(&tag);
             }
         }
 
