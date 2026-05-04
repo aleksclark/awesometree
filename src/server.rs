@@ -353,27 +353,11 @@ async fn create_workspace(
     workspace::ensure_worktree(&req.name, &project, &dir)
         .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
 
-    let ext = project.awesometree_ext();
     let tag_idx = st.allocate_tag_index(&req.name);
     let acp_port = st.allocate_acp_port(&req.name);
     let dir_str = dir.to_string_lossy().into_owned();
 
-    let apps = if ext.apps.is_empty() {
-        vec!["zeditor -n {dir}".to_string()]
-    } else {
-        ext.apps.clone()
-    };
-    for app_cmd in &apps {
-        let expanded = interop::interpolate_with_port(app_cmd, &project.name, &dir_str, acp_port);
-        dlog::log(format!("API: launching app: {expanded}"));
-        let _ = std::process::Command::new("sh")
-            .args(["-c", &expanded])
-            .current_dir(&dir)
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn();
-    }
+    workspace::launch_apps(&project, &dir, acp_port);
 
     let acp_url = project.resolved_acp_url(&dir_str, acp_port);
     st.set_active(&req.name, &req.project, tag_idx, &dir_str, acp_port, acp_url);
@@ -456,7 +440,6 @@ async fn start_workspace(Path(name): Path<String>) -> Result<Json<WorkspaceInfo>
     let project = interop::load(&project_name)
         .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
 
-    let ext = project.awesometree_ext();
     let dir = workspace::resolve_dir(&name, &project);
     workspace::ensure_worktree(&name, &project, &dir)
         .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
@@ -465,22 +448,7 @@ async fn start_workspace(Path(name): Path<String>) -> Result<Json<WorkspaceInfo>
     let acp_port = st.allocate_acp_port(&name);
     let dir_str = dir.to_string_lossy().into_owned();
 
-    let apps = if ext.apps.is_empty() {
-        vec!["zeditor -n {dir}".to_string()]
-    } else {
-        ext.apps.clone()
-    };
-    for app_cmd in &apps {
-        let expanded = interop::interpolate_with_port(app_cmd, &project.name, &dir_str, acp_port);
-        dlog::log(format!("API: launching app: {expanded}"));
-        let _ = std::process::Command::new("sh")
-            .args(["-c", &expanded])
-            .current_dir(&dir)
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn();
-    }
+    workspace::launch_apps(&project, &dir, acp_port);
 
     let acp_url = project.resolved_acp_url(&dir_str, acp_port);
     st.set_active(&name, &project_name, tag_idx, &dir_str, acp_port, acp_url);
