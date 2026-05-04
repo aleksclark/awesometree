@@ -76,44 +76,22 @@ impl Manager {
         if opts.create_tag {
             let tag = wm::tag_name(&project.name, ws_name);
             dlog::log(format!("Creating tag: {tag} (index: {tag_idx}, layout: {layout})"));
-            self.wm.create_tag(&tag, tag_idx, layout)?;
+            if let Err(e) = self.wm.create_tag(&tag, tag_idx, layout) {
+                dlog::log(format!("Warning: create tag failed: {e} — continuing with app launch"));
+            }
         }
+
+        let acp_port = self.state.allocate_acp_port(ws_name);
 
         if opts.launch_apps {
-            let dir_str = dir.to_string_lossy();
-            let apps = if ext.apps.is_empty() {
-                vec!["zeditor -n {dir}".to_string()]
-            } else {
-                ext.apps.clone()
-            };
-
-            let acp_port = self.state.allocate_acp_port(ws_name);
-
-            for app_cmd in &apps {
-                let expanded = interop::interpolate_with_port(app_cmd, &project.name, &dir_str, acp_port);
-                dlog::log(format!("Launching app: {expanded}"));
-                let _ = Command::new("sh")
-                    .args(["-c", &expanded])
-                    .current_dir(&dir)
-                    .stdin(std::process::Stdio::null())
-                    .stdout(std::process::Stdio::null())
-                    .stderr(std::process::Stdio::null())
-                    .spawn();
-            }
-
-            let acp_url = start_acp_if_configured(ws_name, &dir, acp_port, project);
-
-            let dir_str = dir.to_string_lossy().into_owned();
-            self.state
-                .set_active(ws_name, &project.name, tag_idx, &dir_str, acp_port, acp_url);
-        } else {
-            let acp_port = self.state.allocate_acp_port(ws_name);
-            let acp_url = start_acp_if_configured(ws_name, &dir, acp_port, project);
-
-            let dir_str = dir.to_string_lossy().into_owned();
-            self.state
-                .set_active(ws_name, &project.name, tag_idx, &dir_str, acp_port, acp_url);
+            launch_apps(project, &dir, acp_port);
         }
+
+        let acp_url = start_acp_if_configured(ws_name, &dir, acp_port, project);
+
+        let dir_str = dir.to_string_lossy().into_owned();
+        self.state
+            .set_active(ws_name, &project.name, tag_idx, &dir_str, acp_port, acp_url);
         state::save(&self.state)
     }
 
@@ -253,6 +231,31 @@ fn start_acp_if_configured(
     acp_supervisor::start_for_workspace(ws_name, &dir_str, port, cmd);
     let url = acp.url.as_deref().unwrap_or("http://127.0.0.1:{port}");
     Some(interop::interpolate_with_port(url, &project.name, &dir_str, Some(port)))
+}
+
+pub fn launch_apps(project: &Project, dir: &PathBuf, acp_port: Option<u16>) {
+    let ext = project.awesometree_ext();
+    let dir_str = dir.to_string_lossy();
+    let apps = if ext.apps.is_empty() {
+        vec!["zeditor -n {dir}".to_string()]
+    } else {
+        ext.apps.clone()
+    };
+    for app_cmd in &apps {
+        let expanded = interop::interpolate_with_port(app_cmd, &project.name, &dir_str, acp_port);
+        dlog::log(format!("Launching app: {expanded}"));
+        match Command::new("sh")
+            .args(["-c", &expanded])
+            .current_dir(dir)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+        {
+            Ok(_child) => dlog::log(format!("Spawned: {expanded}")),
+            Err(e) => dlog::log(format!("Failed to spawn app: {expanded}: {e}")),
+        }
+    }
 }
 
 pub fn resolve_dir(ws_name: &str, project: &Project) -> PathBuf {
