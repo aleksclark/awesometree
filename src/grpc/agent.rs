@@ -102,6 +102,7 @@ impl AgentService for AgentServiceImpl {
             port,
             command,
             env,
+            prompt: if req.prompt.is_empty() { None } else { Some(req.prompt.clone()) },
         };
 
         let result = agent_supervisor::spawn_agent(opts).ok_or_else(|| {
@@ -272,10 +273,11 @@ impl AgentService for AgentServiceImpl {
 
         // NOTE: The `blocking` field (proto3 bool, default false) conflicts with the spec
         // default of true. Since we cannot distinguish "not set" from "set to false" in
-        // proto3, we always block (current behavior matches spec default). A non-blocking
-        // fire-and-forget path can be added when the proto is updated to `optional bool`.
+        // proto3, we treat false (the proto3 default) as non-blocking: dispatch in background,
+        // return a task ID immediately. Set blocking=true for synchronous request/response.
 
         let base_url = agent.base_url();
+        let agent_id = agent.id.clone();
 
         // Build A2A SendMessage JSON-RPC request
         let context_id = if req.context_id.is_empty() {
@@ -298,7 +300,52 @@ impl AgentService for AgentServiceImpl {
             }
         });
 
-        let client = reqwest::Client::new();
+        if !req.blocking {
+            let task_id = uuid::Uuid::new_v4().to_string();
+
+            if let Some(arp_store) = crate::arp_store::ArpStore::global() {
+                let _ = arp_store.track_task(&agent_id, &task_id, Some(&context_id));
+            }
+
+            let task_id_clone = task_id.clone();
+            let agent_id_clone = agent_id.clone();
+            tokio::spawn(async move {
+                let client = reqwest::Client::builder()
+                    .timeout(std::time::Duration::from_secs(600))
+                    .build()
+                    .unwrap_or_default();
+
+                let result = client
+                    .post(format!("{base_url}/"))
+                    .json(&a2a_body)
+                    .send()
+                    .await;
+
+                let terminal_status = match result {
+                    Ok(resp) if resp.status().is_success() => "completed",
+                    _ => "failed",
+                };
+
+                if let Some(arp_store) = crate::arp_store::ArpStore::global() {
+                    let _ = arp_store.complete_task(&agent_id_clone, &task_id_clone, terminal_status);
+                }
+            });
+
+            let task_json = serde_json::json!({
+                "id": task_id,
+                "contextId": context_id,
+                "status": {"state": "working"}
+            });
+            let prost_struct = convert::json_to_prost_struct(&task_json)
+                .unwrap_or_default();
+            let result = Some(send_agent_message_response::Result::Task(prost_struct));
+            return Ok(Response::new(SendAgentMessageResponse { result }));
+        }
+
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(600))
+            .build()
+            .unwrap_or_default();
         let resp = client
             .post(format!("{base_url}/"))
             .json(&a2a_body)
@@ -382,6 +429,7 @@ impl AgentService for AgentServiceImpl {
         }
 
         let base_url = agent.base_url();
+        let agent_id = agent.id.clone();
 
         let context_id = if req.context_id.is_empty() {
             uuid::Uuid::new_v4().to_string()
@@ -389,56 +437,59 @@ impl AgentService for AgentServiceImpl {
             req.context_id.clone()
         };
 
-        // A2A SendMessage — same as above, but we always return a task
-        let a2a_body = serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": uuid::Uuid::new_v4().to_string(),
-            "method": "SendMessage",
-            "params": {
-                "message": {
-                    "messageId": uuid::Uuid::new_v4().to_string(),
-                    "role": "user",
-                    "parts": [{"kind": "text", "text": req.message}],
-                    "contextId": context_id
+        let task_id = uuid::Uuid::new_v4().to_string();
+
+        // Track the task immediately so callers can poll
+        if let Some(arp_store) = crate::arp_store::ArpStore::global() {
+            let _ = arp_store.track_task(&agent_id, &task_id, Some(&context_id));
+        }
+
+        // Spawn background task to send the A2A message
+        let task_id_clone = task_id.clone();
+        let context_id_clone = context_id.clone();
+        let agent_id_clone = agent_id.clone();
+        tokio::spawn(async move {
+            let a2a_body = serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": uuid::Uuid::new_v4().to_string(),
+                "method": "SendMessage",
+                "params": {
+                    "message": {
+                        "messageId": uuid::Uuid::new_v4().to_string(),
+                        "role": "user",
+                        "parts": [{"kind": "text", "text": req.message}],
+                        "contextId": context_id_clone
+                    }
                 }
+            });
+
+            let client = reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(600))
+                .build()
+                .unwrap_or_default();
+
+            let result = client
+                .post(format!("{base_url}/"))
+                .json(&a2a_body)
+                .send()
+                .await;
+
+            let terminal_status = match result {
+                Ok(resp) if resp.status().is_success() => "completed",
+                _ => "failed",
+            };
+
+            if let Some(arp_store) = crate::arp_store::ArpStore::global() {
+                let _ = arp_store.complete_task(&agent_id_clone, &task_id_clone, terminal_status);
             }
         });
 
-        let client = reqwest::Client::new();
-        let resp = client
-            .post(format!("{base_url}/"))
-            .json(&a2a_body)
-            .send()
-            .await
-            .map_err(|e| Status::unavailable(format!("failed to reach agent: {e}")))?;
-
-        if !resp.status().is_success() {
-            let status_code = resp.status();
-            let body = resp.text().await.unwrap_or_default();
-            return Err(Status::internal(format!(
-                "agent returned {status_code}: {body}"
-            )));
-        }
-
-        let resp_json: serde_json::Value = resp
-            .json()
-            .await
-            .map_err(|e| Status::internal(format!("failed to parse agent response: {e}")))?;
-
-        let result_val = resp_json.get("result").unwrap_or(&resp_json);
-
-        // If the result already has an "id", it's a task. Otherwise, wrap it.
-        let task_json = if result_val.get("id").is_some() {
-            result_val.clone()
-        } else {
-            // Wrap in a synthetic completed task
-            serde_json::json!({
-                "id": uuid::Uuid::new_v4().to_string(),
-                "contextId": context_id,
-                "status": {"state": "completed"},
-                "result": result_val
-            })
-        };
+        // Return immediately with the task ID
+        let task_json = serde_json::json!({
+            "id": task_id,
+            "contextId": context_id,
+            "status": {"state": "working"}
+        });
 
         let prost_struct = convert::json_to_prost_struct(&task_json)
             .unwrap_or_default();
@@ -677,6 +728,7 @@ impl AgentService for AgentServiceImpl {
             port,
             command,
             env: old_env,
+            prompt: None,
         };
 
         let result = agent_supervisor::spawn_agent(opts).ok_or_else(|| {

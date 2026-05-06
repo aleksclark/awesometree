@@ -100,6 +100,11 @@ pub const TAG_OFFSET: i32 = 10;
 pub const ACP_PORT_BASE: u16 = 9100;
 pub const ACP_PORT_MAX: u16 = 9199;
 
+/// Check if a port is actually available on the system by attempting to bind.
+pub fn is_port_available(port: u16) -> bool {
+    std::net::TcpListener::bind(("127.0.0.1", port)).is_ok()
+}
+
 fn state_dir() -> PathBuf {
     paths::home_dir().join(".config/awesometree")
 }
@@ -265,6 +270,10 @@ impl Store {
     }
 
     pub fn allocate_agent_port(&self) -> Option<u16> {
+        self.allocate_agent_port_with(is_port_available)
+    }
+
+    fn allocate_agent_port_with(&self, check_available: impl Fn(u16) -> bool) -> Option<u16> {
         let used: std::collections::HashSet<u16> = self
             .workspaces
             .values()
@@ -276,14 +285,13 @@ impl Store {
             })
             .collect();
         let mut port = ACP_PORT_BASE;
-        while used.contains(&port) && port <= ACP_PORT_MAX {
+        while port <= ACP_PORT_MAX {
+            if !used.contains(&port) && check_available(port) {
+                return Some(port);
+            }
             port += 1;
         }
-        if port > ACP_PORT_MAX {
-            None
-        } else {
-            Some(port)
-        }
+        None
     }
 
     pub fn find_agent(&self, agent_id: &str) -> Option<(&str, &AgentInstanceState)> {
@@ -754,14 +762,21 @@ mod tests {
         let mut s = make_store();
         s.set_active("ws1", "proj", 10, "/tmp", Some(ACP_PORT_BASE), None);
         s.add_agent("ws1", make_agent("a1", "coder", "ws1", ACP_PORT_BASE + 1));
-        let port = s.allocate_agent_port().unwrap();
+        let port = s.allocate_agent_port_with(|_| true).unwrap();
         assert_eq!(port, ACP_PORT_BASE + 2);
     }
 
     #[test]
     fn allocate_agent_port_empty_store() {
         let s = make_store();
-        assert_eq!(s.allocate_agent_port(), Some(ACP_PORT_BASE));
+        assert_eq!(s.allocate_agent_port_with(|_| true), Some(ACP_PORT_BASE));
+    }
+
+    #[test]
+    fn allocate_agent_port_skips_unavailable() {
+        let s = make_store();
+        let port = s.allocate_agent_port_with(|p| p != ACP_PORT_BASE).unwrap();
+        assert_eq!(port, ACP_PORT_BASE + 1);
     }
 
     #[test]

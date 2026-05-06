@@ -130,19 +130,11 @@ Send an A2A `SendMessage` to an agent, proxied through ARP.
 
 **Returns:** The A2A `SendMessageResponse` — either a `Message` (direct reply) or a `Task` (with `id`, `status`, and optionally `artifacts`).
 
-**A2A mapping:** This tool constructs and sends:
+**Behavior:**
+- `blocking: true` (default): Waits for the agent's A2A response and returns it directly. Timeout: 600s.
+- `blocking: false`: Dispatches the message in the background and returns immediately with a Task ID for polling via `agent/task_status`.
 
-```json
-{
-  "message": {
-    "role": "ROLE_USER",
-    "parts": [{ "text_part": { "text": "<user's message text>" } }],
-    "context_id": "<context_id if provided>"
-  }
-}
-```
-
-via `POST /message:send` on the agent's direct A2A endpoint.
+**A2A mapping:** Constructs a JSON-RPC `SendMessage` request and sends via `POST /` on the agent's direct A2A endpoint.
 
 ## `agent/task`
 
@@ -164,9 +156,11 @@ Send a task to an agent via A2A `SendMessage` and return the resulting `Task` fo
 }
 ```
 
-**Returns:** A2A `Task` object with `id`, `context_id`, and `status` (typically `TASK_STATE_SUBMITTED` or `TASK_STATE_WORKING`).
+**Returns:** A2A `Task` object with `id`, `context_id`, and `status` (always `working` initially).
 
-**Difference from `agent/message`:** `agent/task` always returns a `Task` for tracking (never a bare `Message`). If the agent's `SendMessageResponse` contains a `Message` instead of a `Task`, ARP wraps it in a synthetic completed `Task`.
+**Behavior:** This tool is always non-blocking. It dispatches the A2A `SendMessage` in the background and returns immediately with a task ID. Use `agent/task_status` to poll for completion.
+
+**Difference from `agent/message`:** `agent/task` never blocks — it always returns a `Task` for tracking. `agent/message` blocks by default (set `blocking: false` for non-blocking behavior that also returns a task ID).
 
 ## `agent/task_status`
 
@@ -193,7 +187,7 @@ Check the status of a running A2A task via `GetTask`.
 - `artifacts[]` — output `Artifact` objects, each containing `Part` items
 - `history[]` — recent `Message` objects (capped by `history_length`)
 
-**A2A mapping:** Calls `GET /tasks/{task_id}` on the agent's direct A2A endpoint with `history_length` parameter.
+**A2A mapping:** Sends a JSON-RPC `GetTask` request via `POST /` on the agent's direct A2A endpoint with the task ID and `historyLength` parameter.
 
 **Terminal states:** When `status.state` is one of `TASK_STATE_COMPLETED`, `TASK_STATE_FAILED`, `TASK_STATE_CANCELED`, or `TASK_STATE_REJECTED`, the task is done. No further updates will occur.
 

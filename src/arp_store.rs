@@ -212,6 +212,10 @@ impl ArpStore {
     }
 
     pub fn allocate_agent_port(&self) -> Result<u16, String> {
+        self.allocate_agent_port_with(crate::state::is_port_available)
+    }
+
+    fn allocate_agent_port_with(&self, check_available: impl Fn(u16) -> bool) -> Result<u16, String> {
         let c = self.conn();
         let mut used: HashSet<u16> = HashSet::new();
         {
@@ -223,8 +227,13 @@ impl ArpStore {
             for row in stmt.query_map([], |row| row.get::<_, i32>(0)).map_err(|e| e.to_string())?.flatten() { used.insert(row as u16); }
         }
         let mut port = PORT_BASE;
-        while used.contains(&port) && port <= PORT_MAX { port += 1; }
-        if port > PORT_MAX { Err("no available ports".into()) } else { Ok(port) }
+        while port <= PORT_MAX {
+            if !used.contains(&port) && check_available(port) {
+                return Ok(port);
+            }
+            port += 1;
+        }
+        Err("no available ports".into())
     }
 
     pub fn add_agent(&self, agent: &AgentRow) -> Result<(), String> {
@@ -510,7 +519,7 @@ mod tests {
     #[test]
     fn allocate_port_starts_at_base() {
         let store = ArpStore::open_memory().unwrap();
-        assert_eq!(store.allocate_agent_port().unwrap(), PORT_BASE);
+        assert_eq!(store.allocate_agent_port_with(|_| true).unwrap(), PORT_BASE);
     }
 
     #[test]
@@ -518,7 +527,7 @@ mod tests {
         let store = ArpStore::open_memory().unwrap();
         store.create_workspace("ws1", "p", "/tmp").unwrap();
         store.add_agent(&make_agent("a1", "ws1", "coder", PORT_BASE)).unwrap();
-        assert_eq!(store.allocate_agent_port().unwrap(), PORT_BASE + 1);
+        assert_eq!(store.allocate_agent_port_with(|_| true).unwrap(), PORT_BASE + 1);
     }
 
     #[test]
@@ -526,7 +535,7 @@ mod tests {
         let store = ArpStore::open_memory().unwrap();
         store.create_workspace("ws1", "p", "/tmp").unwrap();
         store.activate_workspace("ws1", 10, "/tmp", Some(PORT_BASE)).unwrap();
-        assert_eq!(store.allocate_agent_port().unwrap(), PORT_BASE + 1);
+        assert_eq!(store.allocate_agent_port_with(|_| true).unwrap(), PORT_BASE + 1);
     }
 
     #[test]
@@ -535,7 +544,14 @@ mod tests {
         store.create_workspace("ws1", "p", "/tmp").unwrap();
         store.activate_workspace("ws1", 10, "/tmp", Some(PORT_BASE)).unwrap();
         store.add_agent(&make_agent("a1", "ws1", "coder", PORT_BASE + 1)).unwrap();
-        assert_eq!(store.allocate_agent_port().unwrap(), PORT_BASE + 2);
+        assert_eq!(store.allocate_agent_port_with(|_| true).unwrap(), PORT_BASE + 2);
+    }
+
+    #[test]
+    fn allocate_port_skips_unavailable() {
+        let store = ArpStore::open_memory().unwrap();
+        let port = store.allocate_agent_port_with(|p| p != PORT_BASE).unwrap();
+        assert_eq!(port, PORT_BASE + 1);
     }
 
     // ---- Agent CRUD ----

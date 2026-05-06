@@ -245,6 +245,7 @@ impl ArpServer {
             port,
             command,
             env,
+            prompt: params.prompt.clone(),
         };
 
         let result = agent_supervisor::spawn_agent(opts).ok_or_else(|| {
@@ -339,18 +340,72 @@ impl ArpServer {
     ) -> Result<CallToolResult, ErrorData> {
         let (_, agent, _) = resolve_agent_with_access(&params.agent_id)?;
         let base_url = agent.base_url();
+        let agent_id = agent.id.clone();
+
+        let context_id = params.context_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
 
         let a2a_body = serde_json::json!({
-            "message": {
-                "role": "ROLE_USER",
-                "parts": [{ "text_part": { "text": params.message } }],
-                "context_id": params.context_id,
+            "jsonrpc": "2.0",
+            "id": uuid::Uuid::new_v4().to_string(),
+            "method": "SendMessage",
+            "params": {
+                "message": {
+                    "messageId": uuid::Uuid::new_v4().to_string(),
+                    "role": "user",
+                    "parts": [{"kind": "text", "text": params.message}],
+                    "contextId": context_id
+                }
             }
         });
 
-        let client = reqwest::Client::new();
+        let blocking = params.blocking.unwrap_or(true);
+
+        if !blocking {
+            let task_id = uuid::Uuid::new_v4().to_string();
+            if let Some(arp_store) = crate::arp_store::ArpStore::global() {
+                let _ = arp_store.track_task(&agent_id, &task_id, Some(&context_id));
+            }
+
+            let task_id_clone = task_id.clone();
+            let agent_id_clone = agent_id.clone();
+            tokio::spawn(async move {
+                let client = reqwest::Client::builder()
+                    .timeout(std::time::Duration::from_secs(600))
+                    .build()
+                    .unwrap_or_default();
+
+                let result = client
+                    .post(format!("{base_url}/"))
+                    .json(&a2a_body)
+                    .send()
+                    .await;
+
+                let terminal_status = match result {
+                    Ok(resp) if resp.status().is_success() => "completed",
+                    _ => "failed",
+                };
+
+                if let Some(arp_store) = crate::arp_store::ArpStore::global() {
+                    let _ = arp_store.complete_task(&agent_id_clone, &task_id_clone, terminal_status);
+                }
+            });
+
+            let task_json = serde_json::json!({
+                "id": task_id,
+                "contextId": context_id,
+                "status": {"state": "working"}
+            });
+            let out = serde_json::to_string_pretty(&task_json)
+                .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+            return Ok(CallToolResult::success(vec![Content::text(out)]));
+        }
+
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(600))
+            .build()
+            .unwrap_or_default();
         let resp = client
-            .post(format!("{base_url}/message:send"))
+            .post(format!("{base_url}/"))
             .json(&a2a_body)
             .send()
             .await
@@ -363,47 +418,69 @@ impl ArpServer {
         Ok(CallToolResult::success(vec![Content::text(body)]))
     }
 
-    #[tool(name = "agent/task", description = "Send a message to an agent via A2A SendMessage and return the Task for async tracking.")]
+    #[tool(name = "agent/task", description = "Send a message to an agent via A2A SendMessage and return the Task for async tracking. Always returns immediately — use agent/task_status to poll.")]
     pub async fn agent_task(
         &self,
         Parameters(params): Parameters<AgentTaskParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let (_, agent, _) = resolve_agent_with_access(&params.agent_id)?;
         let base_url = agent.base_url();
+        let agent_id = agent.id.clone();
 
-        let a2a_body = serde_json::json!({
-            "message": {
-                "role": "ROLE_USER",
-                "parts": [{ "text_part": { "text": params.message } }],
-                "context_id": params.context_id,
+        let context_id = params.context_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        let task_id = uuid::Uuid::new_v4().to_string();
+
+        if let Some(arp_store) = crate::arp_store::ArpStore::global() {
+            let _ = arp_store.track_task(&agent_id, &task_id, Some(&context_id));
+        }
+
+        let task_id_clone = task_id.clone();
+        let context_id_clone = context_id.clone();
+        let agent_id_clone = agent_id.clone();
+        let message = params.message.clone();
+        tokio::spawn(async move {
+            let a2a_body = serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": uuid::Uuid::new_v4().to_string(),
+                "method": "SendMessage",
+                "params": {
+                    "message": {
+                        "messageId": uuid::Uuid::new_v4().to_string(),
+                        "role": "user",
+                        "parts": [{"kind": "text", "text": message}],
+                        "contextId": context_id_clone
+                    }
+                }
+            });
+
+            let client = reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(600))
+                .build()
+                .unwrap_or_default();
+
+            let result = client
+                .post(format!("{base_url}/"))
+                .json(&a2a_body)
+                .send()
+                .await;
+
+            let terminal_status = match result {
+                Ok(resp) if resp.status().is_success() => "completed",
+                _ => "failed",
+            };
+
+            if let Some(arp_store) = crate::arp_store::ArpStore::global() {
+                let _ = arp_store.complete_task(&agent_id_clone, &task_id_clone, terminal_status);
             }
         });
 
-        let client = reqwest::Client::new();
-        let resp = client
-            .post(format!("{base_url}/message:send"))
-            .json(&a2a_body)
-            .send()
-            .await
-            .map_err(|e| ErrorData::internal_error(format!("A2A request failed: {e}"), None))?;
+        let task_json = serde_json::json!({
+            "id": task_id,
+            "contextId": context_id,
+            "status": {"state": "working"}
+        });
 
-        let body: serde_json::Value = resp
-            .json()
-            .await
-            .map_err(|e| ErrorData::internal_error(format!("A2A parse response: {e}"), None))?;
-
-        let task = if body.get("id").is_some() {
-            body
-        } else {
-            serde_json::json!({
-                "id": format!("synthetic-{}", uuid::Uuid::new_v4()),
-                "status": { "state": "TASK_STATE_COMPLETED" },
-                "artifacts": [],
-                "message": body,
-            })
-        };
-
-        let out = serde_json::to_string_pretty(&task)
+        let out = serde_json::to_string_pretty(&task_json)
             .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
         Ok(CallToolResult::success(vec![Content::text(out)]))
     }
@@ -416,14 +493,20 @@ impl ArpServer {
         let (_, agent, _) = resolve_agent_with_access(&params.agent_id)?;
         let base_url = agent.base_url();
 
-        let mut url = format!("{base_url}/tasks/{}", params.task_id);
-        if let Some(len) = params.history_length {
-            url = format!("{url}?history_length={len}");
-        }
+        let a2a_body = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": uuid::Uuid::new_v4().to_string(),
+            "method": "GetTask",
+            "params": {
+                "id": params.task_id,
+                "historyLength": params.history_length.unwrap_or(0)
+            }
+        });
 
         let client = reqwest::Client::new();
         let resp = client
-            .get(&url)
+            .post(format!("{base_url}/"))
+            .json(&a2a_body)
             .send()
             .await
             .map_err(|e| ErrorData::internal_error(format!("A2A GetTask failed: {e}"), None))?;
@@ -482,6 +565,7 @@ impl ArpServer {
             port,
             command: format!("{template} serve"),
             env: HashMap::new(),
+            prompt: None,
         };
 
         let result = agent_supervisor::spawn_agent(opts).ok_or_else(|| {

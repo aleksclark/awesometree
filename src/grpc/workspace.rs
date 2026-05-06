@@ -95,6 +95,7 @@ impl WorkspaceService for WorkspaceServiceImpl {
                 port,
                 command,
                 env: std::collections::HashMap::new(),
+                prompt: None,
             };
 
             if let Some(result) = agent_supervisor::spawn_agent(opts) {

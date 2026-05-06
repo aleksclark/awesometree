@@ -40,6 +40,7 @@ struct ManagedAgent {
     dir: String,
     command: String,
     env: HashMap<String, String>,
+    prompt: Option<String>,
     stop_signal: Arc<Notify>,
     agent_card: Arc<Mutex<Option<AgentCard>>>,
     grace_override: Arc<Mutex<Option<Duration>>>,
@@ -59,6 +60,7 @@ pub struct SpawnOptions {
     pub port: u16,
     pub command: String,
     pub env: HashMap<String, String>,
+    pub prompt: Option<String>,
 }
 
 pub struct SpawnResult {
@@ -101,6 +103,7 @@ impl AgentSupervisor {
             dir: opts.dir.clone(),
             command: opts.command.clone(),
             env: opts.env.clone(),
+            prompt: opts.prompt.clone(),
             stop_signal: stop_signal.clone(),
             agent_card: agent_card.clone(),
             grace_override: grace_override.clone(),
@@ -183,6 +186,28 @@ impl AgentSupervisor {
                 workspace: workspace.clone(),
             });
             dlog::log(format!("Agent supervisor: {} is ready", aid));
+
+            // Bug 1 fix: Send initial prompt after agent reaches READY
+            if let Some(ref prompt_text) = managed.prompt {
+                dlog::log(format!(
+                    "Agent supervisor: {} sending initial prompt ({} chars)",
+                    aid,
+                    prompt_text.len()
+                ));
+                if let Err(e) = send_initial_prompt(managed.port, prompt_text).await {
+                    dlog::log(format!(
+                        "Agent supervisor: {} initial prompt failed: {e}",
+                        aid
+                    ));
+                } else {
+                    update_agent_state(&aid, AgentStatus::Busy, None);
+                    let _ = event_tx.send(SupervisorEvent::StatusChanged {
+                        agent_id: aid.clone(),
+                        status: AgentStatus::Busy,
+                        workspace: workspace.clone(),
+                    });
+                }
+            }
 
             tokio::select! {
                 status = child.wait() => {
@@ -378,6 +403,43 @@ async fn fetch_agent_card(port: u16) -> Option<AgentCard> {
     }
     let text = resp.text().await.ok()?;
     serde_json::from_str(&text).ok()
+}
+
+async fn send_initial_prompt(port: u16, prompt: &str) -> Result<(), String> {
+    let base_url = format!("http://127.0.0.1:{port}");
+    let a2a_body = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": uuid::Uuid::new_v4().to_string(),
+        "method": "SendMessage",
+        "params": {
+            "message": {
+                "messageId": uuid::Uuid::new_v4().to_string(),
+                "role": "user",
+                "parts": [{"kind": "text", "text": prompt}],
+                "contextId": uuid::Uuid::new_v4().to_string()
+            }
+        }
+    });
+
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(300))
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    let resp = client
+        .post(format!("{base_url}/"))
+        .json(&a2a_body)
+        .send()
+        .await
+        .map_err(|e| format!("send failed: {e}"))?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        return Err(format!("agent returned {status}: {body}"));
+    }
+
+    Ok(())
 }
 
 async fn cancel_agent_tasks(agent_id: &str, port: u16) {
