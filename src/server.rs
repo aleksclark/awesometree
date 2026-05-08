@@ -218,9 +218,13 @@ pub async fn run(port: u16) {
             "/acp/{workspace}/{*rest}",
             axum::routing::any(acp_proxy_path),
         )
-        .merge(a2a_router)
         .layer(middleware::from_fn(auth_middleware))
         .with_state(state)
+        // Mount a2a and gRPC bridge routes outside the auth middleware layer.
+        // These routes handle their own authentication: a2a handlers use
+        // extract_token() which falls back to localhost_admin_token() for
+        // unauthenticated local requests.
+        .merge(a2a_router)
         .merge(grpc_bridge);
 
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
