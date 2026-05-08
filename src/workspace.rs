@@ -286,7 +286,14 @@ pub fn resolve_dir(ws_name: &str, project: &Project) -> PathBuf {
         let ext = project.awesometree_ext();
         let base = match &ext.worktree_dir {
             Some(dir) => interop::expand_home(dir),
-            None => interop::worktree_base().join(&project.name),
+            None => {
+                // Place worktrees relative to the project's repo parent directory:
+                // {repo_parent}/worktrees/{project_name}/{workspace_name}
+                match project.repo_path().and_then(|r| r.parent().map(|p| p.to_path_buf())) {
+                    Some(repo_parent) => repo_parent.join("worktrees").join(&project.name),
+                    None => interop::worktree_base().join(&project.name),
+                }
+            }
         };
         base.join(safe)
     } else {
@@ -410,6 +417,8 @@ mod tests {
         let dir = resolve_dir("feat-1", &p);
         assert!(dir.to_string_lossy().contains("myproj"));
         assert!(dir.to_string_lossy().ends_with("feat-1"));
+        // Worktrees should be relative to the project repo's parent directory
+        assert_eq!(dir, PathBuf::from("/tmp/worktrees/myproj/feat-1"));
     }
 
     #[test]
@@ -417,6 +426,7 @@ mod tests {
         let p = project_with_branch("proj", "main");
         let dir = resolve_dir("user/feature", &p);
         assert!(dir.to_string_lossy().ends_with("user-feature"));
+        assert_eq!(dir, PathBuf::from("/tmp/worktrees/proj/user-feature"));
     }
 
     #[test]
