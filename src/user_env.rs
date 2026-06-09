@@ -13,6 +13,7 @@ const CAPTURED_VARS: &[&str] = &[
     "PATH",
     "DISPLAY",
     "WAYLAND_DISPLAY",
+    "XAUTHORITY",
     "XDG_RUNTIME_DIR",
     "XDG_SESSION_TYPE",
     "XDG_CURRENT_DESKTOP",
