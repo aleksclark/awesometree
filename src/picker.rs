@@ -1,6 +1,6 @@
 use crate::text_input::{TextInput, TextInputEvent};
-use crate::theme;
-use crate::ui_helpers;
+use crate::theme::*;
+use crate::ui_helpers::{self, button, ButtonKind};
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 use std::sync::mpsc;
@@ -120,6 +120,7 @@ struct PickerView {
     project_selected: usize,
     dropdown_scroll: ScrollHandle,
     list_scroll: ScrollHandle,
+    scroll_to_selected: bool,
     tx: mpsc::Sender<String>,
     focus: FocusHandle,
 }
@@ -170,6 +171,7 @@ impl PickerView {
                     project_selected: 0,
                     dropdown_scroll: ScrollHandle::new(),
                     list_scroll: ScrollHandle::new(),
+                    scroll_to_selected: true,
                     tx,
                     focus,
                 }
@@ -191,6 +193,7 @@ impl PickerView {
                 project_selected: 0,
                 dropdown_scroll: ScrollHandle::new(),
                 list_scroll: ScrollHandle::new(),
+                scroll_to_selected: true,
                 tx,
                 focus,
             },
@@ -213,6 +216,7 @@ impl PickerView {
                     project_selected: 0,
                     dropdown_scroll: ScrollHandle::new(),
                     list_scroll: ScrollHandle::new(),
+                    scroll_to_selected: true,
                     tx,
                     focus,
                 }
@@ -257,6 +261,7 @@ impl PickerView {
                 .collect();
         }
         self.selected = 0;
+        self.scroll_to_selected = true;
     }
 
     fn filter_projects(&mut self, cx: &App) {
@@ -409,7 +414,7 @@ impl PickerView {
         }
         if !self.filtered.is_empty() {
             self.selected = (self.selected + 1) % self.filtered.len();
-            self.list_scroll.scroll_to_item(self.selected);
+            self.scroll_to_selected = true;
             cx.notify();
         }
     }
@@ -428,7 +433,7 @@ impl PickerView {
                 .selected
                 .checked_sub(1)
                 .unwrap_or(self.filtered.len() - 1);
-            self.list_scroll.scroll_to_item(self.selected);
+            self.scroll_to_selected = true;
             cx.notify();
         }
     }
@@ -440,6 +445,7 @@ impl PickerView {
             cx.notify();
         } else if !self.filtered.is_empty() {
             self.selected = (self.selected + 1) % self.filtered.len();
+            self.scroll_to_selected = true;
             cx.notify();
         }
     }
@@ -468,22 +474,6 @@ impl PickerView {
         }
     }
 }
-
-fn bg() -> Rgba { theme::bg() }
-fn bg_hover() -> Rgba { theme::bg_hover() }
-fn bg_selected() -> Rgba { theme::bg_selected() }
-fn fg() -> Rgba { theme::fg() }
-fn fg_dim() -> Rgba { theme::fg_dim() }
-fn accent() -> Rgba { theme::accent() }
-fn active_dot() -> Rgba { theme::active_dot() }
-fn success() -> Rgba { theme::success() }
-fn border_color() -> Rgba { theme::border_color() }
-fn btn_bg() -> Rgba { theme::btn_bg() }
-fn btn_fg() -> Rgba { theme::btn_fg() }
-fn btn_hover() -> Rgba { theme::btn_hover() }
-fn new_badge() -> Rgba { theme::new_badge() }
-fn new_badge_fg() -> Rgba { theme::new_badge_fg() }
-fn danger() -> Rgba { theme::danger() }
 
 fn render_form_field(
     label: &str,
@@ -695,45 +685,25 @@ impl PickerView {
                             .text_color(fg_dim())
                             .child("Tab to switch fields  ·  Enter to confirm  ·  Esc to cancel"),
                     )
-                    .child(
-                        div()
-                            .id("create-btn")
-                            .px(px(20.))
-                            .py(px(6.))
-                            .rounded(px(4.))
-                            .cursor_pointer()
-                            .when(can_create, |s: Stateful<Div>| {
-                                s.bg(btn_bg())
-                                    .text_color(btn_fg())
-                                    .hover(|s| s.bg(btn_hover()))
-                            })
-                            .when(!can_create, |s: Stateful<Div>| {
-                                s.bg(bg_selected())
-                                    .text_color(fg_dim())
-                            })
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(|view, _, window, cx| {
-                                    let is_new = view.is_new_project(cx);
-                                    let name = view.read_field(FormField::Name, cx);
-                                    let project = view.read_field(FormField::Project, cx);
-                                    let repo = view.read_field(FormField::Repo, cx);
-                                    let can_create = !name.is_empty()
-                                        && !project.is_empty()
-                                        && (!is_new || !repo.is_empty());
-                                    if !can_create {
-                                        return;
-                                    }
-                                    view.submit_form(window, cx);
-                                    cx.notify();
-                                }),
-                            )
-                            .child(
-                                div()
-                                    .text_size(px(13.))
-                                    .child("Create"),
-                            ),
-                    ),
+                    .child(button(
+                        "create-btn",
+                        "Create",
+                        if can_create { ButtonKind::Primary } else { ButtonKind::Disabled },
+                        |view, window, cx| {
+                            let is_new = view.is_new_project(cx);
+                            let name = view.read_field(FormField::Name, cx);
+                            let project = view.read_field(FormField::Project, cx);
+                            let repo = view.read_field(FormField::Repo, cx);
+                            let can_create = !name.is_empty()
+                                && !project.is_empty()
+                                && (!is_new || !repo.is_empty());
+                            if !can_create {
+                                return;
+                            }
+                            view.submit_form(window, cx);
+                        },
+                        cx,
+                    )),
             )
     }
 
@@ -940,7 +910,10 @@ impl PickerView {
                         child_index += 1;
                     }
                 }
-                list_scroll.scroll_to_item(selected_child);
+                if self.scroll_to_selected {
+                    list_scroll.scroll_to_item(selected_child);
+                    self.scroll_to_selected = false;
+                }
                 this.child(list)
             })
             .child(

@@ -1,22 +1,17 @@
 use crate::agent_supervisor;
 use crate::log as dlog;
 use crate::state::{self, AgentInstanceState, AgentStatus};
-use crate::theme;
+use crate::theme::*;
+use crate::ui_helpers::{self, button, chip_button, ButtonKind, ChipKind};
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 
 pub fn open_agents_window(cx: &mut App) {
     let agents = load_agents();
 
-    let bounds = Bounds::centered(None, size(px(750.), px(500.)), cx);
+    let opts = ui_helpers::centered_window_options(cx, "awesometree-agents", 750., 500.);
     cx.open_window(
-        WindowOptions {
-            window_bounds: Some(WindowBounds::Windowed(bounds)),
-            titlebar: None,
-            app_id: Some("awesometree-agents".into()),
-            window_decorations: Some(WindowDecorations::Server),
-            ..Default::default()
-        },
+        opts,
         move |_window, cx| cx.new(move |cx| AgentsView::new(agents, cx)),
     )
     .ok();
@@ -24,18 +19,6 @@ pub fn open_agents_window(cx: &mut App) {
 
 actions!(agents_ui, [DismissAgents, RefreshAgents, StopAgent]);
 
-fn bg() -> Rgba { theme::bg() }
-fn bg_hover() -> Rgba { theme::bg_hover() }
-fn bg_selected() -> Rgba { theme::bg_selected() }
-fn fg() -> Rgba { theme::fg() }
-fn fg_dim() -> Rgba { theme::fg_dim() }
-fn accent() -> Rgba { theme::accent() }
-fn border_color() -> Rgba { theme::border_color() }
-fn btn_bg() -> Rgba { theme::btn_bg() }
-fn btn_fg() -> Rgba { theme::btn_fg() }
-fn btn_hover() -> Rgba { theme::btn_hover() }
-fn danger() -> Rgba { theme::danger() }
-fn success() -> Rgba { theme::success() }
 
 #[derive(Clone)]
 struct AgentRow {
@@ -109,7 +92,7 @@ impl AgentsView {
 fn status_color(status: &AgentStatus) -> Rgba {
     match status {
         AgentStatus::Ready => success(),
-        AgentStatus::Busy => theme::new_badge(),
+        AgentStatus::Busy => new_badge(),
         AgentStatus::Starting => accent(),
         AgentStatus::Error => danger(),
         AgentStatus::Stopping | AgentStatus::Stopped => fg_dim(),
@@ -176,25 +159,16 @@ impl Render for AgentsView {
                                     )),
                             ),
                     )
-                    .child(
-                        div()
-                            .id("refresh-btn")
-                            .px(px(16.))
-                            .py(px(6.))
-                            .rounded(px(4.))
-                            .bg(btn_bg())
-                            .text_color(btn_fg())
-                            .cursor_pointer()
-                            .hover(|s| s.bg(btn_hover()))
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(|view, _, _, cx| {
-                                    view.agents = load_agents();
-                                    cx.notify();
-                                }),
-                            )
-                            .child(div().text_size(px(13.)).child("Refresh")),
-                    ),
+                    .child(button(
+                        "refresh-btn",
+                        "Refresh",
+                        ButtonKind::Primary,
+                        |view, _window, cx| {
+                            view.agents = load_agents();
+                            cx.notify();
+                        },
+                        cx,
+                    )),
             )
             .child(
                 div()
@@ -348,33 +322,15 @@ impl Render for AgentsView {
                                         .flex()
                                         .justify_end()
                                         .when(can_stop, |this: Div| {
-                                            this.child(
-                                                div()
-                                                    .id(ElementId::Name(
-                                                        format!("stop-{idx}").into(),
-                                                    ))
-                                                    .px(px(12.))
-                                                    .py(px(4.))
-                                                    .rounded(px(3.))
-                                                    .bg(bg_selected())
-                                                    .text_color(danger())
-                                                    .text_size(px(12.))
-                                                    .cursor_pointer()
-                                                    .hover(|s| {
-                                                        s.bg(danger()).text_color(btn_fg())
-                                                    })
-                                                    .on_mouse_down(
-                                                        MouseButton::Left,
-                                                        cx.listener(
-                                                            move |view, _, _, cx| {
-                                                                view.stop_agent_by_id(
-                                                                    &agent_id, cx,
-                                                                );
-                                                            },
-                                                        ),
-                                                    )
-                                                    .child("Stop"),
-                                            )
+                                            this.child(chip_button(
+                                                ElementId::Name(format!("stop-{idx}").into()),
+                                                "Stop",
+                                                ChipKind::Danger,
+                                                move |view, _window, cx| {
+                                                    view.stop_agent_by_id(&agent_id, cx);
+                                                },
+                                                cx,
+                                            ))
                                         }),
                                 )
                         }))

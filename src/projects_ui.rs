@@ -1,8 +1,8 @@
 use crate::interop::{self, Project};
 use crate::log as dlog;
 use crate::text_input::TextInput;
-use crate::theme;
-use crate::ui_helpers;
+use crate::theme::*;
+use crate::ui_helpers::{self, button, checkbox, chip_button, field_box, ButtonKind, ChipKind};
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 
@@ -11,15 +11,9 @@ pub fn open_projects_window(cx: &mut App) {
 
     crate::text_input::bind_text_input_keys(cx);
 
-    let bounds = Bounds::centered(None, size(px(700.), px(500.)), cx);
+    let opts = ui_helpers::centered_window_options(cx, "awesometree-projects", 700., 500.);
     cx.open_window(
-        WindowOptions {
-            window_bounds: Some(WindowBounds::Windowed(bounds)),
-            titlebar: None,
-            app_id: Some("awesometree-projects".into()),
-            window_decorations: Some(WindowDecorations::Server),
-            ..Default::default()
-        },
+        opts,
         move |_window, cx| cx.new(move |cx| ProjectsView::new(projects, cx)),
     )
     .ok();
@@ -38,15 +32,9 @@ pub fn run_projects_ui() {
             KeyBinding::new("shift-tab", PrevField, None),
         ]);
 
-        let bounds = Bounds::centered(None, size(px(700.), px(500.)), cx);
+        let opts = ui_helpers::centered_window_options(cx, "awesometree-projects", 700., 500.);
         cx.open_window(
-            WindowOptions {
-                window_bounds: Some(WindowBounds::Windowed(bounds)),
-                titlebar: None,
-                app_id: Some("awesometree-projects".into()),
-                window_decorations: Some(WindowDecorations::Server),
-                ..Default::default()
-            },
+            opts,
             move |_window, cx| cx.new(move |cx| ProjectsView::new(projects, cx)),
         )
         .ok();
@@ -55,19 +43,6 @@ pub fn run_projects_ui() {
 
 actions!(projects_ui, [Dismiss, ConfirmAction, NextField, PrevField]);
 
-fn bg() -> Rgba { theme::bg() }
-fn bg_hover() -> Rgba { theme::bg_hover() }
-fn bg_selected() -> Rgba { theme::bg_selected() }
-fn fg() -> Rgba { theme::fg() }
-fn fg_dim() -> Rgba { theme::fg_dim() }
-fn accent() -> Rgba { theme::accent() }
-fn border_color() -> Rgba { theme::border_color() }
-fn border_focus() -> Rgba { theme::border_focus() }
-fn btn_bg() -> Rgba { theme::btn_bg() }
-fn btn_fg() -> Rgba { theme::btn_fg() }
-fn btn_hover() -> Rgba { theme::btn_hover() }
-fn danger() -> Rgba { theme::danger() }
-fn success() -> Rgba { theme::success() }
 
 #[derive(Clone, Copy, PartialEq)]
 enum Mode {
@@ -514,30 +489,16 @@ fn render_apps_section(
                 .flex()
                 .items_center()
                 .gap(px(6.))
-                .child(
-                    div()
-                        .id(ElementId::Name(format!("app-field-{i}").into()))
-                        .flex_1()
-                        .px(px(10.))
-                        .py(px(6.))
-                        .rounded(px(4.))
-                        .border_1()
-                        .border_color(if focused { border_focus() } else { border_color() })
-                        .bg(bg_hover())
-                        .cursor(CursorStyle::IBeam)
-                        .text_size(px(14.))
-                        .text_color(fg())
-                        .font_family("monospace")
-                        .on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(move |view, _, window, cx| {
-                                view.form_field = FormField::App(i);
-                                window.focus(&input_entity.read(cx).focus_handle(cx));
-                                cx.notify();
-                            }),
-                        )
-                        .child(app_input.clone()),
-                )
+                .child(field_box(
+                    ElementId::Name(format!("app-field-{i}").into()),
+                    app_input,
+                    focused,
+                    move |view: &mut ProjectsView, window, cx| {
+                        view.form_field = FormField::App(i);
+                        window.focus(&input_entity.read(cx).focus_handle(cx));
+                    },
+                    cx,
+                ))
                 .child(
                     div()
                         .id(ElementId::Name(format!("rm-app-{i}").into()))
@@ -617,25 +578,13 @@ impl Render for ProjectsView {
                             .child("Projects"),
                     )
                     .when(mode == Mode::List, |this: Div| {
-                        this.child(
-                            div()
-                                .id("add-btn")
-                                .px(px(16.))
-                                .py(px(6.))
-                                .rounded(px(4.))
-                                .bg(btn_bg())
-                                .text_color(btn_fg())
-                                .cursor_pointer()
-                                .hover(|s| s.bg(btn_hover()))
-                                .on_mouse_down(
-                                    MouseButton::Left,
-                                    cx.listener(|view, _, _, cx| {
-                                        view.start_add(cx);
-                                        cx.notify();
-                                    }),
-                                )
-                                .child(div().text_size(px(13.)).child("+ Add Project")),
-                        )
+                        this.child(button(
+                            "add-btn",
+                            "+ Add Project",
+                            ButtonKind::Primary,
+                            |view, _window, cx| view.start_add(cx),
+                            cx,
+                        ))
                     }),
             )
             .child(
@@ -729,14 +678,7 @@ impl Render for ProjectsView {
                                                 cx.notify();
                                             }),
                                         )
-                                        .child(
-                                            div()
-                                                .size(px(16.))
-                                                .rounded(px(3.))
-                                                .border_1()
-                                                .border_color(if acp_on { accent() } else { fg_dim() })
-                                                .when(acp_on, |s: Div| s.bg(accent()))
-                                        )
+                                        .child(checkbox(acp_on))
                                         .child(
                                             div()
                                                 .text_size(px(12.))
@@ -749,51 +691,23 @@ impl Render for ProjectsView {
                                     div()
                                         .flex()
                                         .gap(px(10.))
-                                        .child(
-                                            div()
-                                                .id("save-btn")
-                                                .px(px(20.))
-                                                .py(px(6.))
-                                                .rounded(px(4.))
-                                                .cursor_pointer()
-                                                .when(can_save, |s: Stateful<Div>| {
-                                                    s.bg(success())
-                                                        .text_color(btn_fg())
-                                                        .hover(|s| s.bg(btn_hover()))
-                                                })
-                                                .when(!can_save, |s: Stateful<Div>| {
-                                                    s.bg(bg_selected())
-                                                        .text_color(fg_dim())
-                                                })
-                                                .on_mouse_down(
-                                                    MouseButton::Left,
-                                                    cx.listener(|view, _, _, cx| {
-                                                        view.save_form(cx);
-                                                        cx.notify();
-                                                    }),
-                                                )
-                                                .child(div().text_size(px(13.)).child("Save")),
-                                        )
-                                        .child(
-                                            div()
-                                                .id("cancel-btn")
-                                                .px(px(20.))
-                                                .py(px(6.))
-                                                .rounded(px(4.))
-                                                .bg(bg_selected())
-                                                .text_color(fg())
-                                                .cursor_pointer()
-                                                .hover(|s| s.bg(bg_hover()))
-                                                .on_mouse_down(
-                                                    MouseButton::Left,
-                                                    cx.listener(|view, _, _, cx| {
-                                                        view.mode = Mode::List;
-                                                        view.clear_form(cx);
-                                                        cx.notify();
-                                                    }),
-                                                )
-                                                .child(div().text_size(px(13.)).child("Cancel")),
-                                        ),
+                                        .child(button(
+                                            "save-btn",
+                                            "Save",
+                                            if can_save { ButtonKind::Success } else { ButtonKind::Disabled },
+                                            |view, _window, cx| view.save_form(cx),
+                                            cx,
+                                        ))
+                                        .child(button(
+                                            "cancel-btn",
+                                            "Cancel",
+                                            ButtonKind::Secondary,
+                                            |view, _window, cx| {
+                                                view.mode = Mode::List;
+                                                view.clear_form(cx);
+                                            },
+                                            cx,
+                                        )),
                                 ),
                         )
                     })
@@ -876,44 +790,20 @@ impl Render for ProjectsView {
                                     div()
                                         .flex()
                                         .gap(px(6.))
-                                        .child(
-                                            div()
-                                                .id(ElementId::Name(format!("edit-{idx}").into()))
-                                                .px(px(12.))
-                                                .py(px(4.))
-                                                .rounded(px(3.))
-                                                .bg(bg_selected())
-                                                .text_color(fg())
-                                                .cursor_pointer()
-                                                .hover(|s| s.bg(btn_bg()).text_color(btn_fg()))
-                                                .on_mouse_down(
-                                                    MouseButton::Left,
-                                                    cx.listener(move |view, _, _, cx| {
-                                                        view.start_edit(idx, cx);
-                                                        cx.notify();
-                                                    }),
-                                                )
-                                                .child(div().text_size(px(12.)).child("Edit")),
-                                        )
-                                        .child(
-                                            div()
-                                                .id(ElementId::Name(format!("del-{idx}").into()))
-                                                .px(px(12.))
-                                                .py(px(4.))
-                                                .rounded(px(3.))
-                                                .bg(bg_selected())
-                                                .text_color(danger())
-                                                .cursor_pointer()
-                                                .hover(|s| s.bg(danger()).text_color(btn_fg()))
-                                                .on_mouse_down(
-                                                    MouseButton::Left,
-                                                    cx.listener(move |view, _, _, cx| {
-                                                        view.delete_project(idx, cx);
-                                                        cx.notify();
-                                                    }),
-                                                )
-                                                .child(div().text_size(px(12.)).child("Delete")),
-                                        ),
+                                        .child(chip_button(
+                                            ElementId::Name(format!("edit-{idx}").into()),
+                                            "Edit",
+                                            ChipKind::Neutral,
+                                            move |view, _window, cx| view.start_edit(idx, cx),
+                                            cx,
+                                        ))
+                                        .child(chip_button(
+                                            ElementId::Name(format!("del-{idx}").into()),
+                                            "Delete",
+                                            ChipKind::Danger,
+                                            move |view, _window, cx| view.delete_project(idx, cx),
+                                            cx,
+                                        )),
                                 )
                         }))
                         .when(self.projects.is_empty(), |this: Stateful<Div>| {

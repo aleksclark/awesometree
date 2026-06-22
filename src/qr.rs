@@ -1,5 +1,6 @@
 use crate::auth;
 use crate::theme;
+use crate::ui_helpers;
 use gpui::*;
 use qrcode::QrCode;
 
@@ -24,15 +25,9 @@ pub fn show_qr_window(cx: &mut App) {
     let matrix = qr_matrix(&data);
     let ip = auth::get_local_ip();
 
-    let bounds = Bounds::centered(None, size(px(420.), px(480.)), cx);
+    let opts = ui_helpers::centered_window_options(cx, "awesometree-qr", 420., 480.);
     cx.open_window(
-        WindowOptions {
-            window_bounds: Some(WindowBounds::Windowed(bounds)),
-            titlebar: None,
-            app_id: Some("awesometree-qr".into()),
-            window_decorations: Some(WindowDecorations::Server),
-            ..Default::default()
-        },
+        opts,
         move |_window, cx| {
             let token_for_clipboard = data.clone();
             cx.new(move |cx| {
@@ -163,24 +158,15 @@ impl Render for QrView {
                                     .child(format!("Token: {}", self.token)),
                             ),
                     )
-                    .child(
-                        div()
-                            .id("close-qr")
-                            .px(px(24.))
-                            .py(px(6.))
-                            .rounded(px(4.))
-                            .bg(theme::btn_bg())
-                            .text_color(theme::btn_fg())
-                            .cursor_pointer()
-                            .hover(|s| s.bg(theme::btn_hover()))
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(|_view, _, window, _cx| {
-                                    window.remove_window();
-                                }),
-                            )
-                            .child(div().text_size(px(13.)).child("Close")),
-                    ),
+                    .child(ui_helpers::button(
+                        "close-qr",
+                        "Close",
+                        ui_helpers::ButtonKind::Primary,
+                        |_view, window, _cx| {
+                            window.remove_window();
+                        },
+                        cx,
+                    )),
             )
     }
 }
