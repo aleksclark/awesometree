@@ -1,7 +1,8 @@
 use crate::interop;
 use crate::log as dlog;
 use crate::state;
-use crate::theme;
+use crate::theme::*;
+use crate::ui_helpers::{self, button, checkbox, ButtonKind};
 use crate::workspace;
 use gpui::prelude::FluentBuilder;
 use gpui::*;
@@ -10,15 +11,9 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 pub fn open_cleanup_window(cx: &mut App) {
-    let bounds = Bounds::centered(None, size(px(800.), px(550.)), cx);
+    let opts = ui_helpers::centered_window_options(cx, "awesometree-cleanup", 800., 550.);
     cx.open_window(
-        WindowOptions {
-            window_bounds: Some(WindowBounds::Windowed(bounds)),
-            titlebar: None,
-            app_id: Some("awesometree-cleanup".into()),
-            window_decorations: Some(WindowDecorations::Server),
-            ..Default::default()
-        },
+        opts,
         move |_window, cx| {
             cx.new(|cx| {
                 let mut view = CleanupView::new(cx);
@@ -32,18 +27,6 @@ pub fn open_cleanup_window(cx: &mut App) {
 
 actions!(cleanup_ui, [DismissCleanup, SelectAll, DeselectAll]);
 
-fn bg() -> Rgba { theme::bg() }
-fn bg_hover() -> Rgba { theme::bg_hover() }
-fn fg() -> Rgba { theme::fg() }
-fn fg_dim() -> Rgba { theme::fg_dim() }
-fn accent() -> Rgba { theme::accent() }
-fn border_color() -> Rgba { theme::border_color() }
-fn btn_bg() -> Rgba { theme::btn_bg() }
-fn btn_fg() -> Rgba { theme::btn_fg() }
-fn btn_hover() -> Rgba { theme::btn_hover() }
-fn danger() -> Rgba { theme::danger() }
-fn success() -> Rgba { theme::success() }
-fn active_dot() -> Rgba { theme::active_dot() }
 
 #[derive(Clone)]
 struct WorkspaceEntry {
@@ -395,42 +378,20 @@ fn render_action_buttons(selected_count: usize, cx: &mut Context<'_, CleanupView
         .flex()
         .gap(px(8.))
         .when(selected_count > 0, |s: Div| {
-            s.child(
-                div()
-                    .id("down-btn")
-                    .px(px(14.))
-                    .py(px(6.))
-                    .rounded(px(4.))
-                    .bg(btn_bg())
-                    .text_color(btn_fg())
-                    .cursor_pointer()
-                    .hover(|s| s.bg(btn_hover()))
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(|view, _, _, cx| {
-                            view.bring_down_selected(cx);
-                        }),
-                    )
-                    .child(div().text_size(px(13.)).child("↓ Bring Down")),
-            )
-            .child(
-                div()
-                    .id("delete-btn")
-                    .px(px(14.))
-                    .py(px(6.))
-                    .rounded(px(4.))
-                    .bg(danger())
-                    .text_color(btn_fg())
-                    .cursor_pointer()
-                    .hover(|s| s.opacity(0.85))
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(|view, _, _, cx| {
-                            view.delete_selected(cx);
-                        }),
-                    )
-                    .child(div().text_size(px(13.)).child("✕ Delete")),
-            )
+            s.child(button(
+                "down-btn",
+                "↓ Bring Down",
+                ButtonKind::Primary,
+                |view, _window, cx| view.bring_down_selected(cx),
+                cx,
+            ))
+            .child(button(
+                "delete-btn",
+                "✕ Delete",
+                ButtonKind::Danger,
+                |view, _window, cx| view.delete_selected(cx),
+                cx,
+            ))
         })
         .into_any_element()
 }
@@ -457,29 +418,8 @@ fn render_ws_row(entry: &WorkspaceEntry, checked: bool, spin_frame: usize, cx: &
         .flex()
         .items_center()
         .gap(px(10.))
-        .child(render_checkbox(checked))
+        .child(checkbox(checked))
         .child(render_ws_info(&name, entry, checked, spin_frame))
-        .into_any_element()
-}
-
-fn render_checkbox(checked: bool) -> AnyElement {
-    div()
-        .size(px(16.))
-        .rounded(px(3.))
-        .border_1()
-        .border_color(if checked { accent() } else { fg_dim() })
-        .when(checked, |s: Div| s.bg(accent()))
-        .flex()
-        .items_center()
-        .justify_center()
-        .when(checked, |s: Div| {
-            s.child(
-                div()
-                    .text_size(px(11.))
-                    .text_color(btn_fg())
-                    .child("✓"),
-            )
-        })
         .into_any_element()
 }
 

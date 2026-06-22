@@ -1,5 +1,7 @@
 #[cfg(feature = "gui")]
-use crate::theme;
+use crate::theme::*;
+#[cfg(feature = "gui")]
+use crate::ui_helpers;
 use futures_channel::mpsc;
 #[cfg(feature = "gui")]
 use gpui::*;
@@ -88,17 +90,6 @@ pub fn request_log_window() {
 }
 
 #[cfg(feature = "gui")]
-fn bg() -> Rgba { theme::bg() }
-#[cfg(feature = "gui")]
-fn fg() -> Rgba { theme::fg() }
-#[cfg(feature = "gui")]
-fn fg_dim() -> Rgba { theme::fg_dim() }
-#[cfg(feature = "gui")]
-fn border_color() -> Rgba { theme::border_color() }
-#[cfg(feature = "gui")]
-fn accent() -> Rgba { theme::accent() }
-
-#[cfg(feature = "gui")]
 actions!(log_viewer, [DismissLog]);
 
 #[cfg(feature = "gui")]
@@ -113,15 +104,9 @@ struct LogView {
 pub fn show_log_window(cx: &mut App) {
     let (snapshot, rx) = subscribe();
 
-    let bounds = Bounds::centered(None, size(px(750.), px(500.)), cx);
+    let opts = ui_helpers::centered_window_options(cx, "awesometree-log", 750., 500.);
     cx.open_window(
-        WindowOptions {
-            window_bounds: Some(WindowBounds::Windowed(bounds)),
-            titlebar: None,
-            app_id: Some("awesometree-log".into()),
-            window_decorations: Some(WindowDecorations::Server),
-            ..Default::default()
-        },
+        opts,
         move |_window, cx| {
             cx.new(move |cx| LogView::new(snapshot, rx, cx))
         },

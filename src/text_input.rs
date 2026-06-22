@@ -8,13 +8,21 @@ actions!(
     [
         Backspace,
         Delete,
+        DeleteWordLeft,
+        DeleteWordRight,
         Left,
         Right,
+        WordLeft,
+        WordRight,
         SelectLeft,
         SelectRight,
+        SelectWordLeft,
+        SelectWordRight,
         SelectAll,
         Home,
         End,
+        SelectToHome,
+        SelectToEnd,
         Paste,
         Cut,
         Copy,
@@ -25,16 +33,38 @@ pub fn bind_text_input_keys(cx: &mut App) {
     cx.bind_keys([
         KeyBinding::new("backspace", Backspace, Some("TextInput")),
         KeyBinding::new("delete", Delete, Some("TextInput")),
+        KeyBinding::new("ctrl-backspace", DeleteWordLeft, Some("TextInput")),
+        KeyBinding::new("alt-backspace", DeleteWordLeft, Some("TextInput")),
+        KeyBinding::new("ctrl-delete", DeleteWordRight, Some("TextInput")),
+        KeyBinding::new("alt-delete", DeleteWordRight, Some("TextInput")),
         KeyBinding::new("left", Left, Some("TextInput")),
         KeyBinding::new("right", Right, Some("TextInput")),
+        KeyBinding::new("ctrl-left", WordLeft, Some("TextInput")),
+        KeyBinding::new("ctrl-right", WordRight, Some("TextInput")),
+        KeyBinding::new("alt-left", WordLeft, Some("TextInput")),
+        KeyBinding::new("alt-right", WordRight, Some("TextInput")),
         KeyBinding::new("shift-left", SelectLeft, Some("TextInput")),
         KeyBinding::new("shift-right", SelectRight, Some("TextInput")),
+        KeyBinding::new("ctrl-shift-left", SelectWordLeft, Some("TextInput")),
+        KeyBinding::new("ctrl-shift-right", SelectWordRight, Some("TextInput")),
+        KeyBinding::new("alt-shift-left", SelectWordLeft, Some("TextInput")),
+        KeyBinding::new("alt-shift-right", SelectWordRight, Some("TextInput")),
         KeyBinding::new("ctrl-a", SelectAll, Some("TextInput")),
+        KeyBinding::new("cmd-a", SelectAll, Some("TextInput")),
         KeyBinding::new("home", Home, Some("TextInput")),
         KeyBinding::new("end", End, Some("TextInput")),
+        KeyBinding::new("cmd-left", Home, Some("TextInput")),
+        KeyBinding::new("cmd-right", End, Some("TextInput")),
+        KeyBinding::new("shift-home", SelectToHome, Some("TextInput")),
+        KeyBinding::new("shift-end", SelectToEnd, Some("TextInput")),
+        KeyBinding::new("cmd-shift-left", SelectToHome, Some("TextInput")),
+        KeyBinding::new("cmd-shift-right", SelectToEnd, Some("TextInput")),
         KeyBinding::new("ctrl-v", Paste, Some("TextInput")),
+        KeyBinding::new("cmd-v", Paste, Some("TextInput")),
         KeyBinding::new("ctrl-c", Copy, Some("TextInput")),
+        KeyBinding::new("cmd-c", Copy, Some("TextInput")),
         KeyBinding::new("ctrl-x", Cut, Some("TextInput")),
+        KeyBinding::new("cmd-x", Cut, Some("TextInput")),
     ]);
 }
 
@@ -101,12 +131,36 @@ impl TextInput {
         }
     }
 
+    fn word_left(&mut self, _: &WordLeft, _: &mut Window, cx: &mut Context<Self>) {
+        if self.selected_range.is_empty() {
+            self.move_to(self.previous_word_boundary(self.cursor_offset()), cx);
+        } else {
+            self.move_to(self.selected_range.start, cx);
+        }
+    }
+
+    fn word_right(&mut self, _: &WordRight, _: &mut Window, cx: &mut Context<Self>) {
+        if self.selected_range.is_empty() {
+            self.move_to(self.next_word_boundary(self.cursor_offset()), cx);
+        } else {
+            self.move_to(self.selected_range.end, cx);
+        }
+    }
+
     fn select_left(&mut self, _: &SelectLeft, _: &mut Window, cx: &mut Context<Self>) {
         self.select_to(self.previous_boundary(self.cursor_offset()), cx);
     }
 
     fn select_right(&mut self, _: &SelectRight, _: &mut Window, cx: &mut Context<Self>) {
         self.select_to(self.next_boundary(self.cursor_offset()), cx);
+    }
+
+    fn select_word_left(&mut self, _: &SelectWordLeft, _: &mut Window, cx: &mut Context<Self>) {
+        self.select_to(self.previous_word_boundary(self.cursor_offset()), cx);
+    }
+
+    fn select_word_right(&mut self, _: &SelectWordRight, _: &mut Window, cx: &mut Context<Self>) {
+        self.select_to(self.next_word_boundary(self.cursor_offset()), cx);
     }
 
     fn select_all(&mut self, _: &SelectAll, _: &mut Window, cx: &mut Context<Self>) {
@@ -120,6 +174,14 @@ impl TextInput {
 
     fn end(&mut self, _: &End, _: &mut Window, cx: &mut Context<Self>) {
         self.move_to(self.content.len(), cx);
+    }
+
+    fn select_to_home(&mut self, _: &SelectToHome, _: &mut Window, cx: &mut Context<Self>) {
+        self.select_to(0, cx);
+    }
+
+    fn select_to_end(&mut self, _: &SelectToEnd, _: &mut Window, cx: &mut Context<Self>) {
+        self.select_to(self.content.len(), cx);
     }
 
     fn backspace(&mut self, _: &Backspace, window: &mut Window, cx: &mut Context<Self>) {
@@ -136,17 +198,49 @@ impl TextInput {
         self.replace_text_in_range(None, "", window, cx);
     }
 
+    fn delete_word_left(&mut self, _: &DeleteWordLeft, window: &mut Window, cx: &mut Context<Self>) {
+        if self.selected_range.is_empty() {
+            self.select_to(self.previous_word_boundary(self.cursor_offset()), cx);
+        }
+        self.replace_text_in_range(None, "", window, cx);
+    }
+
+    fn delete_word_right(
+        &mut self,
+        _: &DeleteWordRight,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.selected_range.is_empty() {
+            self.select_to(self.next_word_boundary(self.cursor_offset()), cx);
+        }
+        self.replace_text_in_range(None, "", window, cx);
+    }
+
     fn on_mouse_down(
         &mut self,
         event: &MouseDownEvent,
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.is_selecting = true;
-        if event.modifiers.shift {
-            self.select_to(self.index_for_mouse_position(event.position), cx);
+        let offset = self.index_for_mouse_position(event.position);
+        if event.click_count >= 3 {
+            self.is_selecting = false;
+            self.selected_range = 0..self.content.len();
+            self.selection_reversed = false;
+            cx.notify();
+        } else if event.click_count == 2 {
+            self.is_selecting = false;
+            self.selected_range = self.word_range_at(offset);
+            self.selection_reversed = false;
+            cx.notify();
         } else {
-            self.move_to(self.index_for_mouse_position(event.position), cx);
+            self.is_selecting = true;
+            if event.modifiers.shift {
+                self.select_to(offset, cx);
+            } else {
+                self.move_to(offset, cx);
+            }
         }
     }
 
@@ -273,6 +367,18 @@ impl TextInput {
             .grapheme_indices(true)
             .find_map(|(idx, _)| (idx > offset).then_some(idx))
             .unwrap_or(self.content.len())
+    }
+
+    fn previous_word_boundary(&self, offset: usize) -> usize {
+        previous_word_boundary(&self.content, offset)
+    }
+
+    fn next_word_boundary(&self, offset: usize) -> usize {
+        next_word_boundary(&self.content, offset)
+    }
+
+    fn word_range_at(&self, offset: usize) -> Range<usize> {
+        word_range_at(&self.content, offset)
     }
 }
 
@@ -624,13 +730,21 @@ impl Render for TextInput {
             .cursor(CursorStyle::IBeam)
             .on_action(cx.listener(Self::backspace))
             .on_action(cx.listener(Self::delete))
+            .on_action(cx.listener(Self::delete_word_left))
+            .on_action(cx.listener(Self::delete_word_right))
             .on_action(cx.listener(Self::left))
             .on_action(cx.listener(Self::right))
+            .on_action(cx.listener(Self::word_left))
+            .on_action(cx.listener(Self::word_right))
             .on_action(cx.listener(Self::select_left))
             .on_action(cx.listener(Self::select_right))
+            .on_action(cx.listener(Self::select_word_left))
+            .on_action(cx.listener(Self::select_word_right))
             .on_action(cx.listener(Self::select_all))
             .on_action(cx.listener(Self::home))
             .on_action(cx.listener(Self::end))
+            .on_action(cx.listener(Self::select_to_home))
+            .on_action(cx.listener(Self::select_to_end))
             .on_action(cx.listener(Self::paste))
             .on_action(cx.listener(Self::cut))
             .on_action(cx.listener(Self::copy))
@@ -652,5 +766,121 @@ impl Render for TextInput {
 impl Focusable for TextInput {
     fn focus_handle(&self, _: &App) -> FocusHandle {
         self.focus_handle.clone()
+    }
+}
+
+fn previous_word_boundary(s: &str, offset: usize) -> usize {
+    let mut idx = offset;
+    while let Some((bi, c)) = s[..idx].char_indices().next_back() {
+        if c.is_whitespace() {
+            idx = bi;
+        } else {
+            break;
+        }
+    }
+    while let Some((bi, c)) = s[..idx].char_indices().next_back() {
+        if c.is_whitespace() {
+            break;
+        } else {
+            idx = bi;
+        }
+    }
+    idx
+}
+
+fn next_word_boundary(s: &str, offset: usize) -> usize {
+    let mut idx = offset;
+    while let Some((rel, c)) = s[idx..].char_indices().next() {
+        if c.is_whitespace() {
+            break;
+        } else {
+            idx = idx + rel + c.len_utf8();
+        }
+    }
+    while let Some((rel, c)) = s[idx..].char_indices().next() {
+        if c.is_whitespace() {
+            idx = idx + rel + c.len_utf8();
+        } else {
+            break;
+        }
+    }
+    idx
+}
+
+fn word_range_at(s: &str, offset: usize) -> Range<usize> {
+    let mut start = offset;
+    while let Some((bi, c)) = s[..start].char_indices().next_back() {
+        if c.is_whitespace() {
+            break;
+        } else {
+            start = bi;
+        }
+    }
+    let mut end = offset;
+    while let Some((rel, c)) = s[end..].char_indices().next() {
+        if c.is_whitespace() {
+            break;
+        } else {
+            end = end + rel + c.len_utf8();
+        }
+    }
+    start..end
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{next_word_boundary, previous_word_boundary, word_range_at};
+
+    #[test]
+    fn previous_word_skips_trailing_space() {
+        assert_eq!(previous_word_boundary("foo bar", 7), 4);
+        assert_eq!(previous_word_boundary("foo bar", 4), 0);
+        assert_eq!(previous_word_boundary("foo   bar", 9), 6);
+    }
+
+    #[test]
+    fn previous_word_at_start() {
+        assert_eq!(previous_word_boundary("foo", 0), 0);
+        assert_eq!(previous_word_boundary("   ", 3), 0);
+    }
+
+    #[test]
+    fn next_word_skips_following_space() {
+        assert_eq!(next_word_boundary("foo bar", 0), 4);
+        assert_eq!(next_word_boundary("foo bar", 4), 7);
+        assert_eq!(next_word_boundary("foo   bar", 0), 6);
+    }
+
+    #[test]
+    fn next_word_at_end() {
+        assert_eq!(next_word_boundary("foo", 3), 3);
+        assert_eq!(next_word_boundary("foo", 0), 3);
+    }
+
+    #[test]
+    fn word_treats_path_as_single_unit() {
+        assert_eq!(previous_word_boundary("aleks/my-feature x", 18), 17);
+        assert_eq!(previous_word_boundary("aleks/my-feature x", 16), 0);
+    }
+
+    #[test]
+    fn word_range_selects_word_under_cursor() {
+        assert_eq!(word_range_at("foo bar baz", 5), 4..7);
+        assert_eq!(word_range_at("foo bar baz", 4), 4..7);
+        assert_eq!(word_range_at("foo bar baz", 0), 0..3);
+    }
+
+    #[test]
+    fn word_range_on_whitespace_is_empty() {
+        assert_eq!(word_range_at("foo  bar", 4), 4..4);
+    }
+
+    #[test]
+    fn boundaries_handle_multibyte() {
+        let s = "héllo wörld";
+        let mid = next_word_boundary(s, 0);
+        assert_eq!(&s[..mid], "héllo ");
+        let back = previous_word_boundary(s, s.len());
+        assert_eq!(&s[back..], "wörld");
     }
 }

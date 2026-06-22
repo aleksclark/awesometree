@@ -1,19 +1,11 @@
-use crate::theme;
+use crate::theme::*;
+use crate::ui_helpers::{self, button, ButtonKind};
 use futures_channel::mpsc;
 use gpui::*;
 use std::sync::OnceLock;
 use std::thread;
 
 static ERROR_TX: OnceLock<mpsc::UnboundedSender<String>> = OnceLock::new();
-
-fn bg() -> Rgba { theme::bg() }
-fn fg() -> Rgba { theme::fg() }
-fn fg_dim() -> Rgba { theme::fg_dim() }
-fn border_color() -> Rgba { theme::border_color() }
-fn danger() -> Rgba { theme::danger() }
-fn btn_bg() -> Rgba { theme::btn_bg() }
-fn btn_fg() -> Rgba { theme::btn_fg() }
-fn btn_hover() -> Rgba { theme::btn_hover() }
 
 actions!(notify, [DismissError]);
 
@@ -63,15 +55,9 @@ pub fn report_error(msg: impl Into<String>) {
 }
 
 pub fn show_error_window(cx: &mut App, message: String) {
-    let bounds = Bounds::centered(None, size(px(500.), px(250.)), cx);
+    let opts = ui_helpers::centered_window_options(cx, "awesometree-error", 500., 250.);
     cx.open_window(
-        WindowOptions {
-            window_bounds: Some(WindowBounds::Windowed(bounds)),
-            titlebar: None,
-            app_id: Some("awesometree-error".into()),
-            window_decorations: Some(WindowDecorations::Server),
-            ..Default::default()
-        },
+        opts,
         move |_window, cx| cx.new(move |cx| ErrorView::new(message, cx)),
     )
     .ok();
@@ -152,24 +138,15 @@ impl Render for ErrorView {
                             .text_color(fg_dim())
                             .child("Press Esc or click OK to dismiss"),
                     )
-                    .child(
-                        div()
-                            .id("ok-btn")
-                            .px(px(24.))
-                            .py(px(6.))
-                            .rounded(px(4.))
-                            .bg(btn_bg())
-                            .text_color(btn_fg())
-                            .cursor_pointer()
-                            .hover(|s| s.bg(btn_hover()))
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(|_view, _, window, _cx| {
-                                    window.remove_window();
-                                }),
-                            )
-                            .child(div().text_size(px(13.)).child("OK")),
-                    ),
+                    .child(button(
+                        "ok-btn",
+                        "OK",
+                        ButtonKind::Primary,
+                        |_view, window, _cx| {
+                            window.remove_window();
+                        },
+                        cx,
+                    )),
             )
     }
 }
@@ -286,7 +263,7 @@ impl Render for ProgressView {
                     .child(
                         div()
                             .text_size(px(16.))
-                            .text_color(theme::accent())
+                            .text_color(accent())
                             .child(self.title.clone()),
                     ),
             )
@@ -329,15 +306,9 @@ impl Focusable for ProgressView {
 }
 
 pub fn show_progress_window(cx: &mut App, title: String) -> Option<WindowHandle<ProgressView>> {
-    let bounds = Bounds::centered(None, size(px(450.), px(180.)), cx);
+    let opts = ui_helpers::centered_window_options(cx, "awesometree-progress", 450., 180.);
     cx.open_window(
-        WindowOptions {
-            window_bounds: Some(WindowBounds::Windowed(bounds)),
-            titlebar: None,
-            app_id: Some("awesometree-progress".into()),
-            window_decorations: Some(WindowDecorations::Server),
-            ..Default::default()
-        },
+        opts,
         move |_window, cx| cx.new(move |cx| ProgressView::new(title, cx)),
     )
     .ok()
