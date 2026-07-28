@@ -39,6 +39,7 @@ pub mod auth;
 pub mod qr;
 pub mod server;
 pub mod acp_supervisor;
+pub mod bezalel_supervisor;
 pub mod agent_supervisor;
 pub mod a2a_proxy;
 pub mod grpc;

@@ -1,6 +1,7 @@
 use awesometree::agents_ui;
 use awesometree::cleanup_ui;
 use awesometree::acp_supervisor;
+use awesometree::bezalel_supervisor;
 use awesometree::agent_supervisor;
 use awesometree::daemon::{self, DaemonCmd};
 use awesometree::interop;
@@ -66,10 +67,13 @@ fn main() {
     thread::spawn(|| {
         let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
         acp_supervisor::init(rt.handle().clone());
+        bezalel_supervisor::init(rt.handle().clone());
         agent_supervisor::init(rt.handle().clone());
         rt.block_on(async {
             acp_supervisor::start_active_workspaces();
             acp_supervisor::start_sync_loop(std::time::Duration::from_secs(5));
+            bezalel_supervisor::start_active_workspaces();
+            bezalel_supervisor::start_sync_loop(std::time::Duration::from_secs(5));
             tokio::spawn(server::run_grpc(server::DEFAULT_GRPC_PORT));
             server::run(server::DEFAULT_PORT).await;
         });
@@ -193,6 +197,7 @@ fn main() {
                     DaemonCmd::Restart => {
                         dlog::log("Daemon restarting");
                         acp_supervisor::stop_all();
+                        bezalel_supervisor::stop_all();
                         daemon::cleanup();
                         std::process::exit(0);
                     }
@@ -217,6 +222,7 @@ fn main() {
 
 extern "C" fn handle_signal(_sig: libc::c_int) {
     acp_supervisor::stop_all();
+    bezalel_supervisor::stop_all();
     std::process::exit(0);
 }
 
@@ -301,6 +307,7 @@ fn do_pick(cx: &mut App, cmd_tx: mpsc::UnboundedSender<DaemonCmd>) {
                 &UpOptions {
                     create_tag: true,
                     launch_apps: true,
+                    headless: false,
                 },
             )
             .map_err(|e| format!("bring up {name}: {e}"))?;
@@ -392,6 +399,7 @@ fn do_create(cx: &mut App) {
             &UpOptions {
                 create_tag: true,
                 launch_apps: true,
+                headless: false,
             },
         ) {
             progress.error(format!("Bring up {}: {e}", result.name));

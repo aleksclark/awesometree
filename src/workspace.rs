@@ -1,4 +1,5 @@
 use crate::acp_supervisor;
+use crate::bezalel_supervisor;
 use crate::interop::{self, AwesometreeExt, Project};
 use crate::log as dlog;
 use crate::state::{self, Store};
@@ -14,6 +15,7 @@ pub struct Manager {
 pub struct UpOptions {
     pub create_tag: bool,
     pub launch_apps: bool,
+    pub headless: bool,
 }
 
 pub struct DownOptions {
@@ -94,6 +96,11 @@ impl Manager {
         let dir_str = dir.to_string_lossy().into_owned();
         self.state
             .set_active(ws_name, &project.name, tag_idx, &dir_str, acp_port, acp_url);
+
+        if opts.headless {
+            provision_bezalel(&mut self.state, ws_name, &dir_str);
+        }
+
         state::save(&self.state)
     }
 
@@ -109,6 +116,7 @@ impl Manager {
         }
 
         acp_supervisor::stop_for_workspace(ws_name);
+        bezalel_supervisor::stop_for_workspace(ws_name);
 
         if let Ok(ref rw) = resolved {
             if opts.manage_tag {
@@ -233,6 +241,25 @@ fn start_acp_if_configured(
     acp_supervisor::start_for_workspace(ws_name, &dir_str, port, cmd);
     let url = acp.url.as_deref().unwrap_or("http://127.0.0.1:{port}");
     Some(interop::interpolate_with_port(url, &project.name, &dir_str, Some(port)))
+}
+
+/// Provision (and, if the supervisor is running in this process, start) a
+/// bezalel MCP server for a headless workspace. The port + token are recorded
+/// in state so the daemon's sync loop can (re)start the instance. Returns the
+/// assigned port and token, or `None` if the bezalel port range is exhausted.
+pub fn provision_bezalel(
+    st: &mut state::Store,
+    ws_name: &str,
+    dir_str: &str,
+) -> Option<(u16, String)> {
+    let port = st.allocate_bezalel_port(ws_name)?;
+    let token = st
+        .workspace(ws_name)
+        .and_then(|ws| ws.bezalel_token.clone())
+        .unwrap_or_else(bezalel_supervisor::generate_token);
+    st.set_bezalel(ws_name, Some(port), Some(token.clone()));
+    bezalel_supervisor::start_for_workspace(ws_name, dir_str, port, &token);
+    Some((port, token))
 }
 
 pub fn launch_apps(project: &Project, dir: &PathBuf, acp_port: Option<u16>) {

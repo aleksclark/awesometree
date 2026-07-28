@@ -25,6 +25,12 @@ pub struct WorkspaceState {
     pub acp_url: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub acp_session_id: Option<String>,
+    #[serde(default)]
+    pub headless: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bezalel_port: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bezalel_token: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub agents: Vec<AgentInstanceState>,
 }
@@ -99,6 +105,8 @@ impl AgentInstanceState {
 pub const TAG_OFFSET: i32 = 10;
 pub const ACP_PORT_BASE: u16 = 9100;
 pub const ACP_PORT_MAX: u16 = 9199;
+pub const BEZALEL_PORT_BASE: u16 = 9200;
+pub const BEZALEL_PORT_MAX: u16 = 9299;
 
 /// Check if a port is actually available on the system by attempting to bind.
 pub fn is_port_available(port: u16) -> bool {
@@ -178,6 +186,18 @@ impl Store {
             ws.acp_port = None;
             ws.acp_url = None;
             ws.acp_session_id = None;
+            ws.headless = false;
+            ws.bezalel_port = None;
+            ws.bezalel_token = None;
+        }
+    }
+
+    /// Record the bezalel instance (port + auth token) for a headless workspace.
+    pub fn set_bezalel(&mut self, name: &str, port: Option<u16>, token: Option<String>) {
+        if let Some(ws) = self.workspaces.get_mut(name) {
+            ws.headless = true;
+            ws.bezalel_port = port;
+            ws.bezalel_token = token;
         }
     }
 
@@ -260,6 +280,31 @@ impl Store {
             .iter()
             .find(|(_, ws)| ws.active && ws.acp_port == Some(port))
             .map(|(name, ws)| (name.as_str(), ws))
+    }
+
+    /// Allocate a bezalel MCP-server port for a headless workspace, reusing the
+    /// existing port if one is already assigned. Returns `None` if the range is
+    /// exhausted.
+    pub fn allocate_bezalel_port(&self, name: &str) -> Option<u16> {
+        if let Some(ws) = self.workspaces.get(name) {
+            if let Some(port) = ws.bezalel_port {
+                return Some(port);
+            }
+        }
+        let used: std::collections::HashSet<u16> = self
+            .workspaces
+            .values()
+            .filter(|ws| ws.active)
+            .filter_map(|ws| ws.bezalel_port)
+            .collect();
+        let mut port = BEZALEL_PORT_BASE;
+        while port <= BEZALEL_PORT_MAX {
+            if !used.contains(&port) && is_port_available(port) {
+                return Some(port);
+            }
+            port += 1;
+        }
+        None
     }
 
     pub fn workspace_name_for_route(&self, route: &str) -> Option<(&str, &WorkspaceState)> {
@@ -1053,5 +1098,44 @@ mod tests {
     fn resolve_flexible_no_match_returns_none() {
         let s = make_store();
         assert!(s.resolve_agent_flexible("nonexistent").is_none());
+    }
+
+    #[test]
+    fn bezalel_port_allocates_in_dedicated_range() {
+        let mut s = make_store();
+        s.set_active("ws1", "proj", 10, "/tmp/ws1", None, None);
+        let port = s.allocate_bezalel_port("ws1").expect("port");
+        assert!((BEZALEL_PORT_BASE..=BEZALEL_PORT_MAX).contains(&port));
+    }
+
+    #[test]
+    fn bezalel_port_reused_when_already_assigned() {
+        let mut s = make_store();
+        s.set_active("ws1", "proj", 10, "/tmp/ws1", None, None);
+        s.set_bezalel("ws1", Some(9250), Some("tok".into()));
+        assert_eq!(s.allocate_bezalel_port("ws1"), Some(9250));
+    }
+
+    #[test]
+    fn set_bezalel_marks_headless_and_records_creds() {
+        let mut s = make_store();
+        s.set_active("ws1", "proj", 10, "/tmp/ws1", None, None);
+        s.set_bezalel("ws1", Some(9200), Some("secret".into()));
+        let ws = s.workspace("ws1").unwrap();
+        assert!(ws.headless);
+        assert_eq!(ws.bezalel_port, Some(9200));
+        assert_eq!(ws.bezalel_token.as_deref(), Some("secret"));
+    }
+
+    #[test]
+    fn set_inactive_clears_bezalel_state() {
+        let mut s = make_store();
+        s.set_active("ws1", "proj", 10, "/tmp/ws1", None, None);
+        s.set_bezalel("ws1", Some(9200), Some("secret".into()));
+        s.set_inactive("ws1");
+        let ws = s.workspace("ws1").unwrap();
+        assert!(!ws.headless);
+        assert_eq!(ws.bezalel_port, None);
+        assert_eq!(ws.bezalel_token, None);
     }
 }

@@ -1,5 +1,6 @@
 use awesometree::acp_supervisor;
 use awesometree::agent_supervisor;
+use awesometree::bezalel_supervisor;
 use awesometree::log as dlog;
 use awesometree::server;
 use std::time::Duration;
@@ -14,11 +15,14 @@ fn main() {
 
     let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
     acp_supervisor::init(rt.handle().clone());
+    bezalel_supervisor::init(rt.handle().clone());
     agent_supervisor::init(rt.handle().clone());
 
     rt.block_on(async {
         acp_supervisor::start_active_workspaces();
         acp_supervisor::start_sync_loop(Duration::from_secs(5));
+        bezalel_supervisor::start_active_workspaces();
+        bezalel_supervisor::start_sync_loop(Duration::from_secs(5));
         dlog::log(format!("ARP test server listening on port {port}"));
         server::run(port).await;
     });

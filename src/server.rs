@@ -40,6 +40,10 @@ struct WorkspaceInfo {
     acp_url: Option<String>,
     acp_session_id: Option<String>,
     acp_status: Option<String>,
+    headless: bool,
+    bezalel_port: Option<u16>,
+    bezalel_url: Option<String>,
+    bezalel_token: Option<String>,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -53,6 +57,8 @@ struct ProjectInfo {
 struct CreateWorkspaceReq {
     name: String,
     project: String,
+    #[serde(default)]
+    headless: bool,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -283,6 +289,10 @@ fn ws_to_info(name: &str, ws: &state::WorkspaceState) -> WorkspaceInfo {
         acp_url: ws.acp_url.clone(),
         acp_session_id: ws.acp_session_id.clone(),
         acp_status,
+        headless: ws.headless,
+        bezalel_port: ws.bezalel_port,
+        bezalel_url: ws.bezalel_port.map(|p| format!("http://127.0.0.1:{p}/mcp")),
+        bezalel_token: ws.bezalel_token.clone(),
     }
 }
 
@@ -361,10 +371,15 @@ async fn create_workspace(
     let acp_port = st.allocate_acp_port(&req.name);
     let dir_str = dir.to_string_lossy().into_owned();
 
-    workspace::launch_apps(&project, &dir, acp_port);
+    if !req.headless {
+        workspace::launch_apps(&project, &dir, acp_port);
+    }
 
     let acp_url = project.resolved_acp_url(&dir_str, acp_port);
     st.set_active(&req.name, &req.project, tag_idx, &dir_str, acp_port, acp_url);
+    if req.headless {
+        workspace::provision_bezalel(&mut st, &req.name, &dir_str);
+    }
     state::save(&st).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
 
     if let Some(acp) = project.acp_config() {
@@ -378,8 +393,8 @@ async fn create_workspace(
     }
 
     dlog::log(format!(
-        "API: created workspace {} (project: {}, acp_port: {:?})",
-        req.name, req.project, acp_port
+        "API: created workspace {} (project: {}, headless: {}, acp_port: {:?})",
+        req.name, req.project, req.headless, acp_port
     ));
 
     let ws = st.workspace(&req.name).unwrap();
@@ -441,6 +456,7 @@ async fn start_workspace(Path(name): Path<String>) -> Result<Json<WorkspaceInfo>
     }
 
     let project_name = ws.project.clone();
+    let headless = ws.headless;
     let project = interop::load(&project_name)
         .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
 
@@ -452,10 +468,15 @@ async fn start_workspace(Path(name): Path<String>) -> Result<Json<WorkspaceInfo>
     let acp_port = st.allocate_acp_port(&name);
     let dir_str = dir.to_string_lossy().into_owned();
 
-    workspace::launch_apps(&project, &dir, acp_port);
+    if !headless {
+        workspace::launch_apps(&project, &dir, acp_port);
+    }
 
     let acp_url = project.resolved_acp_url(&dir_str, acp_port);
     st.set_active(&name, &project_name, tag_idx, &dir_str, acp_port, acp_url);
+    if headless {
+        workspace::provision_bezalel(&mut st, &name, &dir_str);
+    }
     state::save(&st).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
 
     if let Some(acp) = project.acp_config() {
@@ -929,6 +950,10 @@ mod tests {
             acp_url: Some("http://127.0.0.1:9100".into()),
             acp_session_id: None,
             acp_status: Some("running".into()),
+            headless: false,
+            bezalel_port: None,
+            bezalel_url: None,
+            bezalel_token: None,
         };
         let json = serde_json::to_string(&info).unwrap();
         assert!(json.contains("\"acp_port\":9100"));

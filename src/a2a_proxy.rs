@@ -825,6 +825,9 @@ mod integration_tests {
             acp_port: Some(9100),
             acp_url: Some("http://127.0.0.1:9100".into()),
             acp_session_id: None,
+            headless: false,
+            bezalel_port: None,
+            bezalel_token: None,
             agents: vec![
                 AgentInstanceState {
                     id: "echo-agent-001".into(),

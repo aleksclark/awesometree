@@ -26,6 +26,8 @@ enum Commands {
         no_launch: bool,
         #[arg(long)]
         nogui: bool,
+        #[arg(long)]
+        headless: bool,
     },
     Down {
         name: Option<String>,
@@ -44,6 +46,8 @@ enum Commands {
         no_launch: bool,
         #[arg(long)]
         nogui: bool,
+        #[arg(long)]
+        headless: bool,
     },
     Destroy {
         name: String,
@@ -126,7 +130,8 @@ fn main() {
             no_tag,
             no_launch,
             nogui,
-        } => cmd_up(name, no_tag || nogui, no_launch || nogui),
+            headless,
+        } => cmd_up(name, no_tag || nogui || headless, no_launch || nogui || headless, headless),
         Commands::Down {
             name,
             no_tag,
@@ -138,7 +143,8 @@ fn main() {
             no_tag,
             no_launch,
             nogui,
-        } => cmd_create(name, project, no_tag || nogui, no_launch || nogui),
+            headless,
+        } => cmd_create(name, project, no_tag || nogui || headless, no_launch || nogui || headless, headless),
         Commands::Destroy { name, no_tag } => cmd_destroy(name, no_tag),
         Commands::DestroyCurrent => cmd_destroy_current(),
         Commands::Close => cmd_close(),
@@ -175,7 +181,7 @@ fn make_manager() -> Manager {
     Manager::new(st, wm::platform_adapter())
 }
 
-fn cmd_up(name: Option<String>, no_tag: bool, no_launch: bool) {
+fn cmd_up(name: Option<String>, no_tag: bool, no_launch: bool, headless: bool) {
     let mut mgr = make_manager();
     match name {
         Some(n) => {
@@ -186,6 +192,7 @@ fn cmd_up(name: Option<String>, no_tag: bool, no_launch: bool) {
             let opts = UpOptions {
                 create_tag: !no_tag,
                 launch_apps: !no_launch,
+                headless,
             };
             if let Err(e) = mgr.up(&n, &rw.project, &opts) {
                 eprintln!("Error: {e}");
@@ -204,6 +211,7 @@ fn cmd_up(name: Option<String>, no_tag: bool, no_launch: bool) {
                 let opts = UpOptions {
                     create_tag: true,
                     launch_apps: false,
+                    headless: false,
                 };
                 if let Err(e) = mgr.up(&name, &rw.project, &opts) {
                     eprintln!("Error: {e}");
@@ -230,7 +238,7 @@ fn cmd_down(name: Option<String>, no_tag: bool, keep_worktree: bool) {
     }
 }
 
-fn cmd_create(name: String, project_name: String, no_tag: bool, no_launch: bool) {
+fn cmd_create(name: String, project_name: String, no_tag: bool, no_launch: bool, headless: bool) {
     let mut mgr = make_manager();
     if mgr.state.workspace(&name).is_some() {
         eprintln!("Workspace already exists: {name}");
@@ -243,6 +251,7 @@ fn cmd_create(name: String, project_name: String, no_tag: bool, no_launch: bool)
     let opts = UpOptions {
         create_tag: !no_tag,
         launch_apps: !no_launch,
+        headless,
     };
     if let Err(e) = mgr.up(&name, &proj, &opts) {
         eprintln!("Error: {e}");
@@ -344,12 +353,21 @@ fn cmd_list() {
         );
         for (ws_name, ws) in st.workspaces_for_project(&proj.name) {
             let status = if ws.active { "UP" } else { "  " };
-            let tag = if ws.active {
+            let tag = if ws.active && !ws.headless {
                 format!(" [tag {}:{}]", ws.project, ws_name)
             } else {
                 String::new()
             };
-            println!("    [{status}] {ws_name}{tag}");
+            let mode = if ws.headless { " (headless)" } else { "" };
+            println!("    [{status}] {ws_name}{mode}{tag}");
+            if ws.active && ws.headless {
+                if let Some(port) = ws.bezalel_port {
+                    println!("           bezalel: http://127.0.0.1:{port}/mcp");
+                }
+                if let Some(token) = &ws.bezalel_token {
+                    println!("           token:   {token}");
+                }
+            }
         }
     }
 }
