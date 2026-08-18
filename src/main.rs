@@ -1,16 +1,21 @@
 use awesometree::auth;
 use awesometree::daemon;
-use awesometree::interop::{self, Project};
+use awesometree::model::lifecycle::WorkSessionState;
+use awesometree::model::project::definition_for_create;
+use awesometree::model::work_session::{
+    CreateWorkSessionRequest, RealizationOptions, DEFAULT_WORK_PROFILE_ID,
+};
 use awesometree::server;
-use awesometree::state;
-use awesometree::wm::{self, Adapter};
-use awesometree::workspace::{DownOptions, Manager, UpOptions};
+use awesometree::service_access;
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use std::process;
 
 #[derive(Parser)]
-#[command(name = "awesometree", about = "Workspace manager for window managers + Zed + git worktrees")]
+#[command(
+    name = "awesometree",
+    about = "Agent Work Model host: Switchboard Projects/WorkProfiles/WorkSessions + local Workspace realization"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -18,65 +23,36 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    Up {
-        name: Option<String>,
-        #[arg(long)]
-        no_tag: bool,
-        #[arg(long)]
-        no_launch: bool,
-        #[arg(long)]
-        nogui: bool,
-        #[arg(long)]
-        headless: bool,
-    },
-    Down {
-        name: Option<String>,
-        #[arg(long)]
-        no_tag: bool,
-        #[arg(long)]
-        keep_worktree: bool,
-    },
-    Create {
-        name: String,
-        #[arg(long)]
-        project: String,
-        #[arg(long)]
-        no_tag: bool,
-        #[arg(long)]
-        no_launch: bool,
-        #[arg(long)]
-        nogui: bool,
-        #[arg(long)]
-        headless: bool,
-    },
-    Destroy {
-        name: String,
-        #[arg(long)]
-        no_tag: bool,
-    },
-    #[command(name = "destroy-current")]
-    DestroyCurrent,
-    Close,
+    /// WorkSession lifecycle operations (create/list/get/transition/destroy).
+    #[command(subcommand, name = "work-session")]
+    WorkSession(WorkSessionCmd),
+    /// Project Catalog operations (via Switchboard).
+    #[command(subcommand, name = "project")]
+    Project(ProjectCmd),
+    /// List WorkProfiles from Switchboard.
+    #[command(name = "work-profiles")]
+    WorkProfiles,
+    /// Cycle focus between open WorkSession tags.
     Cycle,
-    List,
-    Switch { name: String },
+    /// Focus a WorkSession's window-manager tag.
+    Switch {
+        work_session_id: String,
+    },
     Pick,
     #[command(name = "create-interactive")]
     CreateInteractive,
-    #[command(subcommand, name = "project")]
-    Project(ProjectCmd),
-    #[command(subcommand)]
-    Context(ContextCmd),
     #[command(name = "launch-agent")]
     LaunchAgent {
-        workspace: String,
+        work_session_id: String,
         #[arg(long, default_value = "claude")]
         agent: String,
     },
-    Repos,
-    Names,
-    Allnames,
-    Dir { name: String },
+    /// List open WorkSessions (shortcut).
+    List,
+    /// Print worktree path for a WorkSession.
+    Dir {
+        work_session_id: String,
+    },
     Projects,
     #[command(name = "projects-ui")]
     ProjectsUi,
@@ -85,7 +61,6 @@ enum Commands {
     Cleanup,
     #[command(name = "restart-daemon")]
     RestartDaemon,
-    Edit { name: String },
     Daemon,
     Openapi {
         #[arg(short, long)]
@@ -98,74 +73,97 @@ enum Commands {
 }
 
 #[derive(Subcommand)]
-enum ProjectCmd {
-    List,
-    Show { name: String },
+enum WorkSessionCmd {
     Create {
-        name: String,
+        work_session_id: String,
         #[arg(long)]
-        repo: String,
-        #[arg(long, default_value = "master")]
-        branch: String,
+        project: String,
+        /// WorkProfile ID; defaults to exact ID "default".
+        #[arg(long)]
+        work_profile: Option<String>,
+        #[arg(long)]
+        display_name: Option<String>,
+        #[arg(long)]
+        no_tag: bool,
+        #[arg(long)]
+        no_launch: bool,
+        #[arg(long)]
+        headless: bool,
     },
-    Edit { name: String },
-    Delete { name: String },
+    List {
+        #[arg(long)]
+        state: Option<String>,
+        #[arg(long)]
+        project: Option<String>,
+    },
+    Get {
+        work_session_id: String,
+    },
+    Transition {
+        work_session_id: String,
+        state: String,
+    },
+    Destroy {
+        work_session_id: String,
+        #[arg(long)]
+        keep_worktree: bool,
+    },
+    Close {
+        work_session_id: String,
+    },
+    Pause {
+        work_session_id: String,
+    },
+    Resume {
+        work_session_id: String,
+    },
 }
 
 #[derive(Subcommand)]
-enum ContextCmd {
-    List { project: String },
-    Add { project: String, file: String },
-    Edit { project: String, file: String },
-    Rm { project: String, file: String },
-    Bundle { project: String },
+enum ProjectCmd {
+    List,
+    Show { project_id: String },
+    Create {
+        project_id: String,
+        #[arg(long)]
+        repo: Option<String>,
+        #[arg(long)]
+        branch: Option<String>,
+        #[arg(long)]
+        description: Option<String>,
+    },
+    Delete {
+        project_id: String,
+        #[arg(long)]
+        expected_source_revision: String,
+    },
 }
 
 fn main() {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Up {
-            name,
-            no_tag,
-            no_launch,
-            nogui,
-            headless,
-        } => cmd_up(name, no_tag || nogui || headless, no_launch || nogui || headless, headless),
-        Commands::Down {
-            name,
-            no_tag,
-            keep_worktree,
-        } => cmd_down(name, no_tag, keep_worktree),
-        Commands::Create {
-            name,
-            project,
-            no_tag,
-            no_launch,
-            nogui,
-            headless,
-        } => cmd_create(name, project, no_tag || nogui || headless, no_launch || nogui || headless, headless),
-        Commands::Destroy { name, no_tag } => cmd_destroy(name, no_tag),
-        Commands::DestroyCurrent => cmd_destroy_current(),
-        Commands::Close => cmd_close(),
-        Commands::Cycle => cmd_cycle(),
-        Commands::List => cmd_list(),
-        Commands::Switch { name } => cmd_switch(&name),
+        Commands::WorkSession(sub) => cmd_work_session(sub),
+        Commands::Project(sub) => cmd_project(sub),
+        Commands::WorkProfiles => cmd_work_profiles(),
+        Commands::Cycle => send_daemon_cmd("cycle"),
+        Commands::Switch { work_session_id } => send_daemon_cmd(&format!("switch {work_session_id}")),
         Commands::Pick => cmd_pick(),
         Commands::CreateInteractive => cmd_create_interactive(),
-        Commands::Project(sub) => cmd_project(sub),
-        Commands::Context(sub) => cmd_context(sub),
-        Commands::LaunchAgent { workspace, agent } => cmd_launch_agent(&workspace, &agent),
-        Commands::Repos => cmd_repos(),
-        Commands::Names => cmd_names(),
-        Commands::Allnames => cmd_allnames(),
-        Commands::Dir { name } => cmd_dir(&name),
-        Commands::Projects => cmd_projects(),
-        Commands::ProjectsUi => cmd_projects_ui(),
-        Commands::AgentsUi => cmd_agents_ui(),
+        Commands::LaunchAgent {
+            work_session_id,
+            agent,
+        } => cmd_launch_agent(&work_session_id, &agent),
+        Commands::List => cmd_work_session(WorkSessionCmd::List {
+            state: None,
+            project: None,
+        }),
+        Commands::Dir { work_session_id } => cmd_dir(&work_session_id),
+        Commands::Projects => cmd_project(ProjectCmd::List),
+        Commands::ProjectsUi => send_daemon_cmd("projects-ui"),
+        Commands::AgentsUi => send_daemon_cmd("agents-ui"),
         Commands::Cleanup => send_daemon_cmd("cleanup"),
         Commands::RestartDaemon => cmd_restart_daemon(),
-        Commands::Edit { name } => cmd_edit(&name),
         Commands::Daemon => cmd_daemon(),
         Commands::Openapi { output } => cmd_openapi(output),
         Commands::MobileQr => send_daemon_cmd("mobile-qr"),
@@ -173,231 +171,271 @@ fn main() {
     }
 }
 
-fn make_manager() -> Manager {
-    let st = state::load().unwrap_or_else(|e| {
-        eprintln!("Error: {e}");
-        process::exit(1);
-    });
-    Manager::new(st, wm::platform_adapter())
+fn rt_block_on<F: std::future::Future>(f: F) -> F::Output {
+    match tokio::runtime::Handle::try_current() {
+        Ok(h) => tokio::task::block_in_place(|| h.block_on(f)),
+        Err(_) => {
+            let rt = tokio::runtime::Runtime::new().expect("tokio");
+            rt.block_on(f)
+        }
+    }
 }
 
-fn cmd_up(name: Option<String>, no_tag: bool, no_launch: bool, headless: bool) {
-    let mut mgr = make_manager();
-    match name {
-        Some(n) => {
-            let rw = mgr.resolve_workspace(&n).unwrap_or_else(|e| {
-                eprintln!("Error: {e}");
+fn cmd_work_session(cmd: WorkSessionCmd) {
+    let svc = service_access::service_blocking();
+    match cmd {
+        WorkSessionCmd::Create {
+            work_session_id,
+            project,
+            work_profile,
+            display_name,
+            no_tag,
+            no_launch,
+            headless,
+        } => {
+            let req = CreateWorkSessionRequest {
+                work_session_id: work_session_id.clone(),
+                project_id: project,
+                work_profile_id: work_profile,
+                display_name,
+                realization: RealizationOptions {
+                    create_tag: !no_tag && !headless,
+                    launch_apps: !no_launch && !headless,
+                    headless,
+                    no_wm: headless,
+                },
+            };
+            match rt_block_on(svc.create_work_session(req)) {
+                Ok(resp) => {
+                    println!(
+                        "work_session={} state={} work_profile={} revision={}",
+                        resp.work_session.work_session_id,
+                        resp.work_session.state,
+                        resp.work_profile_id,
+                        resp.project_revision.as_deref().unwrap_or("-")
+                    );
+                    if let Some(rt) = resp.runtime {
+                        if let Some(ws) = rt.workspace {
+                            println!("workspace_path={}", ws.path);
+                        }
+                    }
+                }
+                Err(e) => {
+                    eprintln!("Error: {e}");
+                    process::exit(1);
+                }
+            }
+        }
+        WorkSessionCmd::List { state, project } => {
+            match rt_block_on(svc.list_work_sessions(state.as_deref(), project.as_deref())) {
+                Ok(list) => {
+                    for v in list {
+                        let dir = v
+                            .runtime
+                            .as_ref()
+                            .and_then(|r| r.workspace.as_ref())
+                            .map(|w| w.path.as_str())
+                            .unwrap_or("-");
+                        println!(
+                            "{}\t{}\t{}\t{}\t{}",
+                            v.work_session.work_session_id,
+                            v.work_session.state,
+                            v.work_session.project_id.as_deref().unwrap_or("-"),
+                            v.work_session
+                                .work_profile_id
+                                .as_deref()
+                                .unwrap_or(DEFAULT_WORK_PROFILE_ID),
+                            dir
+                        );
+                    }
+                }
+                Err(e) => {
+                    eprintln!("Error: {e}");
+                    process::exit(1);
+                }
+            }
+        }
+        WorkSessionCmd::Get { work_session_id } => {
+            match rt_block_on(svc.get_work_session(&work_session_id)) {
+                Ok(v) => {
+                    println!("{}", serde_json::to_string_pretty(&v).unwrap_or_default());
+                }
+                Err(e) => {
+                    eprintln!("Error: {e}");
+                    process::exit(1);
+                }
+            }
+        }
+        WorkSessionCmd::Transition {
+            work_session_id,
+            state,
+        } => {
+            let st = WorkSessionState::parse(&state).unwrap_or_else(|| {
+                eprintln!("invalid state: {state}");
                 process::exit(1);
             });
-            let opts = UpOptions {
-                create_tag: !no_tag,
-                launch_apps: !no_launch,
-                headless,
-            };
-            if let Err(e) = mgr.up(&n, &rw.project, &opts) {
-                eprintln!("Error: {e}");
-            }
-        }
-        None => {
-            let active: Vec<_> = mgr.state.active_names();
-            for name in active {
-                let rw = match mgr.resolve_workspace(&name) {
-                    Ok(rw) => rw,
-                    Err(e) => {
-                        eprintln!("Error: {e}");
-                        continue;
-                    }
-                };
-                let opts = UpOptions {
-                    create_tag: true,
-                    launch_apps: false,
-                    headless: false,
-                };
-                if let Err(e) = mgr.up(&name, &rw.project, &opts) {
+            match rt_block_on(svc.transition(&work_session_id, st)) {
+                Ok(v) => println!(
+                    "{} -> {}",
+                    v.work_session.work_session_id, v.work_session.state
+                ),
+                Err(e) => {
                     eprintln!("Error: {e}");
+                    process::exit(1);
                 }
             }
         }
-    }
-}
-
-fn cmd_down(name: Option<String>, no_tag: bool, keep_worktree: bool) {
-    let opts = DownOptions {
-        manage_tag: !no_tag,
-        keep_worktree,
-    };
-    let mut mgr = make_manager();
-    let names = match name {
-        Some(n) => vec![n],
-        None => mgr.state.all_names(),
-    };
-    for n in &names {
-        if let Err(e) = mgr.down(n, &opts) {
-            eprintln!("Error: {e}");
-        }
-    }
-}
-
-fn cmd_create(name: String, project_name: String, no_tag: bool, no_launch: bool, headless: bool) {
-    let mut mgr = make_manager();
-    if mgr.state.workspace(&name).is_some() {
-        eprintln!("Workspace already exists: {name}");
-        process::exit(1);
-    }
-    let proj = interop::load(&project_name).unwrap_or_else(|e| {
-        eprintln!("Error: {e}");
-        process::exit(1);
-    });
-    let opts = UpOptions {
-        create_tag: !no_tag,
-        launch_apps: !no_launch,
-        headless,
-    };
-    if let Err(e) = mgr.up(&name, &proj, &opts) {
-        eprintln!("Error: {e}");
-        process::exit(1);
-    }
-}
-
-fn cmd_destroy(name: String, no_tag: bool) {
-    let mut mgr = make_manager();
-    let opts = DownOptions {
-        manage_tag: !no_tag,
-        keep_worktree: false,
-    };
-    if let Err(e) = mgr.destroy(&name, &opts) {
-        eprintln!("Error: {e}");
-        process::exit(1);
-    }
-}
-
-fn resolve_current_workspace() -> (Box<dyn Adapter>, String) {
-    let wm = wm::platform_adapter();
-    let tag_full = wm
-        .get_current_tag_name()
-        .unwrap_or_else(|e| {
-            eprintln!("{e}");
-            process::exit(1);
-        })
-        .unwrap_or_else(|| {
-            eprintln!("Not a project workspace");
-            process::exit(1);
-        });
-    let (_project, name) = wm::parse_tag_name(&tag_full).unwrap_or_else(|| {
-        eprintln!("Not a project workspace");
-        process::exit(1);
-    });
-    (wm, name.to_string())
-}
-
-fn cmd_destroy_current() {
-    let (wm, name) = resolve_current_workspace();
-    let mut mgr = make_manager();
-    if let Ok(true) = mgr.is_dirty(&name) {
-        eprintln!("Cannot destroy {name}: uncommitted changes");
-        process::exit(1);
-    }
-    let _ = wm.restore_previous_tag();
-    let opts = DownOptions {
-        manage_tag: true,
-        keep_worktree: false,
-    };
-    if let Err(e) = mgr.destroy(&name, &opts) {
-        eprintln!("Error: {e}");
-        process::exit(1);
-    }
-}
-
-fn cmd_close() {
-    let (wm, name) = resolve_current_workspace();
-    let _ = wm.restore_previous_tag();
-    let mut mgr = make_manager();
-    let opts = DownOptions {
-        manage_tag: true,
-        keep_worktree: true,
-    };
-    if let Err(e) = mgr.down(&name, &opts) {
-        eprintln!("Error: {e}");
-        process::exit(1);
-    }
-}
-
-fn cmd_cycle() {
-    let mgr = make_manager();
-    let active = mgr.state.active_names();
-    if active.is_empty() {
-        return;
-    }
-    let wm = wm::platform_adapter();
-    let current = wm.get_current_tag_name().ok().flatten();
-    let current_ws = current.as_deref().and_then(wm::parse_tag_name).map(|(_, ws)| ws);
-    let next_idx = match current_ws {
-        Some(name) => {
-            let pos = active.iter().position(|n| n == name).unwrap_or(0);
-            (pos + 1) % active.len()
-        }
-        None => 0,
-    };
-    let _ = mgr.switch(&active[next_idx]);
-}
-
-fn cmd_list() {
-    let projects = interop::list().unwrap_or_default();
-    let st = state::load().unwrap_or_default();
-    for proj in &projects {
-        println!(
-            "{}  ({}  branch:{})",
-            proj.name,
-            proj.repo.as_deref().unwrap_or(""),
-            proj.branch_or_default()
-        );
-        for (ws_name, ws) in st.workspaces_for_project(&proj.name) {
-            let status = if ws.active { "UP" } else { "  " };
-            let tag = if ws.active && !ws.headless {
-                format!(" [tag {}:{}]", ws.project, ws_name)
-            } else {
-                String::new()
-            };
-            let mode = if ws.headless { " (headless)" } else { "" };
-            println!("    [{status}] {ws_name}{mode}{tag}");
-            if ws.active && ws.headless {
-                if let Some(port) = ws.bezalel_port {
-                    println!("           bezalel: http://127.0.0.1:{port}/mcp");
-                }
-                if let Some(token) = &ws.bezalel_token {
-                    println!("           token:   {token}");
-                }
-            }
-        }
-    }
-}
-
-fn cmd_switch(name: &str) {
-    let mgr = make_manager();
-    match mgr.state.workspace(name) {
-        Some(ws) if ws.active => {
-            if let Err(e) = mgr.switch(name) {
+        WorkSessionCmd::Destroy {
+            work_session_id,
+            keep_worktree,
+        } => {
+            if let Err(e) = rt_block_on(svc.destroy(&work_session_id, keep_worktree)) {
                 eprintln!("Error: {e}");
                 process::exit(1);
             }
         }
-        _ => {
-            eprintln!("Workspace not active: {name}");
+        WorkSessionCmd::Close { work_session_id } => {
+            if let Err(e) = rt_block_on(svc.transition(&work_session_id, WorkSessionState::Closed))
+            {
+                eprintln!("Error: {e}");
+                process::exit(1);
+            }
+        }
+        WorkSessionCmd::Pause { work_session_id } => {
+            if let Err(e) = rt_block_on(svc.transition(&work_session_id, WorkSessionState::Paused))
+            {
+                eprintln!("Error: {e}");
+                process::exit(1);
+            }
+        }
+        WorkSessionCmd::Resume { work_session_id } => {
+            if let Err(e) = rt_block_on(svc.transition(&work_session_id, WorkSessionState::Open)) {
+                eprintln!("Error: {e}");
+                process::exit(1);
+            }
+        }
+    }
+}
+
+fn cmd_project(cmd: ProjectCmd) {
+    let svc = service_access::service_blocking();
+    match cmd {
+        ProjectCmd::List => match rt_block_on(svc.list_projects(None)) {
+            Ok(list) => {
+                for p in list {
+                    println!(
+                        "{}\t{}\t{}",
+                        p.project_id,
+                        p.title,
+                        p.description.as_deref().unwrap_or("")
+                    );
+                }
+            }
+            Err(e) => {
+                eprintln!("Error: {e}");
+                process::exit(1);
+            }
+        },
+        ProjectCmd::Show { project_id } => match rt_block_on(svc.get_project(&project_id)) {
+            Ok(env) => {
+                println!("{}", serde_json::to_string_pretty(&env).unwrap_or_default());
+            }
+            Err(e) => {
+                eprintln!("Error: {e}");
+                process::exit(1);
+            }
+        },
+        ProjectCmd::Create {
+            project_id,
+            repo,
+            branch,
+            description,
+        } => {
+            let def = definition_for_create(
+                &project_id,
+                description.as_deref(),
+                repo.as_deref(),
+                branch.as_deref(),
+                None,
+            );
+            match rt_block_on(svc.create_project(def)) {
+                Ok(s) => println!(
+                    "created project {} revision={}",
+                    s.project_id,
+                    s.revision.as_deref().unwrap_or("-")
+                ),
+                Err(e) => {
+                    eprintln!("Error: {e}");
+                    process::exit(1);
+                }
+            }
+        }
+        ProjectCmd::Delete {
+            project_id,
+            expected_source_revision,
+        } => {
+            if let Err(e) = rt_block_on(svc.delete_project(&project_id, &expected_source_revision))
+            {
+                eprintln!("Error: {e}");
+                process::exit(1);
+            }
+        }
+    }
+}
+
+fn cmd_work_profiles() {
+    let svc = service_access::service_blocking();
+    match rt_block_on(svc.list_work_profiles()) {
+        Ok(list) => {
+            for p in list {
+                let marker = if p.work_profile_id == DEFAULT_WORK_PROFILE_ID {
+                    " *"
+                } else {
+                    ""
+                };
+                println!(
+                    "{}{}\t{}",
+                    p.work_profile_id,
+                    marker,
+                    p.display()
+                );
+            }
+        }
+        Err(e) => {
+            eprintln!("Error: {e}");
             process::exit(1);
         }
     }
 }
 
-fn send_daemon_cmd(cmd: &str) {
-    if daemon::is_running() {
-        match daemon::send_command(cmd) {
-            Ok(_) => {}
-            Err(e) => eprintln!("Error: {e}"),
+fn cmd_dir(work_session_id: &str) {
+    match awesometree::runtime_store::get(work_session_id) {
+        Ok(Some(rt)) => {
+            if let Some(ws) = rt.workspace {
+                println!("{}", ws.path);
+            } else {
+                eprintln!("no workspace path for {work_session_id}");
+                process::exit(1);
+            }
         }
-    } else {
-        eprintln!("awesometree-daemon is not running");
-        process::exit(1);
+        Ok(None) => {
+            eprintln!("no local runtime for {work_session_id}");
+            process::exit(1);
+        }
+        Err(e) => {
+            eprintln!("Error: {e}");
+            process::exit(1);
+        }
     }
+}
+
+fn cmd_launch_agent(work_session_id: &str, agent: &str) {
+    // Prefer daemon path when available; fall back to local.
+    if daemon::send_command(&format!("launch-agent {work_session_id} {agent}")).is_ok() {
+        return;
+    }
+    eprintln!("daemon unavailable; launch-agent requires daemon for GUI agents");
+    process::exit(1);
 }
 
 fn cmd_pick() {
@@ -408,231 +446,42 @@ fn cmd_create_interactive() {
     send_daemon_cmd("create");
 }
 
-fn cmd_project(sub: ProjectCmd) {
-    match sub {
-        ProjectCmd::List => {
-            for proj in interop::list().unwrap_or_default() {
-                println!("{}", proj.name);
-            }
-        }
-        ProjectCmd::Show { name } => {
-            let proj = interop::load(&name).unwrap_or_else(|e| {
-                eprintln!("Error: {e}");
-                process::exit(1);
-            });
-            let json = serde_json::to_string_pretty(&proj).unwrap();
-            println!("{json}");
-        }
-        ProjectCmd::Create {
-            name,
-            repo,
-            branch,
-        } => {
-            if interop::load(&name).is_ok() {
-                eprintln!("Project already exists: {name}");
-                process::exit(1);
-            }
-            let proj = Project::new(&name, repo, branch);
-            interop::save(&proj).unwrap_or_else(|e| {
-                eprintln!("Error: {e}");
-                process::exit(1);
-            });
-            println!("Created project: {name}");
-        }
-        ProjectCmd::Edit { name } => {
-            let path = interop::projects_dir().join(format!("{name}.project.json"));
-            if !path.exists() {
-                eprintln!("Project not found: {name}");
-                process::exit(1);
-            }
-            let editor = std::env::var("EDITOR").unwrap_or_else(|_| "nano".into());
-            let _ = process::Command::new(editor).arg(&path).status();
-        }
-        ProjectCmd::Delete { name } => {
-            interop::delete(&name).unwrap_or_else(|e| {
-                eprintln!("Error: {e}");
-                process::exit(1);
-            });
-            println!("Deleted project: {name}");
-        }
-    }
-}
-
-fn cmd_context(sub: ContextCmd) {
-    match sub {
-        ContextCmd::List { project } => {
-            let dir = interop::context_dir(&project);
-            if !dir.exists() {
-                return;
-            }
-            let entries = std::fs::read_dir(&dir).unwrap_or_else(|e| {
-                eprintln!("Error: {e}");
-                process::exit(1);
-            });
-            for entry in entries.flatten() {
-                println!("{}", entry.file_name().to_string_lossy());
-            }
-        }
-        ContextCmd::Add { project, file } => {
-            let dir = interop::context_dir(&project);
-            std::fs::create_dir_all(&dir).unwrap_or_else(|e| {
-                eprintln!("Error: {e}");
-                process::exit(1);
-            });
-            let src = PathBuf::from(&file);
-            let dest = dir.join(src.file_name().unwrap_or(src.as_ref()));
-            std::fs::copy(&src, &dest).unwrap_or_else(|e| {
-                eprintln!("Error copying {file}: {e}");
-                process::exit(1);
-            });
-            println!(
-                "Added {} to {project} context",
-                dest.file_name().unwrap().to_string_lossy()
-            );
-        }
-        ContextCmd::Edit { project, file } => {
-            let path = interop::context_dir(&project).join(&file);
-            if !path.exists() {
-                eprintln!("Context file not found: {file}");
-                process::exit(1);
-            }
-            let editor = std::env::var("EDITOR").unwrap_or_else(|_| "nano".into());
-            let _ = process::Command::new(editor).arg(&path).status();
-        }
-        ContextCmd::Rm { project, file } => {
-            let path = interop::context_dir(&project).join(&file);
-            std::fs::remove_file(&path).unwrap_or_else(|e| {
-                eprintln!("Error: {e}");
-                process::exit(1);
-            });
-            println!("Removed {file} from {project} context");
-        }
-        ContextCmd::Bundle { project } => {
-            let proj = interop::load(&project).unwrap_or_else(|e| {
-                eprintln!("Error: {e}");
-                process::exit(1);
-            });
-            let bundle = interop::assemble_context_bundle(&proj).unwrap_or_else(|e| {
-                eprintln!("Error: {e}");
-                process::exit(1);
-            });
-            for (path, content) in &bundle {
-                println!("--- {path} ---");
-                println!("{content}");
-            }
-        }
-    }
-}
-
-fn cmd_launch_agent(workspace: &str, agent: &str) {
-    let mgr = make_manager();
-    if let Err(e) = mgr.launch_agent(workspace, agent) {
+fn send_daemon_cmd(cmd: &str) {
+    if let Err(e) = daemon::send_command(cmd) {
         eprintln!("Error: {e}");
         process::exit(1);
     }
-}
-
-fn cmd_repos() {
-    for r in interop::list_repos() {
-        println!("{}", r.display());
-    }
-}
-
-fn cmd_names() {
-    let st = state::load().unwrap_or_default();
-    for n in st.active_names() {
-        println!("{n}");
-    }
-}
-
-fn cmd_allnames() {
-    let st = state::load().unwrap_or_default();
-    for n in st.all_names() {
-        println!("{n}");
-    }
-}
-
-fn cmd_dir(name: &str) {
-    let mgr = make_manager();
-    let rw = mgr.resolve_workspace(name).unwrap_or_else(|e| {
-        eprintln!("Error: {e}");
-        process::exit(1);
-    });
-    println!("{}", rw.dir.display());
-}
-
-fn cmd_projects() {
-    cmd_project(ProjectCmd::List);
-}
-
-fn cmd_edit(name: &str) {
-    cmd_project(ProjectCmd::Edit { name: name.to_string() });
-}
-
-fn cmd_projects_ui() {
-    send_daemon_cmd("projects");
-}
-
-fn cmd_agents_ui() {
-    send_daemon_cmd("agents");
 }
 
 fn cmd_restart_daemon() {
-    if daemon::is_running() {
-        match daemon::send_command("restart") {
-            Ok(_) => {}
-            Err(e) => eprintln!("Error: {e}"),
-        }
-    }
-    std::thread::sleep(std::time::Duration::from_millis(500));
-    cmd_daemon();
-}
-
-fn cmd_daemon() {
-    if daemon::is_running() {
-        eprintln!("awesometree-daemon is already running");
-        process::exit(1);
-    }
-    awesometree::user_env::snapshot();
-    let exe = std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(|d| d.join("awesometree-daemon")))
-        .unwrap_or_else(|| PathBuf::from("awesometree-daemon"));
-    let log = std::fs::File::create("/tmp/awesometree-daemon.log")
-        .unwrap_or_else(|_| std::fs::File::open("/dev/null").unwrap());
-    let log_err = log
-        .try_clone()
-        .unwrap_or_else(|_| std::fs::File::open("/dev/null").unwrap());
-
     #[cfg(target_os = "linux")]
     {
-        let _ = process::Command::new("setsid")
-            .arg("--fork")
-            .arg(&exe)
-            .stdin(process::Stdio::null())
-            .stdout(process::Stdio::from(log))
-            .stderr(process::Stdio::from(log_err))
-            .spawn();
+        let _ = std::process::Command::new("systemctl")
+            .args(["--user", "restart", "awesometree"])
+            .status();
     }
     #[cfg(target_os = "macos")]
     {
-        let _ = process::Command::new(&exe)
-            .stdin(process::Stdio::null())
-            .stdout(process::Stdio::from(log))
-            .stderr(process::Stdio::from(log_err))
-            .spawn();
+        let _ = std::process::Command::new("launchctl")
+            .args(["kickstart", "-k", "gui/$(id -u)/dev.awesometree.daemon"])
+            .status();
     }
+}
+
+fn cmd_daemon() {
+    // Hand off to daemon binary behavior via library entry if present.
+    eprintln!("use awesometree-daemon binary");
+    process::exit(1);
 }
 
 fn cmd_openapi(output: Option<PathBuf>) {
     let spec = server::openapi_spec();
     match output {
         Some(path) => {
-            std::fs::write(&path, &spec).unwrap_or_else(|e| {
-                eprintln!("Error writing {}: {e}", path.display());
+            if let Err(e) = std::fs::write(&path, spec) {
+                eprintln!("write {}: {e}", path.display());
                 process::exit(1);
-            });
-            eprintln!("Wrote OpenAPI spec to {}", path.display());
+            }
         }
         None => print!("{spec}"),
     }

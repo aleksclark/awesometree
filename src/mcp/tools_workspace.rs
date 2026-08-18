@@ -1,8 +1,11 @@
-use crate::auth::{Permission, scope_includes_project, session_matches};
-use crate::interop;
+//! WorkSession realization façade. Authoritative Project/WorkProfile/WorkSession
+//! CRUD lives in Switchboard; these tools call the shared application service.
+
+use crate::auth::{Permission, scope_includes_project};
 use crate::mcp::{caller_token, check_project_access, ArpServer};
-use crate::state;
-use crate::workspace;
+use crate::model::lifecycle::WorkSessionState;
+use crate::model::work_session::{CreateWorkSessionRequest, RealizationOptions};
+use crate::service_access;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::*;
 use rmcp::tool;
@@ -10,202 +13,193 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 
 #[derive(Deserialize, JsonSchema)]
-pub struct WorkspaceCreateParams {
-    pub name: String,
-    pub project: String,
+pub struct WorkSessionCreateParams {
+    pub work_session_id: String,
+    pub project_id: String,
     #[serde(default)]
-    pub branch: Option<String>,
+    pub work_profile_id: Option<String>,
+    #[serde(default)]
+    pub display_name: Option<String>,
+    #[serde(default)]
+    pub headless: Option<bool>,
 }
 
 #[derive(Deserialize, JsonSchema)]
-pub struct WorkspaceListParams {
+pub struct WorkSessionListParams {
     #[serde(default)]
-    pub project: Option<String>,
+    pub project_id: Option<String>,
     #[serde(default)]
-    pub status: Option<String>,
+    pub state: Option<String>,
 }
 
 #[derive(Deserialize, JsonSchema)]
-pub struct WorkspaceGetParams {
-    pub name: String,
+pub struct WorkSessionGetParams {
+    pub work_session_id: String,
 }
 
 #[derive(Deserialize, JsonSchema)]
-pub struct WorkspaceDestroyParams {
-    pub name: String,
+pub struct WorkSessionDestroyParams {
+    pub work_session_id: String,
     #[serde(default)]
     pub keep_worktree: Option<bool>,
 }
 
+#[derive(Deserialize, JsonSchema)]
+pub struct WorkSessionTransitionParams {
+    pub work_session_id: String,
+    pub state: String,
+}
+
+fn block_on_svc<F, T>(f: F) -> Result<T, ErrorData>
+where
+    F: std::future::Future<Output = Result<T, crate::model::SwitchboardError>>,
+{
+    let result = match tokio::runtime::Handle::try_current() {
+        Ok(h) => tokio::task::block_in_place(|| h.block_on(f)),
+        Err(_) => {
+            let rt = tokio::runtime::Runtime::new()
+                .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+            rt.block_on(f)
+        }
+    };
+    result.map_err(|e| ErrorData::invalid_params(e.to_string(), None))
+}
+
 #[rmcp::tool_router(router = tool_router_workspace, vis = "pub")]
 impl ArpServer {
-    #[tool(name = "workspace/create", description = "Create a new isolated workspace for a project. Creates a git worktree.")]
-    pub fn workspace_create(
+    #[tool(
+        name = "work_session/create",
+        description = "Create a WorkSession via Switchboard and realize a local Workspace (git worktree). Omitting work_profile_id resolves exact ID default."
+    )]
+    pub fn work_session_create(
         &self,
-        Parameters(params): Parameters<WorkspaceCreateParams>,
+        Parameters(params): Parameters<WorkSessionCreateParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let token = caller_token();
+        check_project_access(&token, &params.project_id, &Permission::Session)?;
 
-        // workspace/create: session and project tokens need scope to include the project
-        check_project_access(&token, &params.project, &Permission::Session)?;
-
-        let project = interop::load(&params.project)
-            .map_err(|e| ErrorData::invalid_params(e, None))?;
-        let dir = workspace::resolve_dir(&params.name, &project);
-        workspace::ensure_worktree(&params.name, &project, &dir)
-            .map_err(|e| ErrorData::internal_error(e, None))?;
-
-        let mut st = state::load().map_err(|e| ErrorData::internal_error(e, None))?;
-        let tag_idx = st.allocate_tag_index(&params.name);
-        let acp_port = st.allocate_acp_port(&params.name);
-        let dir_str = dir.to_string_lossy().into_owned();
-        let acp_url = project.resolved_acp_url(&dir_str, acp_port);
-        st.set_active(&params.name, &params.project, tag_idx, &dir_str, acp_port, acp_url);
-        state::save(&st).map_err(|e| ErrorData::internal_error(e, None))?;
-
-        let ws = st.workspace(&params.name).unwrap();
-        let json = serde_json::to_string_pretty(&ws)
+        let headless = params.headless.unwrap_or(false);
+        let req = CreateWorkSessionRequest {
+            work_session_id: params.work_session_id,
+            project_id: params.project_id,
+            work_profile_id: params.work_profile_id,
+            display_name: params.display_name,
+            realization: RealizationOptions {
+                create_tag: !headless,
+                launch_apps: !headless,
+                headless,
+                no_wm: headless,
+            },
+        };
+        let svc = service_access::service_blocking();
+        let resp = block_on_svc(svc.create_work_session(req))?;
+        let json = serde_json::to_string_pretty(&resp)
             .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
         Ok(CallToolResult::success(vec![Content::text(json)]))
     }
 
-    #[tool(name = "workspace/list", description = "List all workspaces with agent status. Filter by project or status.")]
-    pub fn workspace_list(
+    #[tool(
+        name = "work_session/list",
+        description = "List WorkSessions from Switchboard with local realization status."
+    )]
+    pub fn work_session_list(
         &self,
-        Parameters(params): Parameters<WorkspaceListParams>,
+        Parameters(params): Parameters<WorkSessionListParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let token = caller_token();
-        let st = state::load().map_err(|e| ErrorData::internal_error(e, None))?;
-        let mut results: Vec<serde_json::Value> = Vec::new();
-        for (name, ws) in &st.workspaces {
-            // Filter by project scope
-            if !scope_includes_project(&token.scope, &ws.project) {
-                continue;
-            }
-            // For session-scoped tokens, only show workspaces with own-session agents
-            if token.permission == Permission::Session {
-                let has_own_agent = ws.agents.iter().any(|a| session_matches(&token, a));
-                if !has_own_agent {
-                    continue;
-                }
-            }
-            if let Some(ref proj) = params.project {
-                if &ws.project != proj {
-                    continue;
-                }
-            }
-            if let Some(ref status) = params.status {
-                let active = ws.active;
-                match status.as_str() {
-                    "active" if !active => continue,
-                    "inactive" if active => continue,
-                    _ => {}
-                }
-            }
-            results.push(serde_json::json!({
-                "name": name,
-                "project": ws.project,
-                "dir": ws.dir,
-                "status": if ws.active { "active" } else { "inactive" },
-                "agents": ws.agents,
-            }));
+        let svc = service_access::service_blocking();
+        let list = block_on_svc(
+            svc.list_work_sessions(params.state.as_deref(), params.project_id.as_deref()),
+        )?;
+        let filtered: Vec<_> = list
+            .into_iter()
+            .filter(|v| {
+                let pid = v.work_session.project_id.as_deref().unwrap_or("");
+                scope_includes_project(&token.scope, pid)
+            })
+            .collect();
+        let json = serde_json::to_string_pretty(&filtered)
+            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+        Ok(CallToolResult::success(vec![Content::text(json)]))
+    }
+
+    #[tool(
+        name = "work_session/get",
+        description = "Get a WorkSession by work_session_id."
+    )]
+    pub fn work_session_get(
+        &self,
+        Parameters(params): Parameters<WorkSessionGetParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let token = caller_token();
+        let svc = service_access::service_blocking();
+        let view = block_on_svc(svc.get_work_session(&params.work_session_id))?;
+        if let Some(pid) = &view.work_session.project_id {
+            check_project_access(&token, pid, &Permission::Session)?;
         }
-        results.sort_by(|a, b| a["name"].as_str().cmp(&b["name"].as_str()));
-        let json = serde_json::to_string_pretty(&results)
+        let json = serde_json::to_string_pretty(&view)
             .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
         Ok(CallToolResult::success(vec![Content::text(json)]))
     }
 
-    #[tool(name = "workspace/get", description = "Get full details of a workspace including all agent instances and their status.")]
-    pub fn workspace_get(
+    #[tool(
+        name = "work_session/transition",
+        description = "Transition WorkSession lifecycle (open|paused|closed|aborted)."
+    )]
+    pub fn work_session_transition(
         &self,
-        Parameters(params): Parameters<WorkspaceGetParams>,
+        Parameters(params): Parameters<WorkSessionTransitionParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let token = caller_token();
-        let st = state::load().map_err(|e| ErrorData::internal_error(e, None))?;
-        let ws = st.workspace(&params.name).ok_or_else(|| {
-            ErrorData::invalid_params(format!("workspace not found: {}", params.name), None)
+        let state = WorkSessionState::parse(&params.state).ok_or_else(|| {
+            ErrorData::invalid_params(format!("invalid state {}", params.state), None)
         })?;
-
-        // Check project scope
-        if !scope_includes_project(&token.scope, &ws.project) {
-            return Err(ErrorData::invalid_params(
-                format!("token scope does not include project: {}", ws.project),
-                None,
-            ));
+        let svc = service_access::service_blocking();
+        // Authz before side effects
+        let current = block_on_svc(svc.get_work_session(&params.work_session_id))?;
+        if let Some(pid) = &current.work_session.project_id {
+            check_project_access(&token, pid, &Permission::Session)?;
         }
-        // For session-scoped tokens, workspace must have own-session agents
-        if token.permission == Permission::Session {
-            let has_own = ws.agents.iter().any(|a| session_matches(&token, a));
-            if !has_own {
-                return Err(ErrorData::invalid_params(
-                    format!("session-scoped token has no agents in workspace: {}", params.name),
-                    None,
-                ));
-            }
-        }
-
-        let result = serde_json::json!({
-            "name": params.name,
-            "project": ws.project,
-            "dir": ws.dir,
-            "status": if ws.active { "active" } else { "inactive" },
-            "agents": ws.agents,
-        });
-        let json = serde_json::to_string_pretty(&result)
+        let view = block_on_svc(svc.transition(&params.work_session_id, state))?;
+        let json = serde_json::to_string_pretty(&view)
             .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
         Ok(CallToolResult::success(vec![Content::text(json)]))
     }
 
-    #[tool(name = "workspace/destroy", description = "Destroy a workspace. Stops all agents, removes the git worktree, and cleans up all state.")]
-    pub fn workspace_destroy(
+    #[tool(
+        name = "work_session/destroy",
+        description = "Close and delete a WorkSession; tear down local Workspace realization."
+    )]
+    pub fn work_session_destroy(
         &self,
-        Parameters(params): Parameters<WorkspaceDestroyParams>,
+        Parameters(params): Parameters<WorkSessionDestroyParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let token = caller_token();
-        let keep = params.keep_worktree.unwrap_or(false);
-
-        let mut st = state::load().map_err(|e| ErrorData::internal_error(e, None))?;
-        let ws = st.workspace(&params.name).ok_or_else(|| {
-            ErrorData::invalid_params(format!("workspace not found: {}", params.name), None)
-        })?;
-
-        // Check project scope
-        if !scope_includes_project(&token.scope, &ws.project) {
-            return Err(ErrorData::invalid_params(
-                format!("token scope does not include project: {}", ws.project),
-                None,
-            ));
-        }
-        // For session-scoped tokens, all agents must be own-session
-        if token.permission == Permission::Session {
-            let all_own = ws.agents.iter().all(|a| session_matches(&token, a));
-            if !all_own {
-                return Err(ErrorData::invalid_params(
-                    format!("session-scoped token cannot destroy workspace with other sessions' agents: {}", params.name),
-                    None,
-                ));
+        let svc = service_access::service_blocking();
+        if let Ok(view) = block_on_svc(svc.get_work_session(&params.work_session_id)) {
+            if let Some(pid) = &view.work_session.project_id {
+                check_project_access(&token, pid, &Permission::Session)?;
             }
         }
-
-        for agent in &ws.agents {
-            crate::agent_supervisor::stop_agent(&agent.id);
-        }
-
-        let dir = ws.dir.clone();
-        let project_name = ws.project.clone();
-        st.remove(&params.name);
-        state::save(&st).map_err(|e| ErrorData::internal_error(e, None))?;
-
-        if !keep && !dir.is_empty() {
-            if let Ok(project) = interop::load(&project_name) {
-                let _ = workspace::remove_worktree(&project, &std::path::PathBuf::from(&dir));
-            }
-        }
-
+        block_on_svc(svc.destroy(
+            &params.work_session_id,
+            params.keep_worktree.unwrap_or(false),
+        ))?;
         Ok(CallToolResult::success(vec![Content::text(format!(
-            "Destroyed workspace: {}",
-            params.name
+            "destroyed {}",
+            params.work_session_id
         ))]))
+    }
+
+    #[tool(
+        name = "work_profile/list",
+        description = "List WorkProfiles from Switchboard (including exact-ID default)."
+    )]
+    pub fn work_profile_list(&self) -> Result<CallToolResult, ErrorData> {
+        let svc = service_access::service_blocking();
+        let list = block_on_svc(svc.list_work_profiles())?;
+        let json = serde_json::to_string_pretty(&list)
+            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+        Ok(CallToolResult::success(vec![Content::text(json)]))
     }
 }

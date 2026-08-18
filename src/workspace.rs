@@ -497,32 +497,32 @@ mod tests {
     }
 
     struct MockAdapter {
-        tags_created: std::cell::RefCell<Vec<String>>,
-        tags_deleted: std::cell::RefCell<Vec<String>>,
-        tags_switched: std::cell::RefCell<Vec<String>>,
+        tags_created: std::sync::Mutex<Vec<String>>,
+        tags_deleted: std::sync::Mutex<Vec<String>>,
+        tags_switched: std::sync::Mutex<Vec<String>>,
     }
 
     impl MockAdapter {
         fn new() -> Self {
             Self {
-                tags_created: std::cell::RefCell::new(vec![]),
-                tags_deleted: std::cell::RefCell::new(vec![]),
-                tags_switched: std::cell::RefCell::new(vec![]),
+                tags_created: std::sync::Mutex::new(vec![]),
+                tags_deleted: std::sync::Mutex::new(vec![]),
+                tags_switched: std::sync::Mutex::new(vec![]),
             }
         }
     }
 
     impl wm::Adapter for MockAdapter {
         fn create_tag(&self, tag: &str, _index: i32, _layout: &str) -> Result<(), String> {
-            self.tags_created.borrow_mut().push(tag.to_string());
+            self.tags_created.lock().unwrap().push(tag.to_string());
             Ok(())
         }
         fn delete_tag(&self, tag: &str) -> Result<(), String> {
-            self.tags_deleted.borrow_mut().push(tag.to_string());
+            self.tags_deleted.lock().unwrap().push(tag.to_string());
             Ok(())
         }
         fn switch_tag(&self, tag: &str) -> Result<(), String> {
-            self.tags_switched.borrow_mut().push(tag.to_string());
+            self.tags_switched.lock().unwrap().push(tag.to_string());
             Ok(())
         }
         fn kill_tag_clients(&self, _tag: &str) -> Result<(), String> {

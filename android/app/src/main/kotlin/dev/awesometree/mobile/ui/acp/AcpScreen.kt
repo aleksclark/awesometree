@@ -13,7 +13,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import dev.awesometree.mobile.data.ApiClient
 import dev.awesometree.mobile.data.ConnectionStore
-import dev.awesometree.mobile.data.WorkspaceInfo
+import dev.awesometree.mobile.data.WorkSessionInfo
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -36,8 +36,8 @@ fun AcpScreen(connectionStore: ConnectionStore, preselectedWorkspace: String? = 
     val client = remember(connection) { ApiClient(connection) }
     val scope = rememberCoroutineScope()
 
-    var workspaces by remember { mutableStateOf<List<WorkspaceInfo>>(emptyList()) }
-    var selectedWorkspace by remember { mutableStateOf<WorkspaceInfo?>(null) }
+    var workspaces by remember { mutableStateOf<List<WorkSessionInfo>>(emptyList()) }
+    var selectedWorkspace by remember { mutableStateOf<WorkSessionInfo?>(null) }
     var messages by remember { mutableStateOf<List<ChatMessage>>(emptyList()) }
     var input by remember { mutableStateOf("") }
     var sending by remember { mutableStateOf(false) }
@@ -48,24 +48,24 @@ fun AcpScreen(connectionStore: ConnectionStore, preselectedWorkspace: String? = 
     val listState = rememberLazyListState()
 
     LaunchedEffect(connection) {
-        client.listWorkspaces()
+        client.listWorkSessions()
             .onSuccess { all ->
-                workspaces = all.filter { it.active && (it.acpUrl != null || it.acpPort != null) }
+                workspaces = all.filter { it.state == "open" && it.acpPort != null }
                 if (selectedWorkspace == null && workspaces.isNotEmpty()) {
                     val target = if (preselectedWorkspace != null) {
-                        workspaces.find { it.name == preselectedWorkspace }
+                        workspaces.find { it.workSessionId == preselectedWorkspace }
                     } else null
                     selectedWorkspace = target ?: workspaces.first()
                 }
             }
     }
 
-    fun loadHistory(ws: WorkspaceInfo) {
-        sessionId = ws.acpSessionId
+    fun loadHistory(ws: WorkSessionInfo) {
+        sessionId = null // no acp_session_id on list payload
         scope.launch {
             try {
                 val history = withContext(Dispatchers.IO) {
-                    val url = URL("${connection.baseUrl}/api/acp/${URLEncoder.encode(ws.name, "UTF-8")}/history")
+                    val url = URL("${connection.baseUrl}/api/acp/${URLEncoder.encode(ws.workSessionId, "UTF-8")}/history")
                     val conn = (url.openConnection() as HttpURLConnection).apply {
                         requestMethod = "GET"
                         setRequestProperty("Authorization", "Bearer ${connection.token}")
@@ -97,7 +97,7 @@ fun AcpScreen(connectionStore: ConnectionStore, preselectedWorkspace: String? = 
         selectedWorkspace?.let { loadHistory(it) }
     }
 
-    fun sendMessage(ws: WorkspaceInfo, text: String) {
+    fun sendMessage(ws: WorkSessionInfo, text: String) {
         sending = true
         error = null
         messages = messages + ChatMessage("user", text)
@@ -111,7 +111,7 @@ fun AcpScreen(connectionStore: ConnectionStore, preselectedWorkspace: String? = 
                         sessionId?.let { put("session_id", it) }
                     }.toString()
 
-                    val url = URL("${connection.baseUrl}/api/acp/${URLEncoder.encode(ws.name, "UTF-8")}/stream")
+                    val url = URL("${connection.baseUrl}/api/acp/${URLEncoder.encode(ws.workSessionId, "UTF-8")}/stream")
                     val conn = (url.openConnection() as HttpURLConnection).apply {
                         requestMethod = "POST"
                         setRequestProperty("Authorization", "Bearer ${connection.token}")
@@ -189,14 +189,14 @@ fun AcpScreen(connectionStore: ConnectionStore, preselectedWorkspace: String? = 
                     Box {
                         TextButton(onClick = { expanded = true }) {
                             Text(
-                                selectedWorkspace?.name ?: "Select workspace",
+                                selectedWorkspace?.workSessionId ?: "Select work session",
                                 color = MaterialTheme.colorScheme.onSurface,
                             )
                         }
                         DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
                             workspaces.forEach { ws ->
                                 DropdownMenuItem(
-                                    text = { Text(ws.name) },
+                                    text = { Text(ws.workSessionId) },
                                     onClick = {
                                         selectedWorkspace = ws
                                         expanded = false

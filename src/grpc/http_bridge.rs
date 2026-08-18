@@ -12,12 +12,12 @@ use std::collections::HashMap;
 
 use crate::grpc::arp_proto;
 use crate::grpc::arp_proto::project_service_server::ProjectService;
-use crate::grpc::arp_proto::workspace_service_server::WorkspaceService;
+use crate::grpc::arp_proto::work_session_service_server::WorkSessionService;
 use crate::grpc::arp_proto::agent_service_server::AgentService;
 use crate::grpc::arp_proto::discovery_service_server::DiscoveryService;
 use crate::grpc::arp_proto::token_service_server::TokenService;
 use crate::grpc::{
-    ProjectServiceImpl, WorkspaceServiceImpl, AgentServiceImpl,
+    ProjectServiceImpl, WorkSessionServiceImpl, AgentServiceImpl,
     DiscoveryServiceImpl, TokenServiceImpl,
 };
 
@@ -100,94 +100,84 @@ pub async fn unregister_project(
     }
 }
 
-// ---- Workspaces ----
+// ---- WorkSessions ----
 
 #[derive(Deserialize, Default)]
-pub struct ListWorkspacesQuery {
+pub struct ListWorkSessionsQuery {
     #[serde(default)]
-    project: String,
+    project_id: String,
 }
 
-// GET /v1/workspaces
-pub async fn list_workspaces(
-    Query(q): Query<ListWorkspacesQuery>,
+// GET /v1/work-sessions
+pub async fn list_work_sessions(
+    Query(q): Query<ListWorkSessionsQuery>,
 ) -> impl IntoResponse {
-    let svc = WorkspaceServiceImpl;
-    let req = arp_proto::ListWorkspacesRequest {
-        project: q.project,
-        status: 0,
+    let svc = WorkSessionServiceImpl;
+    let req = arp_proto::ListWorkSessionsRequest {
+        project_id: q.project_id,
+        state: 0,
     };
-    match svc.list_workspaces(tonic::Request::new(req)).await {
+    match svc.list_work_sessions(tonic::Request::new(req)).await {
         Ok(resp) => {
             let inner = resp.into_inner();
-            let workspaces: Vec<serde_json::Value> = inner
-                .workspaces
+            let work_sessions: Vec<serde_json::Value> = inner
+                .work_sessions
                 .iter()
-                .map(workspace_to_json)
+                .map(work_session_to_json)
                 .collect();
-            (StatusCode::OK, Json(serde_json::json!({ "workspaces": workspaces }))).into_response()
+            (StatusCode::OK, Json(serde_json::json!({ "work_sessions": work_sessions }))).into_response()
         }
         Err(e) => tonic_to_axum(e).into_response(),
     }
 }
 
-// POST /v1/workspaces
-pub async fn create_workspace(
+// POST /v1/work-sessions
+pub async fn create_work_session(
     Json(body): Json<serde_json::Value>,
 ) -> impl IntoResponse {
-    let auto_agents = body
-        .get("auto_agents")
-        .or_else(|| body.get("autoAgents"))
-        .and_then(|v| v.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-
-    let req = arp_proto::CreateWorkspaceRequest {
-        name: body.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-        project: body.get("project").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-        branch: body.get("branch").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-        auto_agents,
+    let req = arp_proto::CreateWorkSessionRequest {
+        work_session_id: body.get("work_session_id").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+        project_id: body.get("project_id").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+        work_profile_id: body.get("work_profile_id").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+        display_name: body.get("display_name").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+        headless: body.get("headless").and_then(|v| v.as_bool()).unwrap_or(false),
     };
 
-    let svc = WorkspaceServiceImpl;
-    match svc.create_workspace(tonic::Request::new(req)).await {
+    let svc = WorkSessionServiceImpl;
+    match svc.create_work_session(tonic::Request::new(req)).await {
         Ok(resp) => {
             let ws = resp.into_inner();
-            (StatusCode::CREATED, Json(workspace_to_json(&ws))).into_response()
+            (StatusCode::CREATED, Json(work_session_to_json(&ws))).into_response()
         }
         Err(e) => tonic_to_axum(e).into_response(),
     }
 }
 
-// GET /v1/workspaces/:name
-pub async fn get_workspace(
-    Path(name): Path<String>,
+// GET /v1/work-sessions/:id
+pub async fn get_work_session(
+    Path(work_session_id): Path<String>,
 ) -> impl IntoResponse {
-    let svc = WorkspaceServiceImpl;
-    let req = arp_proto::GetWorkspaceRequest { name };
-    match svc.get_workspace(tonic::Request::new(req)).await {
+    let svc = WorkSessionServiceImpl;
+    let req = arp_proto::GetWorkSessionRequest { work_session_id };
+    match svc.get_work_session(tonic::Request::new(req)).await {
         Ok(resp) => {
             let ws = resp.into_inner();
-            (StatusCode::OK, Json(workspace_to_json(&ws))).into_response()
+            (StatusCode::OK, Json(work_session_to_json(&ws))).into_response()
         }
         Err(e) => tonic_to_axum(e).into_response(),
     }
 }
 
-// DELETE /v1/workspaces/:name
-pub async fn destroy_workspace(
-    Path(name): Path<String>,
+// DELETE /v1/work-sessions/:id
+pub async fn destroy_work_session(
+    Path(work_session_id): Path<String>,
 ) -> impl IntoResponse {
-    let svc = WorkspaceServiceImpl;
-    let req = arp_proto::DestroyWorkspaceRequest {
-        name,
+    let svc = WorkSessionServiceImpl;
+    let req = arp_proto::DestroyWorkSessionRequest {
+        work_session_id,
         keep_worktree: false,
     };
-    match svc.destroy_workspace(tonic::Request::new(req)).await {
+    match svc.destroy_work_session(tonic::Request::new(req)).await {
         Ok(_) => StatusCode::NO_CONTENT.into_response(),
         Err(e) => tonic_to_axum(e).into_response(),
     }
@@ -486,8 +476,8 @@ pub fn router() -> axum::Router {
         .route("/v1/projects", get(list_projects).post(register_project))
         .route("/v1/projects/{name}", delete(unregister_project))
         // Workspaces
-        .route("/v1/workspaces", get(list_workspaces).post(create_workspace))
-        .route("/v1/workspaces/{name}", get(get_workspace).delete(destroy_workspace))
+        .route("/v1/work-sessions", get(list_work_sessions).post(create_work_session))
+        .route("/v1/work-sessions/{work_session_id}", get(get_work_session).delete(destroy_work_session))
         // Agents
         .route("/v1/agents", get(list_agents).post(spawn_agent))
         .route("/v1/agents/{agent_id}", get(get_agent_status))
@@ -547,14 +537,17 @@ fn agent_template_to_json(t: &arp_proto::AgentTemplate) -> serde_json::Value {
     obj
 }
 
-fn workspace_to_json(ws: &arp_proto::Workspace) -> serde_json::Value {
-    let agents: Vec<serde_json::Value> = ws.agents.iter().map(agent_instance_to_json).collect();
+fn work_session_to_json(ws: &arp_proto::WorkSession) -> serde_json::Value {
     serde_json::json!({
-        "name": ws.name,
-        "project": ws.project,
-        "dir": ws.dir,
-        "status": ws.status,
-        "agents": agents,
+        "work_session_id": ws.work_session_id,
+        "project_id": ws.project_id,
+        "work_profile_id": ws.work_profile_id,
+        "project_revision": ws.project_revision,
+        "project_snapshot_id": ws.project_snapshot_id,
+        "state": ws.state,
+        "display_name": ws.display_name,
+        "workspace_path": ws.workspace_path,
+        "realization_status": ws.realization_status,
     })
 }
 

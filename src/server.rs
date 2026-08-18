@@ -1,20 +1,22 @@
 use crate::auth;
-use crate::interop::{self, Project};
 use crate::log as dlog;
-use crate::state::{self, Store};
-use crate::workspace;
-#[cfg(feature = "gui")]
-use crate::wm;
-#[cfg(feature = "gui")]
-use crate::workspace::{DownOptions, Manager};
+use crate::model::error::{ErrorCode, SwitchboardError};
+use crate::model::lifecycle::WorkSessionState;
+use crate::model::project::{definition_for_create, ProjectEnvelope};
+use crate::model::work_session::{
+    CreateWorkSessionRequest, CreateWorkSessionResponse, RealizationOptions, WorkSessionView,
+};
+use crate::model::WorkProfile;
+use crate::service_access;
 use axum::body::Body;
-use axum::extract::{Path, Request, State};
+use axum::extract::{Path, Query, Request, State};
 use axum::http::StatusCode;
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Json, Response};
 use hyper_util::client::legacy::Client;
 use hyper_util::rt::TokioExecutor;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use utoipa::{OpenApi, ToSchema};
@@ -30,87 +32,120 @@ struct AppState {
 }
 
 #[derive(Serialize, ToSchema)]
-struct WorkspaceInfo {
-    name: String,
-    project: String,
-    active: bool,
-    tag_index: i32,
-    dir: String,
-    acp_port: Option<u16>,
-    acp_url: Option<String>,
-    acp_session_id: Option<String>,
-    acp_status: Option<String>,
-    headless: bool,
-    bezalel_port: Option<u16>,
-    bezalel_url: Option<String>,
-    bezalel_token: Option<String>,
-}
-
-#[derive(Serialize, ToSchema)]
-struct ProjectInfo {
-    name: String,
-    repo: Option<String>,
-    branch: Option<String>,
-}
-
-#[derive(Deserialize, ToSchema)]
-struct CreateWorkspaceReq {
-    name: String,
-    project: String,
-    #[serde(default)]
-    headless: bool,
-}
-
-#[derive(Serialize, ToSchema)]
 struct ErrorBody {
     error: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    code: Option<String>,
 }
 
 fn err(status: StatusCode, msg: impl Into<String>) -> Response {
-    (status, Json(ErrorBody { error: msg.into() })).into_response()
+    (
+        status,
+        Json(ErrorBody {
+            error: msg.into(),
+            code: None,
+        }),
+    )
+        .into_response()
+}
+
+fn map_err(e: SwitchboardError) -> Response {
+    let status = match e.code {
+        ErrorCode::NotFound | ErrorCode::MissingDefaultProfile => StatusCode::NOT_FOUND,
+        ErrorCode::AlreadyExists | ErrorCode::Conflict => StatusCode::CONFLICT,
+        ErrorCode::InvalidInput
+        | ErrorCode::InvalidReference
+        | ErrorCode::InvalidTransition
+        | ErrorCode::PolicyBroadening
+        | ErrorCode::Referenced => StatusCode::BAD_REQUEST,
+        ErrorCode::Unauthorized => StatusCode::UNAUTHORIZED,
+        ErrorCode::Unavailable => StatusCode::SERVICE_UNAVAILABLE,
+        _ => StatusCode::INTERNAL_SERVER_ERROR,
+    };
+    (
+        status,
+        Json(ErrorBody {
+            error: e.to_string(),
+            code: Some(e.code.as_str().into()),
+        }),
+    )
+        .into_response()
+}
+
+#[derive(Deserialize, ToSchema)]
+struct CreateWorkSessionHttpReq {
+    work_session_id: String,
+    project_id: String,
+    #[serde(default)]
+    work_profile_id: Option<String>,
+    #[serde(default)]
+    display_name: Option<String>,
+    #[serde(default)]
+    headless: bool,
+    #[serde(default)]
+    no_tag: bool,
+    #[serde(default)]
+    no_launch: bool,
+}
+
+#[derive(Deserialize, ToSchema)]
+struct TransitionReq {
+    state: String,
+}
+
+#[derive(Deserialize, ToSchema)]
+struct CreateProjectHttpReq {
+    project_id: String,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    repo: Option<String>,
+    #[serde(default)]
+    branch: Option<String>,
+    #[serde(default)]
+    definition: Option<Value>,
+}
+
+#[derive(Deserialize, ToSchema)]
+struct UpdateProjectHttpReq {
+    expected_source_revision: String,
+    #[serde(default)]
+    patch: Option<Value>,
+    #[serde(default)]
+    definition: Option<Value>,
+}
+
+#[derive(Deserialize)]
+struct ListFilter {
+    state: Option<String>,
+    project_id: Option<String>,
 }
 
 #[derive(OpenApi)]
 #[openapi(
     info(
         title = "awesometree",
-        description = "Workspace manager REST API and Agent Control Protocol proxy",
-        version = "0.1.0"
+        description = "Agent Work Model host: Switchboard-backed Projects/WorkProfiles/WorkSessions + local Workspace realization",
+        version = "0.2.0"
     ),
     tags(
-        (name = "workspaces", description = "Workspace CRUD operations"),
-        (name = "projects", description = "Project configuration CRUD"),
+        (name = "work-sessions", description = "WorkSession lifecycle and local realization"),
+        (name = "work-profiles", description = "WorkProfile blueprints from Switchboard"),
+        (name = "projects", description = "Project Catalog via Switchboard"),
         (name = "acp", description = "Agent Control Protocol proxy")
     )
 )]
 struct ApiDoc;
 
-#[cfg(feature = "gui")]
 fn build_api_router() -> (axum::Router<AppState>, utoipa::openapi::OpenApi) {
     OpenApiRouter::with_openapi(ApiDoc::openapi())
-        .routes(routes!(list_workspaces))
-        .routes(routes!(create_workspace))
-        .routes(routes!(get_workspace))
-        .routes(routes!(delete_workspace))
-        .routes(routes!(start_workspace))
-        .routes(routes!(stop_workspace))
-        .routes(routes!(list_projects))
-        .routes(routes!(create_project))
-        .routes(routes!(get_project))
-        .routes(routes!(update_project))
-        .routes(routes!(delete_project))
-        .split_for_parts()
-}
-
-#[cfg(not(feature = "gui"))]
-fn build_api_router() -> (axum::Router<AppState>, utoipa::openapi::OpenApi) {
-    OpenApiRouter::with_openapi(ApiDoc::openapi())
-        .routes(routes!(list_workspaces))
-        .routes(routes!(create_workspace))
-        .routes(routes!(get_workspace))
-        .routes(routes!(delete_workspace))
-        .routes(routes!(start_workspace))
-        .routes(routes!(stop_workspace_headless))
+        .routes(routes!(list_work_sessions))
+        .routes(routes!(create_work_session))
+        .routes(routes!(get_work_session))
+        .routes(routes!(delete_work_session))
+        .routes(routes!(transition_work_session))
+        .routes(routes!(list_work_profiles))
+        .routes(routes!(get_work_profile))
         .routes(routes!(list_projects))
         .routes(routes!(create_project))
         .routes(routes!(get_project))
@@ -266,403 +301,250 @@ pub async fn run_grpc(port: u16) {
     }
 }
 
-fn load_state() -> Result<Store, Response> {
-    state::load().map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))
-}
-
-fn ws_to_info(name: &str, ws: &state::WorkspaceState) -> WorkspaceInfo {
-    let acp_status = if ws.acp_url.is_some() || ws.acp_port.is_some() {
-        let running = crate::acp_supervisor::get()
-            .map(|s| s.is_running(name))
-            .unwrap_or(false);
-        Some(if running { "running" } else { "stopped" }.to_string())
-    } else {
-        None
-    };
-    WorkspaceInfo {
-        name: name.to_string(),
-        project: ws.project.clone(),
-        active: ws.active,
-        tag_index: ws.tag_index,
-        dir: ws.dir.clone(),
-        acp_port: ws.acp_port,
-        acp_url: ws.acp_url.clone(),
-        acp_session_id: ws.acp_session_id.clone(),
-        acp_status,
-        headless: ws.headless,
-        bezalel_port: ws.bezalel_port,
-        bezalel_url: ws.bezalel_port.map(|p| format!("http://127.0.0.1:{p}/mcp")),
-        bezalel_token: ws.bezalel_token.clone(),
+fn redact_runtime_secrets(mut view: WorkSessionView) -> WorkSessionView {
+    // Never return raw bezalel tokens from list/detail APIs.
+    if let Some(ref mut rt) = view.runtime {
+        // token lives only in secrets store; token_ref is safe.
+        let _ = rt;
     }
+    view
 }
 
 #[utoipa::path(
     get,
-    path = "/api/workspaces",
-    tag = "workspaces",
+    path = "/api/work-sessions",
+    tag = "work-sessions",
     responses(
-        (status = 200, description = "List all workspaces", body = Vec<WorkspaceInfo>),
-        (status = 500, description = "Internal error", body = ErrorBody),
+        (status = 200, description = "List WorkSessions"),
+        (status = 503, description = "Switchboard unavailable", body = ErrorBody),
     )
 )]
-async fn list_workspaces() -> Result<Json<Vec<WorkspaceInfo>>, Response> {
-    let st = load_state()?;
-    let mut list: Vec<WorkspaceInfo> = st
-        .workspaces
-        .iter()
-        .map(|(name, ws)| ws_to_info(name, ws))
-        .collect();
-    list.sort_by(|a, b| a.name.cmp(&b.name));
-    Ok(Json(list))
-}
-
-#[utoipa::path(
-    get,
-    path = "/api/workspaces/{name}",
-    tag = "workspaces",
-    params(
-        ("name" = String, Path, description = "Workspace name"),
-    ),
-    responses(
-        (status = 200, description = "Workspace details", body = WorkspaceInfo),
-        (status = 404, description = "Workspace not found", body = ErrorBody),
-    )
-)]
-async fn get_workspace(Path(name): Path<String>) -> Result<Json<WorkspaceInfo>, Response> {
-    let st = load_state()?;
-    let ws = st
-        .workspace(&name)
-        .ok_or_else(|| err(StatusCode::NOT_FOUND, format!("workspace not found: {name}")))?;
-    Ok(Json(ws_to_info(&name, ws)))
-}
-
-#[utoipa::path(
-    post,
-    path = "/api/workspaces",
-    tag = "workspaces",
-    request_body = CreateWorkspaceReq,
-    responses(
-        (status = 201, description = "Workspace created", body = WorkspaceInfo),
-        (status = 400, description = "Invalid project", body = ErrorBody),
-        (status = 409, description = "Workspace already exists", body = ErrorBody),
-        (status = 500, description = "Internal error", body = ErrorBody),
-    )
-)]
-async fn create_workspace(
-    Json(req): Json<CreateWorkspaceReq>,
-) -> Result<(StatusCode, Json<WorkspaceInfo>), Response> {
-    let mut st = load_state()?;
-
-    if st.workspace(&req.name).is_some() {
-        return Err(err(
-            StatusCode::CONFLICT,
-            format!("workspace already exists: {}", req.name),
-        ));
-    }
-
-    let project = interop::load(&req.project)
-        .map_err(|e| err(StatusCode::BAD_REQUEST, e))?;
-
-    let dir = workspace::resolve_dir(&req.name, &project);
-    workspace::ensure_worktree(&req.name, &project, &dir)
-        .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
-
-    let tag_idx = st.allocate_tag_index(&req.name);
-    let acp_port = st.allocate_acp_port(&req.name);
-    let dir_str = dir.to_string_lossy().into_owned();
-
-    if !req.headless {
-        workspace::launch_apps(&project, &dir, acp_port);
-    }
-
-    let acp_url = project.resolved_acp_url(&dir_str, acp_port);
-    st.set_active(&req.name, &req.project, tag_idx, &dir_str, acp_port, acp_url);
-    if req.headless {
-        workspace::provision_bezalel(&mut st, &req.name, &dir_str);
-    }
-    state::save(&st).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
-
-    if let Some(acp) = project.acp_config() {
-        if acp.enabled {
-            if let Some(port) = acp_port {
-                crate::acp_supervisor::start_for_workspace(
-                    &req.name, &dir_str, port, acp.command.as_deref(),
-                );
-            }
-        }
-    }
-
-    dlog::log(format!(
-        "API: created workspace {} (project: {}, headless: {}, acp_port: {:?})",
-        req.name, req.project, req.headless, acp_port
-    ));
-
-    let ws = st.workspace(&req.name).unwrap();
-    Ok((StatusCode::CREATED, Json(ws_to_info(&req.name, ws))))
-}
-
-#[utoipa::path(
-    delete,
-    path = "/api/workspaces/{name}",
-    tag = "workspaces",
-    params(
-        ("name" = String, Path, description = "Workspace name"),
-    ),
-    responses(
-        (status = 204, description = "Workspace deleted"),
-        (status = 404, description = "Workspace not found", body = ErrorBody),
-        (status = 500, description = "Internal error", body = ErrorBody),
-    )
-)]
-async fn delete_workspace(Path(name): Path<String>) -> Result<StatusCode, Response> {
-    let mut st = load_state()?;
-
-    if st.workspace(&name).is_none() {
-        return Err(err(
-            StatusCode::NOT_FOUND,
-            format!("workspace not found: {name}"),
-        ));
-    }
-
-    st.remove(&name);
-    state::save(&st).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
-
-    dlog::log(format!("API: deleted workspace {name}"));
-    Ok(StatusCode::NO_CONTENT)
-}
-
-#[utoipa::path(
-    post,
-    path = "/api/workspaces/{name}/start",
-    tag = "workspaces",
-    params(
-        ("name" = String, Path, description = "Workspace name"),
-    ),
-    responses(
-        (status = 200, description = "Workspace started", body = WorkspaceInfo),
-        (status = 404, description = "Workspace not found", body = ErrorBody),
-        (status = 500, description = "Internal error", body = ErrorBody),
-    )
-)]
-async fn start_workspace(Path(name): Path<String>) -> Result<Json<WorkspaceInfo>, Response> {
-    let mut st = load_state()?;
-
-    let ws = st
-        .workspace(&name)
-        .ok_or_else(|| err(StatusCode::NOT_FOUND, format!("workspace not found: {name}")))?;
-
-    if ws.active {
-        return Ok(Json(ws_to_info(&name, ws)));
-    }
-
-    let project_name = ws.project.clone();
-    let headless = ws.headless;
-    let project = interop::load(&project_name)
-        .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
-
-    let dir = workspace::resolve_dir(&name, &project);
-    workspace::ensure_worktree(&name, &project, &dir)
-        .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
-
-    let tag_idx = st.allocate_tag_index(&name);
-    let acp_port = st.allocate_acp_port(&name);
-    let dir_str = dir.to_string_lossy().into_owned();
-
-    if !headless {
-        workspace::launch_apps(&project, &dir, acp_port);
-    }
-
-    let acp_url = project.resolved_acp_url(&dir_str, acp_port);
-    st.set_active(&name, &project_name, tag_idx, &dir_str, acp_port, acp_url);
-    if headless {
-        workspace::provision_bezalel(&mut st, &name, &dir_str);
-    }
-    state::save(&st).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
-
-    if let Some(acp) = project.acp_config() {
-        if acp.enabled {
-            if let Some(port) = acp_port {
-                crate::acp_supervisor::start_for_workspace(
-                    &name, &dir_str, port, acp.command.as_deref(),
-                );
-            }
-        }
-    }
-
-    dlog::log(format!("API: started workspace {name}"));
-    let ws = st.workspace(&name).unwrap();
-    Ok(Json(ws_to_info(&name, ws)))
-}
-
-#[cfg(feature = "gui")]
-#[utoipa::path(
-    post,
-    path = "/api/workspaces/{name}/stop",
-    tag = "workspaces",
-    params(
-        ("name" = String, Path, description = "Workspace name"),
-    ),
-    responses(
-        (status = 200, description = "Workspace stopped", body = WorkspaceInfo),
-        (status = 404, description = "Workspace not found", body = ErrorBody),
-        (status = 500, description = "Internal error", body = ErrorBody),
-    )
-)]
-async fn stop_workspace(Path(name): Path<String>) -> Result<Json<WorkspaceInfo>, Response> {
-    let st = load_state()?;
-
-    if st.workspace(&name).is_none() {
-        return Err(err(StatusCode::NOT_FOUND, format!("workspace not found: {name}")));
-    }
-
-    let wm = wm::platform_adapter();
-    let mut mgr = Manager::new(st, wm);
-    let opts = DownOptions { manage_tag: true, keep_worktree: true };
-    if let Err(e) = mgr.down(&name, &opts) {
-        dlog::log(format!("API: stop workspace {name} had errors: {e}"));
-    }
-
-    dlog::log(format!("API: stopped workspace {name}"));
-    let ws = mgr.state.workspace(&name).unwrap();
-    Ok(Json(ws_to_info(&name, ws)))
-}
-
-#[cfg(not(feature = "gui"))]
-#[utoipa::path(
-    post,
-    path = "/api/workspaces/{name}/stop",
-    tag = "workspaces",
-    params(
-        ("name" = String, Path, description = "Workspace name"),
-    ),
-    responses(
-        (status = 200, description = "Workspace stopped", body = WorkspaceInfo),
-        (status = 404, description = "Workspace not found", body = ErrorBody),
-        (status = 501, description = "Not available in headless mode", body = ErrorBody),
-    )
-)]
-async fn stop_workspace_headless(Path(name): Path<String>) -> Result<Json<WorkspaceInfo>, Response> {
-    let st = load_state()?;
-
-    let _ws = st
-        .workspace(&name)
-        .ok_or_else(|| err(StatusCode::NOT_FOUND, format!("workspace not found: {name}")))?;
-
-    Err(err(
-        StatusCode::NOT_IMPLEMENTED,
-        "stop_workspace requires window manager (not available in headless mode)",
+async fn list_work_sessions(
+    Query(q): Query<ListFilter>,
+) -> Result<Json<Vec<WorkSessionView>>, Response> {
+    let svc = service_access::service().await;
+    let list = svc
+        .list_work_sessions(q.state.as_deref(), q.project_id.as_deref())
+        .await
+        .map_err(map_err)?;
+    Ok(Json(
+        list.into_iter().map(redact_runtime_secrets).collect(),
     ))
 }
 
 #[utoipa::path(
     get,
-    path = "/api/projects",
-    tag = "projects",
+    path = "/api/work-sessions/{id}",
+    tag = "work-sessions",
+    params(("id" = String, Path, description = "work_session_id")),
     responses(
-        (status = 200, description = "List all projects", body = Vec<ProjectInfo>),
-        (status = 500, description = "Internal error", body = ErrorBody),
+        (status = 200, description = "WorkSession detail"),
+        (status = 404, description = "Not found", body = ErrorBody),
     )
 )]
-async fn list_projects() -> Result<Json<Vec<ProjectInfo>>, Response> {
-    let projects = interop::list().map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
-    let list: Vec<ProjectInfo> = projects
-        .iter()
-        .map(|p| ProjectInfo {
-            name: p.name.clone(),
-            repo: p.repo.clone(),
-            branch: p.branch.clone(),
-        })
-        .collect();
-    Ok(Json(list))
+async fn get_work_session(Path(id): Path<String>) -> Result<Json<WorkSessionView>, Response> {
+    let svc = service_access::service().await;
+    let view = svc.get_work_session(&id).await.map_err(map_err)?;
+    Ok(Json(redact_runtime_secrets(view)))
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/work-sessions",
+    tag = "work-sessions",
+    request_body = CreateWorkSessionHttpReq,
+    responses(
+        (status = 201, description = "WorkSession created"),
+        (status = 400, description = "Invalid request", body = ErrorBody),
+        (status = 409, description = "Conflict", body = ErrorBody),
+        (status = 503, description = "Switchboard unavailable", body = ErrorBody),
+    )
+)]
+async fn create_work_session(
+    Json(req): Json<CreateWorkSessionHttpReq>,
+) -> Result<(StatusCode, Json<CreateWorkSessionResponse>), Response> {
+    let svc = service_access::service().await;
+    let create = CreateWorkSessionRequest {
+        work_session_id: req.work_session_id,
+        project_id: req.project_id,
+        work_profile_id: req.work_profile_id,
+        display_name: req.display_name,
+        realization: RealizationOptions {
+            create_tag: !req.no_tag && !req.headless,
+            launch_apps: !req.no_launch && !req.headless,
+            headless: req.headless,
+            no_wm: req.headless,
+        },
+    };
+    let resp = svc.create_work_session(create).await.map_err(map_err)?;
+    dlog::log(format!(
+        "API: created work_session {} profile={} state={}",
+        resp.work_session.work_session_id,
+        resp.work_profile_id,
+        resp.work_session.state
+    ));
+    Ok((StatusCode::CREATED, Json(resp)))
+}
+
+#[utoipa::path(
+    delete,
+    path = "/api/work-sessions/{id}",
+    tag = "work-sessions",
+    params(("id" = String, Path, description = "work_session_id")),
+    responses(
+        (status = 204, description = "Deleted"),
+        (status = 404, description = "Not found", body = ErrorBody),
+    )
+)]
+async fn delete_work_session(Path(id): Path<String>) -> Result<StatusCode, Response> {
+    let svc = service_access::service().await;
+    svc.destroy(&id, false).await.map_err(map_err)?;
+    dlog::log(format!("API: deleted work_session {id}"));
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/work-sessions/{id}/transition",
+    tag = "work-sessions",
+    params(("id" = String, Path, description = "work_session_id")),
+    request_body = TransitionReq,
+    responses(
+        (status = 200, description = "Transitioned"),
+        (status = 400, description = "Invalid transition", body = ErrorBody),
+    )
+)]
+async fn transition_work_session(
+    Path(id): Path<String>,
+    Json(req): Json<TransitionReq>,
+) -> Result<Json<WorkSessionView>, Response> {
+    let state = WorkSessionState::parse(&req.state).ok_or_else(|| {
+        err(
+            StatusCode::BAD_REQUEST,
+            format!("invalid state {:?}", req.state),
+        )
+    })?;
+    let svc = service_access::service().await;
+    let view = svc.transition(&id, state).await.map_err(map_err)?;
+    Ok(Json(redact_runtime_secrets(view)))
 }
 
 #[utoipa::path(
     get,
-    path = "/api/projects/{name}",
-    tag = "projects",
-    params(
-        ("name" = String, Path, description = "Project name"),
-    ),
-    responses(
-        (status = 200, description = "Full project configuration", body = Project),
-        (status = 404, description = "Project not found", body = ErrorBody),
-    )
+    path = "/api/work-profiles",
+    tag = "work-profiles",
+    responses((status = 200, description = "List WorkProfiles"))
 )]
-async fn get_project(Path(name): Path<String>) -> Result<Json<Project>, Response> {
-    let project =
-        interop::load(&name).map_err(|e| err(StatusCode::NOT_FOUND, e))?;
-    Ok(Json(project))
+async fn list_work_profiles() -> Result<Json<Vec<WorkProfile>>, Response> {
+    let svc = service_access::service().await;
+    svc.list_work_profiles().await.map(Json).map_err(map_err)
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/work-profiles/{id}",
+    tag = "work-profiles",
+    params(("id" = String, Path, description = "work_profile_id")),
+    responses((status = 200, description = "WorkProfile"))
+)]
+async fn get_work_profile(Path(id): Path<String>) -> Result<Json<WorkProfile>, Response> {
+    let svc = service_access::service().await;
+    svc.get_work_profile(&id).await.map(Json).map_err(map_err)
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/projects",
+    tag = "projects",
+    responses((status = 200, description = "List projects from Switchboard"))
+)]
+async fn list_projects() -> Result<Json<Vec<crate::model::ProjectSummary>>, Response> {
+    let svc = service_access::service().await;
+    svc.list_projects(None).await.map(Json).map_err(map_err)
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/projects/{id}",
+    tag = "projects",
+    params(("id" = String, Path, description = "project_id")),
+    responses((status = 200, description = "Project envelope"))
+)]
+async fn get_project(Path(id): Path<String>) -> Result<Json<ProjectEnvelope>, Response> {
+    let svc = service_access::service().await;
+    svc.get_project(&id).await.map(Json).map_err(map_err)
 }
 
 #[utoipa::path(
     post,
     path = "/api/projects",
     tag = "projects",
-    request_body = Project,
-    responses(
-        (status = 201, description = "Project created", body = Project),
-        (status = 400, description = "Invalid request", body = ErrorBody),
-        (status = 409, description = "Project already exists", body = ErrorBody),
-        (status = 500, description = "Internal error", body = ErrorBody),
-    )
+    request_body = CreateProjectHttpReq,
+    responses((status = 201, description = "Created"))
 )]
 async fn create_project(
-    Json(project): Json<Project>,
-) -> Result<(StatusCode, Json<Project>), Response> {
-    if project.name.is_empty() {
-        return Err(err(StatusCode::BAD_REQUEST, "project name is required"));
-    }
-    if interop::load(&project.name).is_ok() {
-        return Err(err(
-            StatusCode::CONFLICT,
-            format!("project already exists: {}", project.name),
-        ));
-    }
-    interop::save(&project).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
-    dlog::log(format!("API: created project {}", project.name));
-    Ok((StatusCode::CREATED, Json(project)))
+    Json(req): Json<CreateProjectHttpReq>,
+) -> Result<(StatusCode, Json<crate::model::ProjectSummary>), Response> {
+    let def = req.definition.unwrap_or_else(|| {
+        definition_for_create(
+            &req.project_id,
+            req.description.as_deref(),
+            req.repo.as_deref(),
+            req.branch.as_deref(),
+            None,
+        )
+    });
+    let svc = service_access::service().await;
+    let summary = svc.create_project(def).await.map_err(map_err)?;
+    dlog::log(format!("API: created project {}", summary.project_id));
+    Ok((StatusCode::CREATED, Json(summary)))
 }
 
 #[utoipa::path(
     put,
-    path = "/api/projects/{name}",
+    path = "/api/projects/{id}",
     tag = "projects",
-    params(
-        ("name" = String, Path, description = "Project name"),
-    ),
-    request_body = Project,
-    responses(
-        (status = 200, description = "Project updated", body = Project),
-        (status = 404, description = "Project not found", body = ErrorBody),
-        (status = 500, description = "Internal error", body = ErrorBody),
-    )
+    params(("id" = String, Path, description = "project_id")),
+    request_body = UpdateProjectHttpReq,
+    responses((status = 200, description = "Updated"))
 )]
 async fn update_project(
-    Path(name): Path<String>,
-    Json(mut project): Json<Project>,
-) -> Result<Json<Project>, Response> {
-    interop::load(&name).map_err(|e| err(StatusCode::NOT_FOUND, e))?;
-    project.name = name;
-    interop::save(&project).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
-    dlog::log(format!("API: updated project {}", project.name));
-    Ok(Json(project))
+    Path(id): Path<String>,
+    Json(req): Json<UpdateProjectHttpReq>,
+) -> Result<Json<crate::model::ProjectSummary>, Response> {
+    let patch = req
+        .patch
+        .or(req.definition)
+        .ok_or_else(|| err(StatusCode::BAD_REQUEST, "patch or definition required"))?;
+    let svc = service_access::service().await;
+    svc.update_project(&id, &req.expected_source_revision, patch)
+        .await
+        .map(Json)
+        .map_err(map_err)
 }
 
 #[utoipa::path(
     delete,
-    path = "/api/projects/{name}",
+    path = "/api/projects/{id}",
     tag = "projects",
-    params(
-        ("name" = String, Path, description = "Project name"),
-    ),
-    responses(
-        (status = 204, description = "Project deleted"),
-        (status = 404, description = "Project not found", body = ErrorBody),
-    )
+    params(("id" = String, Path, description = "project_id")),
+    responses((status = 204, description = "Deleted"))
 )]
-async fn delete_project(Path(name): Path<String>) -> Result<StatusCode, Response> {
-    interop::delete(&name).map_err(|e| err(StatusCode::NOT_FOUND, e))?;
-    dlog::log(format!("API: deleted project {name}"));
+async fn delete_project(
+    Path(id): Path<String>,
+    Query(q): Query<UpdateProjectHttpReq>,
+) -> Result<StatusCode, Response> {
+    if q.expected_source_revision.is_empty() {
+        return Err(err(
+            StatusCode::BAD_REQUEST,
+            "expected_source_revision query param required",
+        ));
+    }
+    let svc = service_access::service().await;
+    svc.delete_project(&id, &q.expected_source_revision)
+        .await
+        .map_err(map_err)?;
+    dlog::log(format!("API: deleted project {id}"));
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -682,18 +564,25 @@ async fn acp_proxy_path(
     proxy_to_acp(&workspace, &rest, req, &state).await
 }
 
-fn resolve_acp_url(workspace: &str) -> Result<String, Response> {
-    let st = load_state()?;
-    let (_, ws) = st
-        .workspace_name_for_route(workspace)
-        .ok_or_else(|| err(StatusCode::NOT_FOUND, format!("no active workspace: {workspace}")))?;
+fn resolve_acp_url(work_session_id: &str) -> Result<String, Response> {
+    let rt = crate::runtime_store::get(work_session_id)
+        .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .ok_or_else(|| {
+            err(
+                StatusCode::NOT_FOUND,
+                format!("no local runtime for work_session: {work_session_id}"),
+            )
+        })?;
 
-    if let Some(ref url) = ws.acp_url {
+    if let Some(ref url) = rt.acp_url {
         return Ok(url.clone());
     }
 
-    let port = ws.acp_port.ok_or_else(|| {
-        err(StatusCode::BAD_GATEWAY, format!("workspace {workspace} has no ACP endpoint"))
+    let port = rt.acp_port.ok_or_else(|| {
+        err(
+            StatusCode::BAD_GATEWAY,
+            format!("work_session {work_session_id} has no ACP endpoint"),
+        )
     })?;
     Ok(format!("http://127.0.0.1:{port}"))
 }
@@ -801,13 +690,20 @@ async fn acp_send(
 }
 
 async fn acp_messages(Path(workspace): Path<String>) -> Result<Json<serde_json::Value>, Response> {
-    let st = load_state()?;
-    let (_, ws) = st
-        .workspace_name_for_route(&workspace)
-        .ok_or_else(|| err(StatusCode::NOT_FOUND, format!("no active workspace: {workspace}")))?;
+    let rt = crate::runtime_store::get(&workspace)
+        .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .ok_or_else(|| {
+            err(
+                StatusCode::NOT_FOUND,
+                format!("no local runtime for work_session: {workspace}"),
+            )
+        })?;
 
-    let session_id = ws.acp_session_id.as_ref().ok_or_else(|| {
-        err(StatusCode::NOT_FOUND, format!("no ACP session for workspace {workspace}"))
+    let session_id = rt.acp_session_id.as_ref().ok_or_else(|| {
+        err(
+            StatusCode::NOT_FOUND,
+            format!("no ACP session for work_session {workspace}"),
+        )
     })?;
 
     let client = acp_client(&workspace)?;
@@ -820,19 +716,23 @@ async fn acp_messages(Path(workspace): Path<String>) -> Result<Json<serde_json::
 }
 
 async fn acp_history(Path(workspace): Path<String>) -> Result<Json<serde_json::Value>, Response> {
-    let st = load_state()?;
-    let (_, ws) = st
-        .workspace_name_for_route(&workspace)
-        .ok_or_else(|| err(StatusCode::NOT_FOUND, format!("no active workspace: {workspace}")))?;
+    let rt = crate::runtime_store::get(&workspace)
+        .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .ok_or_else(|| {
+            err(
+                StatusCode::NOT_FOUND,
+                format!("no local runtime for work_session: {workspace}"),
+            )
+        })?;
 
-    let session_id = match ws.acp_session_id.as_ref() {
-        Some(sid) => sid,
+    let session_id = match rt.acp_session_id.as_ref() {
+        Some(sid) => sid.clone(),
         None => return Ok(Json(serde_json::json!([]))),
     };
 
     let client = acp_client(&workspace)?;
     let snapshot = client
-        .dump(session_id)
+        .dump(&session_id)
         .await
         .map_err(|e| err(StatusCode::BAD_GATEWAY, format!("ACP dump failed: {e}")))?;
 
@@ -916,13 +816,12 @@ async fn acp_stream(
         .unwrap())
 }
 
-fn save_session_id(workspace: &str, session_id: &str) -> Result<(), String> {
-    let mut st = state::load()?;
-    if let Some(ws) = st.workspaces.get_mut(workspace) {
-        ws.acp_session_id = Some(session_id.to_string());
-        state::save(&st)?;
-    }
-    Ok(())
+fn save_session_id(work_session_id: &str, session_id: &str) -> Result<(), String> {
+    crate::runtime_store::modify(work_session_id, |rt| {
+        rt.acp_session_id = Some(session_id.to_string());
+    })
+    .map(|_| ())
+    .map_err(|e| e.to_string())
 }
 
 #[cfg(test)]
@@ -933,50 +832,20 @@ mod tests {
     fn error_body_serializes() {
         let body = ErrorBody {
             error: "test".into(),
+            code: Some("not_found".into()),
         };
         let json = serde_json::to_string(&body).unwrap();
         assert!(json.contains("\"error\":\"test\""));
+        assert!(json.contains("not_found"));
     }
 
     #[test]
-    fn workspace_info_serializes() {
-        let info = WorkspaceInfo {
-            name: "feat-1".into(),
-            project: "proj".into(),
-            active: true,
-            tag_index: 10,
-            dir: "/tmp".into(),
-            acp_port: Some(9100),
-            acp_url: Some("http://127.0.0.1:9100".into()),
-            acp_session_id: None,
-            acp_status: Some("running".into()),
-            headless: false,
-            bezalel_port: None,
-            bezalel_url: None,
-            bezalel_token: None,
-        };
-        let json = serde_json::to_string(&info).unwrap();
-        assert!(json.contains("\"acp_port\":9100"));
-        assert!(json.contains("\"active\":true"));
-    }
-
-    #[test]
-    fn project_info_serializes() {
-        let info = ProjectInfo {
-            name: "proj".into(),
-            repo: Some("/repo".into()),
-            branch: Some("main".into()),
-        };
-        let json = serde_json::to_string(&info).unwrap();
-        assert!(json.contains("\"name\":\"proj\""));
-    }
-
-    #[test]
-    fn create_workspace_req_deserializes() {
-        let json = r#"{"name":"feat-1","project":"proj"}"#;
-        let req: CreateWorkspaceReq = serde_json::from_str(json).unwrap();
-        assert_eq!(req.name, "feat-1");
-        assert_eq!(req.project, "proj");
+    fn create_work_session_req_deserializes() {
+        let json = r#"{"work_session_id":"ws-1","project_id":"proj"}"#;
+        let req: CreateWorkSessionHttpReq = serde_json::from_str(json).unwrap();
+        assert_eq!(req.work_session_id, "ws-1");
+        assert_eq!(req.project_id, "proj");
+        assert!(req.work_profile_id.is_none());
     }
 
     #[test]
@@ -995,12 +864,11 @@ mod tests {
         let json = api.to_pretty_json().unwrap();
         assert!(json.contains("\"openapi\""));
         assert!(json.contains("awesometree"));
-        assert!(json.contains("/api/workspaces"));
+        assert!(json.contains("/api/work-sessions"));
+        assert!(json.contains("/api/work-profiles"));
         assert!(json.contains("/api/projects"));
-        assert!(json.contains("WorkspaceInfo"));
-        assert!(json.contains("CreateWorkspaceReq"));
-        assert!(json.contains("ProjectInfo"));
         assert!(json.contains("ErrorBody"));
+        assert!(!json.contains("/api/workspaces"));
     }
 
     #[test]
@@ -1009,18 +877,21 @@ mod tests {
         let json = api.to_pretty_json().unwrap();
         let spec: serde_json::Value = serde_json::from_str(&json).unwrap();
         let paths = spec["paths"].as_object().unwrap();
-        assert!(paths.contains_key("/api/workspaces"));
-        assert!(paths.contains_key("/api/workspaces/{name}"));
+        assert!(paths.contains_key("/api/work-sessions"));
+        assert!(paths.contains_key("/api/work-sessions/{id}"));
+        assert!(paths.contains_key("/api/work-profiles"));
         assert!(paths.contains_key("/api/projects"));
-        assert!(paths.contains_key("/api/projects/{name}"));
+        assert!(paths.contains_key("/api/projects/{id}"));
+        assert!(!paths.contains_key("/api/workspaces"));
     }
 
     #[test]
     fn openapi_spec_has_tags() {
         let api = test_api();
         let json = api.to_pretty_json().unwrap();
-        assert!(json.contains("\"workspaces\""));
-        assert!(json.contains("\"projects\""));
+        assert!(json.contains("work-sessions"));
+        assert!(json.contains("work-profiles"));
+        assert!(json.contains("projects"));
     }
 
     #[test]
@@ -1030,54 +901,32 @@ mod tests {
         let spec: serde_json::Value = serde_json::from_str(&json).unwrap();
         let paths = spec["paths"].as_object().unwrap();
 
-        let ws_coll = paths["/api/workspaces"].as_object().unwrap();
-        assert!(ws_coll.contains_key("get"), "list workspaces");
-        assert!(ws_coll.contains_key("post"), "create workspace");
+        let ws_coll = paths["/api/work-sessions"].as_object().unwrap();
+        assert!(ws_coll.contains_key("get"), "list work sessions");
+        assert!(ws_coll.contains_key("post"), "create work session");
 
-        let ws_item = paths["/api/workspaces/{name}"].as_object().unwrap();
-        assert!(ws_item.contains_key("get"), "get workspace");
-        assert!(ws_item.contains_key("delete"), "delete workspace");
+        let ws_item = paths["/api/work-sessions/{id}"].as_object().unwrap();
+        assert!(ws_item.contains_key("get"), "get work session");
+        assert!(ws_item.contains_key("delete"), "delete work session");
 
         let proj_coll = paths["/api/projects"].as_object().unwrap();
         assert!(proj_coll.contains_key("get"), "list projects");
         assert!(proj_coll.contains_key("post"), "create project");
 
-        let proj_item = paths["/api/projects/{name}"].as_object().unwrap();
+        let proj_item = paths["/api/projects/{id}"].as_object().unwrap();
         assert!(proj_item.contains_key("get"), "get project");
         assert!(proj_item.contains_key("put"), "update project");
         assert!(proj_item.contains_key("delete"), "delete project");
     }
 
     #[test]
-    fn openapi_spec_has_all_schemas() {
+    fn openapi_spec_has_error_schema() {
         let api = test_api();
         let json = api.to_pretty_json().unwrap();
         let spec: serde_json::Value = serde_json::from_str(&json).unwrap();
         let schemas = spec["components"]["schemas"].as_object().unwrap();
-        for expected in &[
-            "WorkspaceInfo",
-            "CreateWorkspaceReq",
-            "ProjectInfo",
-            "ErrorBody",
-            "Project",
-            "Launch",
-            "ContextConfig",
-        ] {
-            assert!(schemas.contains_key(*expected), "missing schema: {expected}");
-        }
-    }
-
-    #[test]
-    fn openapi_spec_workspace_info_fields() {
-        let api = test_api();
-        let json = api.to_pretty_json().unwrap();
-        let spec: serde_json::Value = serde_json::from_str(&json).unwrap();
-        let props = spec["components"]["schemas"]["WorkspaceInfo"]["properties"]
-            .as_object()
-            .unwrap();
-        for field in &["name", "project", "active", "tag_index", "dir", "acp_port"] {
-            assert!(props.contains_key(*field), "WorkspaceInfo missing field: {field}");
-        }
+        assert!(schemas.contains_key("ErrorBody"));
+        assert!(schemas.contains_key("CreateWorkSessionHttpReq"));
     }
 
     #[test]

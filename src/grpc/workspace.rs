@@ -1,255 +1,245 @@
-//! gRPC WorkspaceService implementation.
+//! gRPC WorkSessionService implementation (AWM WorkSession).
 
-use crate::agent_supervisor;
 use crate::auth;
-use crate::grpc::arp_proto::*;
-use crate::grpc::arp_proto::workspace_service_server::WorkspaceService;
-use crate::grpc::convert;
+use crate::grpc::arp_proto::work_session_service_server::WorkSessionService;
+use crate::grpc::arp_proto::{self, *};
 use crate::grpc::extract_token;
-use crate::interop;
-use crate::state;
-use crate::workspace;
+use crate::model::lifecycle::WorkSessionState as ModelState;
+use crate::model::work_session::RealizationOptions;
+use crate::service_access;
 use tonic::{Request, Response, Status};
 
-/// Implements the `WorkspaceService` gRPC trait.
 #[derive(Debug, Default)]
-pub struct WorkspaceServiceImpl;
+pub struct WorkSessionServiceImpl;
+
+fn map_err(e: crate::model::SwitchboardError) -> Status {
+    match e.code {
+        crate::model::ErrorCode::NotFound | crate::model::ErrorCode::MissingDefaultProfile => {
+            Status::not_found(e.to_string())
+        }
+        crate::model::ErrorCode::AlreadyExists | crate::model::ErrorCode::Conflict => {
+            Status::already_exists(e.to_string())
+        }
+        crate::model::ErrorCode::InvalidInput
+        | crate::model::ErrorCode::InvalidReference
+        | crate::model::ErrorCode::InvalidTransition
+        | crate::model::ErrorCode::PolicyBroadening
+        | crate::model::ErrorCode::Referenced => Status::invalid_argument(e.to_string()),
+        crate::model::ErrorCode::Unauthorized => Status::permission_denied(e.to_string()),
+        crate::model::ErrorCode::Unavailable => Status::unavailable(e.to_string()),
+        _ => Status::internal(e.to_string()),
+    }
+}
+
+fn to_proto_state(s: ModelState) -> i32 {
+    match s {
+        ModelState::Proposed => WorkSessionState::Proposed as i32,
+        ModelState::Open => WorkSessionState::Open as i32,
+        ModelState::Paused => WorkSessionState::Paused as i32,
+        ModelState::Closed => WorkSessionState::Closed as i32,
+        ModelState::Aborted => WorkSessionState::Aborted as i32,
+    }
+}
+
+fn from_proto_state(s: i32) -> Result<ModelState, Status> {
+    match WorkSessionState::try_from(s) {
+        Ok(WorkSessionState::Proposed) => Ok(ModelState::Proposed),
+        Ok(WorkSessionState::Open) => Ok(ModelState::Open),
+        Ok(WorkSessionState::Paused) => Ok(ModelState::Paused),
+        Ok(WorkSessionState::Closed) => Ok(ModelState::Closed),
+        Ok(WorkSessionState::Aborted) => Ok(ModelState::Aborted),
+        _ => Err(Status::invalid_argument("invalid work session state")),
+    }
+}
+
+fn view_to_proto(view: crate::model::work_session::WorkSessionView) -> WorkSession {
+    let path = view
+        .runtime
+        .as_ref()
+        .and_then(|r| r.workspace.as_ref())
+        .map(|w| w.path.clone())
+        .unwrap_or_default();
+    let realization = view
+        .runtime
+        .as_ref()
+        .map(|r| r.realization_status.as_str().to_string())
+        .unwrap_or_default();
+    WorkSession {
+        work_session_id: view.work_session.work_session_id,
+        project_id: view.work_session.project_id.unwrap_or_default(),
+        work_profile_id: view.work_session.work_profile_id.unwrap_or_default(),
+        project_revision: view.work_session.project_revision.unwrap_or_default(),
+        project_snapshot_id: view.work_session.project_snapshot_id.unwrap_or_default(),
+        state: to_proto_state(view.work_session.state),
+        display_name: view.work_session.display_name.unwrap_or_default(),
+        workspace_path: path,
+        realization_status: realization,
+        created_at: None,
+    }
+}
 
 #[tonic::async_trait]
-impl WorkspaceService for WorkspaceServiceImpl {
-    async fn create_workspace(
+impl WorkSessionService for WorkSessionServiceImpl {
+    async fn create_work_session(
         &self,
-        request: Request<CreateWorkspaceRequest>,
-    ) -> Result<Response<Workspace>, Status> {
+        request: Request<arp_proto::CreateWorkSessionRequest>,
+    ) -> Result<Response<WorkSession>, Status> {
         let token = extract_token(&request);
         let req = request.into_inner();
-
-        // Require project-level permission
-        if !auth::permission_allows(&token.permission, &auth::Permission::Project) {
-            return Err(Status::permission_denied("project permission required"));
+        if !auth::permission_allows(&token.permission, &auth::Permission::Session) {
+            return Err(Status::permission_denied("session permission required"));
         }
-
-        if req.name.is_empty() {
-            return Err(Status::invalid_argument("workspace name is required"));
+        if req.work_session_id.is_empty() || req.project_id.is_empty() {
+            return Err(Status::invalid_argument(
+                "work_session_id and project_id are required",
+            ));
         }
-        if req.project.is_empty() {
-            return Err(Status::invalid_argument("project name is required"));
+        if !auth::scope_includes_project(&token.scope, &req.project_id) {
+            return Err(Status::permission_denied("project not in scope"));
         }
-
-        // Check scope includes this project
-        if !auth::scope_includes_project(&token.scope, &req.project) {
-            return Err(Status::permission_denied(format!(
-                "token scope does not include project '{}'",
-                req.project
-            )));
-        }
-
-        // Load the project
-        let mut project = interop::load(&req.project)
-            .map_err(|e| Status::not_found(format!("project not found: {e}")))?;
-
-        // Override branch if provided
-        if !req.branch.is_empty() {
-            project.branch = Some(req.branch);
-        }
-
-        // Resolve directory and ensure worktree
-        let dir = workspace::resolve_dir(&req.name, &project);
-        workspace::ensure_worktree(&req.name, &project, &dir)
-            .map_err(|e| Status::internal(format!("failed to create worktree: {e}")))?;
-
-        // Allocate tag and port, persist state
-        let dir_str = dir.to_string_lossy().into_owned();
-
-        let ws_state = {
-            let mut store = state::load()
-                .map_err(|e| Status::internal(format!("failed to load state: {e}")))?;
-
-            let tag_idx = store.allocate_tag_index(&req.name);
-            let acp_port = store.allocate_acp_port(&req.name);
-            store.set_active(&req.name, &req.project, tag_idx, &dir_str, acp_port, None);
-
-            state::save(&store)
-                .map_err(|e| Status::internal(format!("failed to save state: {e}")))?;
-
-            store.workspace(&req.name).cloned().ok_or_else(|| {
-                Status::internal("workspace not found after creation")
-            })?
+        let headless = req.headless;
+        let create = crate::model::work_session::CreateWorkSessionRequest {
+            work_session_id: req.work_session_id,
+            project_id: req.project_id,
+            work_profile_id: if req.work_profile_id.is_empty() {
+                None
+            } else {
+                Some(req.work_profile_id)
+            },
+            display_name: if req.display_name.is_empty() {
+                None
+            } else {
+                Some(req.display_name)
+            },
+            realization: RealizationOptions {
+                create_tag: !headless,
+                launch_apps: !headless,
+                headless,
+                no_wm: headless,
+            },
         };
+        let svc = service_access::service().await;
+        let resp = svc.create_work_session(create).await.map_err(map_err)?;
+        let view = crate::model::work_session::WorkSessionView {
+            work_session: resp.work_session,
+            runtime: resp.runtime,
+        };
+        Ok(Response::new(view_to_proto(view)))
+    }
 
-        // Auto-spawn agents if requested
-        for template_name in &req.auto_agents {
-            let store = state::load()
-                .map_err(|e| Status::internal(format!("failed to load state: {e}")))?;
+    async fn list_work_sessions(
+        &self,
+        request: Request<ListWorkSessionsRequest>,
+    ) -> Result<Response<ListWorkSessionsResponse>, Status> {
+        let token = extract_token(&request);
+        let req = request.into_inner();
+        let state = if req.state == 0 {
+            None
+        } else {
+            Some(from_proto_state(req.state)?.as_str().to_string())
+        };
+        let project = if req.project_id.is_empty() {
+            None
+        } else {
+            Some(req.project_id)
+        };
+        let svc = service_access::service().await;
+        let list = svc
+            .list_work_sessions(state.as_deref(), project.as_deref())
+            .await
+            .map_err(map_err)?;
+        let work_sessions = list
+            .into_iter()
+            .filter(|v| {
+                let pid = v.work_session.project_id.as_deref().unwrap_or("");
+                auth::scope_includes_project(&token.scope, pid)
+            })
+            .map(view_to_proto)
+            .collect();
+        Ok(Response::new(ListWorkSessionsResponse { work_sessions }))
+    }
 
-            let port = store.allocate_agent_port().ok_or_else(|| {
-                Status::resource_exhausted("no available ports for agent")
-            })?;
-
-            let command = format!("{template_name} serve");
-            let opts = agent_supervisor::SpawnOptions {
-                workspace: req.name.clone(),
-                dir: dir_str.clone(),
-                template: template_name.clone(),
-                name: template_name.clone(),
-                port,
-                command,
-                env: std::collections::HashMap::new(),
-                prompt: None,
-            };
-
-            if let Some(result) = agent_supervisor::spawn_agent(opts) {
-                let agent = state::AgentInstanceState {
-                    id: result.agent_id,
-                    template: template_name.clone(),
-                    name: template_name.clone(),
-                    workspace: req.name.clone(),
-                    status: state::AgentStatus::Starting,
-                    port: result.port,
-                    host: None,
-                    pid: None,
-                    started_at: chrono::Utc::now().to_rfc3339(),
-                    token_id: None,
-                    session_id: None,
-                    spawned_by: Some(token.id.clone()),
-                };
-
-                state::modify(|st| {
-                    st.add_agent(&req.name, agent);
-                })
-                .map_err(|e| Status::internal(format!("failed to persist agent: {e}")))?;
+    async fn get_work_session(
+        &self,
+        request: Request<GetWorkSessionRequest>,
+    ) -> Result<Response<WorkSession>, Status> {
+        let token = extract_token(&request);
+        let req = request.into_inner();
+        let svc = service_access::service().await;
+        let view = svc
+            .get_work_session(&req.work_session_id)
+            .await
+            .map_err(map_err)?;
+        if let Some(pid) = &view.work_session.project_id {
+            if !auth::scope_includes_project(&token.scope, pid) {
+                return Err(Status::permission_denied("project not in scope"));
             }
         }
-
-        // Re-load the workspace state to include any spawned agents
-        let final_store = state::load()
-            .map_err(|e| Status::internal(format!("failed to load state: {e}")))?;
-        let final_ws = final_store.workspace(&req.name).unwrap_or(&ws_state);
-
-        Ok(Response::new(convert::workspace_to_proto(&req.name, final_ws)))
+        Ok(Response::new(view_to_proto(view)))
     }
 
-    async fn list_workspaces(
+    async fn transition_work_session(
         &self,
-        request: Request<ListWorkspacesRequest>,
-    ) -> Result<Response<ListWorkspacesResponse>, Status> {
+        request: Request<TransitionWorkSessionRequest>,
+    ) -> Result<Response<WorkSession>, Status> {
         let token = extract_token(&request);
         let req = request.into_inner();
-
-        let store = state::load()
-            .map_err(|e| Status::internal(format!("failed to load state: {e}")))?;
-
-        let workspaces: Vec<Workspace> = store
-            .workspaces
-            .iter()
-            .filter(|(_, ws)| {
-                // Filter by project scope
-                if !auth::scope_includes_project(&token.scope, &ws.project) {
-                    return false;
-                }
-                // Filter by project name if specified
-                if !req.project.is_empty() && ws.project != req.project {
-                    return false;
-                }
-                // Filter by status if specified
-                if req.status != WorkspaceStatus::Unspecified as i32 {
-                    let ws_active = ws.active;
-                    let want_active = req.status == WorkspaceStatus::Active as i32;
-                    if ws_active != want_active {
-                        return false;
-                    }
-                }
-                true
-            })
-            .map(|(name, ws)| convert::workspace_to_proto(name, ws))
-            .collect();
-
-        Ok(Response::new(ListWorkspacesResponse { workspaces }))
+        let state = from_proto_state(req.state)?;
+        let svc = service_access::service().await;
+        let current = svc
+            .get_work_session(&req.work_session_id)
+            .await
+            .map_err(map_err)?;
+        if let Some(pid) = &current.work_session.project_id {
+            if !auth::scope_includes_project(&token.scope, pid) {
+                return Err(Status::permission_denied("project not in scope"));
+            }
+        }
+        let view = svc
+            .transition(&req.work_session_id, state)
+            .await
+            .map_err(map_err)?;
+        Ok(Response::new(view_to_proto(view)))
     }
 
-    async fn get_workspace(
+    async fn destroy_work_session(
         &self,
-        request: Request<GetWorkspaceRequest>,
-    ) -> Result<Response<Workspace>, Status> {
-        let token = extract_token(&request);
-        let req = request.into_inner();
-
-        if req.name.is_empty() {
-            return Err(Status::invalid_argument("workspace name is required"));
-        }
-
-        let store = state::load()
-            .map_err(|e| Status::internal(format!("failed to load state: {e}")))?;
-
-        let ws = store.workspace(&req.name).ok_or_else(|| {
-            Status::not_found(format!("workspace '{}' not found", req.name))
-        })?;
-
-        // Check scope
-        if !auth::scope_includes_project(&token.scope, &ws.project) {
-            return Err(Status::permission_denied(format!(
-                "token scope does not include project '{}'",
-                ws.project
-            )));
-        }
-
-        Ok(Response::new(convert::workspace_to_proto(&req.name, ws)))
-    }
-
-    async fn destroy_workspace(
-        &self,
-        request: Request<DestroyWorkspaceRequest>,
+        request: Request<DestroyWorkSessionRequest>,
     ) -> Result<Response<()>, Status> {
         let token = extract_token(&request);
         let req = request.into_inner();
-
-        // Require project-level permission
-        if !auth::permission_allows(&token.permission, &auth::Permission::Project) {
-            return Err(Status::permission_denied("project permission required"));
-        }
-
-        if req.name.is_empty() {
-            return Err(Status::invalid_argument("workspace name is required"));
-        }
-
-        let store = state::load()
-            .map_err(|e| Status::internal(format!("failed to load state: {e}")))?;
-
-        let ws = store.workspace(&req.name).ok_or_else(|| {
-            Status::not_found(format!("workspace '{}' not found", req.name))
-        })?;
-
-        // Check scope
-        if !auth::scope_includes_project(&token.scope, &ws.project) {
-            return Err(Status::permission_denied(format!(
-                "token scope does not include project '{}'",
-                ws.project
-            )));
-        }
-
-        // Stop all agents in this workspace
-        agent_supervisor::stop_workspace_agents(&req.name);
-
-        // Load project for worktree removal
-        let maybe_project = interop::load(&ws.project);
-        let dir = std::path::PathBuf::from(&ws.dir);
-
-        // Remove workspace from state
-        state::modify(|st| {
-            st.remove(&req.name);
-        })
-        .map_err(|e| Status::internal(format!("failed to update state: {e}")))?;
-
-        // Optionally remove the worktree directory
-        if !req.keep_worktree {
-            if let Ok(project) = maybe_project {
-                if let Err(e) = workspace::remove_worktree(&project, &dir) {
-                    // Log but don't fail — the state is already cleaned up
-                    eprintln!("warning: failed to remove worktree: {e}");
+        let svc = service_access::service().await;
+        if let Ok(view) = svc.get_work_session(&req.work_session_id).await {
+            if let Some(pid) = &view.work_session.project_id {
+                if !auth::scope_includes_project(&token.scope, pid) {
+                    return Err(Status::permission_denied("project not in scope"));
                 }
             }
         }
-
+        svc.destroy(&req.work_session_id, req.keep_worktree)
+            .await
+            .map_err(map_err)?;
         Ok(Response::new(()))
     }
+
+    async fn list_work_profiles(
+        &self,
+        request: Request<ListWorkProfilesRequest>,
+    ) -> Result<Response<ListWorkProfilesResponse>, Status> {
+        let _token = extract_token(&request);
+        let svc = service_access::service().await;
+        let list = svc.list_work_profiles().await.map_err(map_err)?;
+        let work_profiles = list
+            .into_iter()
+            .map(|p| WorkProfile {
+                work_profile_id: p.work_profile_id,
+                display_name: p.display_name.unwrap_or_default(),
+                description: p.description.unwrap_or_default(),
+            })
+            .collect();
+        Ok(Response::new(ListWorkProfilesResponse { work_profiles }))
+    }
 }
+
+// Backward-compatible type alias for module wiring.
+pub type WorkspaceServiceImpl = WorkSessionServiceImpl;

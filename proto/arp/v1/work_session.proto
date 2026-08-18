@@ -1,0 +1,118 @@
+syntax = "proto3";
+package arp.v1;
+
+option go_package = "github.com/aleksclark/spec-torture/gen/arp/v1;arpv1";
+
+import "google/api/annotations.proto";
+import "google/api/field_behavior.proto";
+import "google/protobuf/empty.proto";
+import "google/protobuf/timestamp.proto";
+
+// WorkSessionService manages bounded work episodes (AWM WorkSession).
+// Material Workspace Resources (git worktrees) are realization side effects.
+service WorkSessionService {
+  rpc CreateWorkSession(CreateWorkSessionRequest) returns (WorkSession) {
+    option (google.api.http) = {
+      post: "/v1/work-sessions"
+      body: "*"
+    };
+  }
+
+  rpc ListWorkSessions(ListWorkSessionsRequest) returns (ListWorkSessionsResponse) {
+    option (google.api.http) = {
+      get: "/v1/work-sessions"
+    };
+  }
+
+  rpc GetWorkSession(GetWorkSessionRequest) returns (WorkSession) {
+    option (google.api.http) = {
+      get: "/v1/work-sessions/{work_session_id}"
+    };
+  }
+
+  rpc TransitionWorkSession(TransitionWorkSessionRequest) returns (WorkSession) {
+    option (google.api.http) = {
+      post: "/v1/work-sessions/{work_session_id}:transition"
+      body: "*"
+    };
+  }
+
+  rpc DestroyWorkSession(DestroyWorkSessionRequest) returns (google.protobuf.Empty) {
+    option (google.api.http) = {
+      delete: "/v1/work-sessions/{work_session_id}"
+    };
+  }
+
+  rpc ListWorkProfiles(ListWorkProfilesRequest) returns (ListWorkProfilesResponse) {
+    option (google.api.http) = {
+      get: "/v1/work-profiles"
+    };
+  }
+}
+
+message CreateWorkSessionRequest {
+  string work_session_id = 1 [(google.api.field_behavior) = REQUIRED];
+  string project_id = 2 [(google.api.field_behavior) = REQUIRED];
+  // Omit or empty → exact ID "default".
+  string work_profile_id = 3;
+  string display_name = 4;
+  bool headless = 5;
+}
+
+message ListWorkSessionsRequest {
+  string project_id = 1;
+  WorkSessionState state = 2;
+}
+
+message ListWorkSessionsResponse {
+  repeated WorkSession work_sessions = 1;
+}
+
+message GetWorkSessionRequest {
+  string work_session_id = 1 [(google.api.field_behavior) = REQUIRED];
+}
+
+message TransitionWorkSessionRequest {
+  string work_session_id = 1 [(google.api.field_behavior) = REQUIRED];
+  WorkSessionState state = 2 [(google.api.field_behavior) = REQUIRED];
+}
+
+message DestroyWorkSessionRequest {
+  string work_session_id = 1 [(google.api.field_behavior) = REQUIRED];
+  bool keep_worktree = 2;
+}
+
+message ListWorkProfilesRequest {}
+
+message ListWorkProfilesResponse {
+  repeated WorkProfile work_profiles = 1;
+}
+
+message WorkSession {
+  string work_session_id = 1 [(google.api.field_behavior) = REQUIRED];
+  string project_id = 2;
+  string work_profile_id = 3;
+  string project_revision = 4;
+  string project_snapshot_id = 5;
+  WorkSessionState state = 6;
+  string display_name = 7;
+  // Non-secret local realization path (material Workspace Resource).
+  string workspace_path = 8;
+  string realization_status = 9;
+  google.protobuf.Timestamp created_at = 10;
+}
+
+message WorkProfile {
+  string work_profile_id = 1;
+  string display_name = 2;
+  string description = 3;
+}
+
+enum WorkSessionState {
+  WORK_SESSION_STATE_UNSPECIFIED = 0;
+  WORK_SESSION_STATE_PROPOSED = 1;
+  WORK_SESSION_STATE_OPEN = 2;
+  WORK_SESSION_STATE_PAUSED = 3;
+  WORK_SESSION_STATE_CLOSED = 4;
+  WORK_SESSION_STATE_ABORTED = 5;
+}

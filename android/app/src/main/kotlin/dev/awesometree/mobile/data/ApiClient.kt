@@ -47,119 +47,168 @@ class ApiClient(private val connection: ServerConnection) {
         }
     }
 
-    suspend fun listWorkspaces(): Result<List<WorkspaceInfo>> =
-        request("GET", "/api/workspaces").map { parseWorkspaceList(it) }
+    suspend fun listWorkSessions(): Result<List<WorkSessionInfo>> =
+        request("GET", "/api/work-sessions").map { parseWorkSessionList(it) }
 
-    suspend fun getWorkspace(name: String): Result<WorkspaceInfo> =
-        request("GET", "/api/workspaces/${enc(name)}").map { parseWorkspace(it) }
+    suspend fun getWorkSession(id: String): Result<WorkSessionInfo> =
+        request("GET", "/api/work-sessions/${enc(id)}").map { parseWorkSessionView(JSONObject(it)) }
 
-    suspend fun createWorkspace(name: String, project: String): Result<WorkspaceInfo> {
-        val body = JSONObject().put("name", name).put("project", project).toString()
-        return request("POST", "/api/workspaces", body).map { parseWorkspace(it) }
+    suspend fun createWorkSession(
+        workSessionId: String,
+        projectId: String,
+        workProfileId: String? = null,
+        headless: Boolean = false,
+    ): Result<WorkSessionInfo> {
+        val body = JSONObject().apply {
+            put("work_session_id", workSessionId)
+            put("project_id", projectId)
+            if (!workProfileId.isNullOrBlank()) put("work_profile_id", workProfileId)
+            put("headless", headless)
+        }.toString()
+        return request("POST", "/api/work-sessions", body).map { json ->
+            val obj = JSONObject(json)
+            val ws = obj.optJSONObject("work_session") ?: obj
+            val runtime = obj.optJSONObject("runtime")
+            parseWorkSession(ws, runtime)
+        }
     }
 
-    suspend fun deleteWorkspace(name: String): Result<Unit> =
-        request("DELETE", "/api/workspaces/${enc(name)}").map { }
+    suspend fun deleteWorkSession(id: String): Result<Unit> =
+        request("DELETE", "/api/work-sessions/${enc(id)}").map { }
 
-    suspend fun startWorkspace(name: String): Result<WorkspaceInfo> =
-        request("POST", "/api/workspaces/${enc(name)}/start").map { parseWorkspace(it) }
+    suspend fun transitionWorkSession(id: String, state: String): Result<WorkSessionInfo> {
+        val body = JSONObject().put("state", state).toString()
+        return request("POST", "/api/work-sessions/${enc(id)}/transition", body)
+            .map { parseWorkSessionView(JSONObject(it)) }
+    }
 
-    suspend fun stopWorkspace(name: String): Result<WorkspaceInfo> =
-        request("POST", "/api/workspaces/${enc(name)}/stop").map { parseWorkspace(it) }
+    suspend fun listWorkProfiles(): Result<List<WorkProfileInfo>> =
+        request("GET", "/api/work-profiles").map { parseWorkProfileList(it) }
 
     suspend fun listProjects(): Result<List<ProjectInfo>> =
         request("GET", "/api/projects").map { parseProjectList(it) }
 
-    suspend fun getProject(name: String): Result<ProjectDetail> =
-        request("GET", "/api/projects/${enc(name)}").map { parseProjectDetail(it) }
+    suspend fun getProject(id: String): Result<ProjectDetail> =
+        request("GET", "/api/projects/${enc(id)}").map { parseProjectDetail(it) }
 
-    suspend fun createProject(project: ProjectDetail): Result<ProjectDetail> =
-        request("POST", "/api/projects", project.toJson()).map { parseProjectDetail(it) }
+    suspend fun createProject(projectId: String, repo: String? = null, branch: String? = null): Result<ProjectInfo> {
+        val body = JSONObject().apply {
+            put("project_id", projectId)
+            repo?.let { put("repo", it) }
+            branch?.let { put("branch", it) }
+        }.toString()
+        return request("POST", "/api/projects", body).map { parseProjectInfo(JSONObject(it)) }
+    }
 
-    suspend fun updateProject(name: String, project: ProjectDetail): Result<ProjectDetail> =
-        request("PUT", "/api/projects/${enc(name)}", project.toJson()).map { parseProjectDetail(it) }
+    suspend fun deleteProject(id: String, expectedSourceRevision: String): Result<Unit> =
+        request(
+            "DELETE",
+            "/api/projects/${enc(id)}?expected_source_revision=${enc(expectedSourceRevision)}",
+        ).map { }
 
-    suspend fun deleteProject(name: String): Result<Unit> =
-        request("DELETE", "/api/projects/${enc(name)}").map { }
-
-    suspend fun acpSend(workspace: String, message: String): Result<String> =
-        request("POST", "/acp/${enc(workspace)}", message)
+    suspend fun acpSend(workSessionId: String, message: String): Result<String> =
+        request("POST", "/acp/${enc(workSessionId)}", message)
 }
 
 private fun enc(value: String): String = URLEncoder.encode(value, "UTF-8")
 
 class ApiException(val code: Int, message: String) : Exception("HTTP $code: $message")
 
-data class WorkspaceInfo(
-    val name: String,
-    val project: String,
-    val active: Boolean,
-    val tagIndex: Int,
-    val dir: String,
+data class WorkSessionInfo(
+    val workSessionId: String,
+    val projectId: String?,
+    val workProfileId: String?,
+    val state: String,
+    val displayName: String?,
+    val dir: String?,
+    val realizationStatus: String?,
+    val headless: Boolean,
     val acpPort: Int?,
-    val acpUrl: String?,
-    val acpSessionId: String?,
-    val acpStatus: String?,
+)
+
+data class WorkProfileInfo(
+    val workProfileId: String,
+    val displayName: String?,
+    val description: String?,
 )
 
 data class ProjectInfo(
-    val name: String,
-    val repo: String?,
-    val branch: String?,
+    val projectId: String,
+    val title: String,
+    val description: String?,
+    val revision: String?,
+    val sourceRevision: String?,
 )
 
 data class ProjectDetail(
-    val version: String = "1",
-    val name: String,
-    val repo: String? = null,
-    val branch: String? = null,
-) {
-    fun toJson(): String = JSONObject().apply {
-        put("version", version)
-        put("name", name)
-        repo?.let { put("repo", it) }
-        branch?.let { put("branch", it) }
-    }.toString()
+    val projectId: String,
+    val revision: String,
+    val sourceRevision: String,
+    val definitionJson: String,
+)
+
+private fun parseWorkSessionView(obj: JSONObject): WorkSessionInfo {
+    val ws = obj.optJSONObject("work_session") ?: obj
+    val runtime = obj.optJSONObject("runtime")
+    return parseWorkSession(ws, runtime)
 }
 
-private fun parseWorkspace(json: String): WorkspaceInfo {
-    val obj = JSONObject(json)
-    return WorkspaceInfo(
-        name = obj.getString("name"),
-        project = obj.getString("project"),
-        active = obj.getBoolean("active"),
-        tagIndex = obj.getInt("tag_index"),
-        dir = obj.getString("dir"),
-        acpPort = if (obj.has("acp_port") && !obj.isNull("acp_port")) obj.getInt("acp_port") else null,
-        acpUrl = if (obj.has("acp_url") && !obj.isNull("acp_url")) obj.getString("acp_url") else null,
-        acpSessionId = if (obj.has("acp_session_id") && !obj.isNull("acp_session_id")) obj.getString("acp_session_id") else null,
-        acpStatus = if (obj.has("acp_status") && !obj.isNull("acp_status")) obj.getString("acp_status") else null,
+private fun parseWorkSession(ws: JSONObject, runtime: JSONObject?): WorkSessionInfo {
+    val workspace = runtime?.optJSONObject("workspace")
+    return WorkSessionInfo(
+        workSessionId = ws.optString("work_session_id", ""),
+        projectId = ws.optString("project_id", null),
+        workProfileId = ws.optString("work_profile_id", null),
+        state = when (val st = ws.opt("state")) {
+            is String -> st
+            else -> st?.toString()?.trim('"') ?: ""
+        },
+        displayName = ws.optString("display_name", null),
+        dir = workspace?.optString("path", null),
+        realizationStatus = runtime?.optString("realization_status", null),
+        headless = runtime?.optBoolean("headless", false) ?: false,
+        acpPort = if (runtime != null && runtime.has("acp_port") && !runtime.isNull("acp_port")) {
+            runtime.getInt("acp_port")
+        } else null,
     )
 }
 
-private fun parseWorkspaceList(json: String): List<WorkspaceInfo> {
+private fun parseWorkSessionList(json: String): List<WorkSessionInfo> {
     val arr = JSONArray(json)
-    return (0 until arr.length()).map { parseWorkspace(arr.getJSONObject(it).toString()) }
+    return (0 until arr.length()).map { parseWorkSessionView(arr.getJSONObject(it)) }
 }
 
-private fun parseProjectList(json: String): List<ProjectInfo> {
+private fun parseWorkProfileList(json: String): List<WorkProfileInfo> {
     val arr = JSONArray(json)
-    return (0 until arr.length()).map { obj ->
-        val o = arr.getJSONObject(obj)
-        ProjectInfo(
-            name = o.getString("name"),
-            repo = if (o.has("repo") && !o.isNull("repo")) o.getString("repo") else null,
-            branch = if (o.has("branch") && !o.isNull("branch")) o.getString("branch") else null,
+    return (0 until arr.length()).map { i ->
+        val o = arr.getJSONObject(i)
+        WorkProfileInfo(
+            workProfileId = o.optString("work_profile_id", ""),
+            displayName = o.optString("display_name", null),
+            description = o.optString("description", null),
         )
     }
 }
 
+private fun parseProjectInfo(o: JSONObject): ProjectInfo = ProjectInfo(
+    projectId = o.optString("projectId", o.optString("project_id", "")),
+    title = o.optString("title", ""),
+    description = o.optString("description", null),
+    revision = o.optString("revision", null),
+    sourceRevision = o.optString("sourceRevision", o.optString("source_revision", null)),
+)
+
+private fun parseProjectList(json: String): List<ProjectInfo> {
+    val arr = JSONArray(json)
+    return (0 until arr.length()).map { parseProjectInfo(arr.getJSONObject(it)) }
+}
+
 private fun parseProjectDetail(json: String): ProjectDetail {
-    val obj = JSONObject(json)
+    val o = JSONObject(json)
     return ProjectDetail(
-        version = obj.optString("version", "1"),
-        name = obj.getString("name"),
-        repo = if (obj.has("repo") && !obj.isNull("repo")) obj.getString("repo") else null,
-        branch = if (obj.has("branch") && !obj.isNull("branch")) obj.getString("branch") else null,
+        projectId = o.optString("projectId", o.optString("project_id", "")),
+        revision = o.optString("revision", ""),
+        sourceRevision = o.optString("sourceRevision", o.optString("source_revision", "")),
+        definitionJson = o.optJSONObject("definition")?.toString() ?: "{}",
     )
 }

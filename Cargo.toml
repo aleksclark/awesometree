@@ -70,7 +70,11 @@ a2a-rs-core = "1.0"
 a2a-rs-client = "1.0"
 uuid = { version = "1", features = ["v4"] }
 chrono = { version = "0.4", features = ["serde"] }
-rmcp = { version = "1.5", features = ["server", "macros", "transport-io"] }
+rmcp = { version = "1.5", features = ["server", "client", "macros", "transport-io", "transport-streamable-http-client-reqwest"] }
+thiserror = "2"
+fs2 = "0.4"
+async-trait = "0.1"
+hostname = "0.4"
 schemars = "1"
 anyhow = "1"
 tonic = "0.13"

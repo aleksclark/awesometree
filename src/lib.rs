@@ -13,6 +13,11 @@ pub mod user_env;
 pub mod theme;
 #[cfg(feature = "gui")]
 pub mod ui_helpers;
+pub mod model;
+pub mod switchboard;
+pub mod runtime_store;
+pub mod work_session_service;
+pub mod service_access;
 pub mod interop;
 pub mod state;
 pub mod workspace;

@@ -8,7 +8,7 @@ pub fn parse_tag_name(tag: &str) -> Option<(&str, &str)> {
     tag.split_once(':')
 }
 
-pub trait Adapter {
+pub trait Adapter: Send + Sync {
     fn create_tag(&self, tag: &str, index: i32, layout: &str) -> Result<(), String>;
     fn delete_tag(&self, tag: &str) -> Result<(), String>;
     fn switch_tag(&self, tag: &str) -> Result<(), String>;

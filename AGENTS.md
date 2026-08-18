@@ -1,6 +1,8 @@
 # awesometree
 
-Cross-platform workspace manager: Zed + git worktrees + window management.
+Cross-platform Agent Work Model host: Switchboard-backed Projects,
+WorkProfiles, and WorkSessions, plus local Workspace realization
+(Zed + git worktrees + window management).
 
 Cargo workspace with two crates. `awesometree` is the main crate
 producing two binaries: `awesometree` (CLI) and `awesometree-daemon`
@@ -10,19 +12,34 @@ library with UniFFI bindings for the Android mobile app.
 
 ## How It Works
 
+Switchboard is the sole mutable authority for Projects, WorkProfiles,
+and WorkSessions. awesometree coordinates host-local realization
+(git worktrees, WM tags, apps, ports, credentials).
+
 A hotkey sends `pick` to the daemon, which opens a GPUI picker.
-Selecting an inactive workspace creates a git worktree, creates a
-virtual desktop/tag, and launches Zed. Another hotkey cycles between
-active project tags.
+Creating a WorkSession (WorkProfile selection defaults to exact ID
+`default`) writes the episode to Switchboard, creates a git worktree
+(material Workspace Resource), creates a virtual desktop/tag, and
+launches Zed. Another hotkey cycles between open WorkSession tags.
 
 The daemon also runs an HTTP server (port 9099) with a REST API for
-workspace/project CRUD and an ACP reverse proxy. The mobile app
+WorkSession/Project façades and an ACP reverse proxy. The mobile app
 connects by scanning a QR code from the tray menu.
+
+Configure Switchboard via `AWESOMETREE_SWITCHBOARD_URL` (default
+`http://127.0.0.1:3847/mcp`).
+
+## Agent Work Model
+
+See [docs/architecture.md](docs/architecture.md) for the AWM mapping.
+Canonical terms: Project, ProjectSnapshot, WorkProfile, WorkSession,
+Workspace (material Resource only). Do not call a WorkSession a
+"workspace".
 
 ## Agent Registry Protocol (ARP)
 
 awesometree implements the Agent Registry Protocol — an MCP server
-that manages the full lifecycle of A2A agents within workspaces.
+that manages the full lifecycle of A2A agents within WorkSessions.
 ARP fills the gap between MCP (agent-to-tool) and A2A
 (agent-to-agent): neither protocol defines how to create, start,
 stop, or destroy agent instances. ARP does.
@@ -37,38 +54,40 @@ The spec lives in `arp-spec/`. Protobuf definitions in `proto/arp/v1/`.
 
 ### Tool Groups
 
-| Group | Tools | Spec |
+| Group | Tools | Notes |
 |-------|-------|------|
-| Project | `project/list`, `project/register`, `project/unregister` | `arp-spec/tools-project.md` |
-| Workspace | `workspace/create`, `workspace/list`, `workspace/get`, `workspace/destroy` | `arp-spec/tools-workspace.md` |
-| Agent Lifecycle | `agent/spawn`, `agent/list`, `agent/status`, `agent/message`, `agent/task`, `agent/task_status`, `agent/stop`, `agent/restart` | `arp-spec/tools-agent.md` |
+| Project | `project/list`, `project/register`, `project/unregister` | Switchboard-backed façade |
+| WorkSession | `work_session/create`, `work_session/list`, `work_session/get`, `work_session/transition`, `work_session/destroy`, `work_profile/list` | Shared `WorkSessionService` |
+| Agent Lifecycle | `agent/spawn`, `agent/list`, `agent/status`, … | `arp-spec/tools-agent.md` |
 | Discovery | `agent/discover`, MCP resources, MCP prompts | `arp-spec/tools-discovery.md` |
-| Identity | `token/create`, scope enforcement, federation | `arp-spec/identity-and-scopes.md` |
+| Identity | `token/create`, scope enforcement | `arp-spec/identity-and-scopes.md` |
+
+Native Switchboard tools: `project_*`, `project_work_profile_*`,
+`project_work_session_*`.
 
 ### Agent Lifecycle State Machine
 
 `starting` → `ready` ↔ `busy` → `stopping` → `stopped`
 
 Any state can transition to `error` on crash/health failure.
-See `arp-spec/overview.md` for the full diagram.
 
 ### Key Implementation Files
 
 | Layer | Source | Role |
 |-------|--------|------|
-| ARP spec | `arp-spec/` | Protocol specification documents |
-| Agent supervisor | `src/agent_supervisor.rs` | Process spawn, health check, SIGTERM/SIGKILL, task cancellation |
-| ARP store | `src/arp_store.rs` | SQLite-backed state for workspaces, agents, and task tracking |
-| A2A proxy | `src/a2a_proxy.rs` | A2A v1.0 HTTP proxy + AgentCard enrichment |
-| Auth | `src/auth.rs` | HMAC token generation/validation for remote clients |
-| State (legacy) | `src/state.rs` | JSON-based workspace/agent state (being migrated to ArpStore) |
+| Model | `src/model/` | AWM contracts |
+| Switchboard client | `src/switchboard/` | Production MCP client |
+| Application service | `src/work_session_service.rs` | Single orchestration path |
+| Runtime store | `src/runtime_store.rs` | Host-local realization by `work_session_id` |
+| Agent supervisor | `src/agent_supervisor.rs` | Process spawn, health, stop |
+| ARP store | `src/arp_store.rs` | Agent/task runtime (not WorkSession authority) |
+| A2A proxy | `src/a2a_proxy.rs` | A2A v1.0 HTTP proxy |
+| Auth | `src/auth.rs` | HMAC tokens |
 
 ### Identity & Scopes
 
-Tokens carry project scopes and permission levels (`session`,
-`project`, `admin`). Agents inherit scoped tokens from their
-spawner — scope can only narrow, never widen. See
-`arp-spec/identity-and-scopes.md`.
+Tokens carry project and work-session scopes and permission levels
+(`session`, `project`, `admin`). Scope can only narrow, never widen.
 
 ## Platform Support
 
@@ -86,7 +105,7 @@ The macOS adapter supports two modes:
    is installed, spaces are created/destroyed/focused via its CLI. The
    `layout` field maps to yabai layouts (`bsp`, `stack`, `float`).
 
-2. **Fallback** — Without yabai, workspace state is tracked in
+2. **Fallback** — Without yabai, tag state is tracked in
    `/tmp/awesometree-macos-tags.json`. Space switching uses AppleScript
    key codes for Mission Control. Creating spaces programmatically
    requires accessibility permissions.
@@ -97,26 +116,27 @@ The `eval` method on macOS accepts AppleScript instead of Lua.
 
 | Layer | Source | Role |
 |-------|--------|------|
-| CLI | `src/main.rs` | All subcommands (`up`, `down`, `create`, …) |
+| CLI | `src/main.rs` | `work-session`, `project`, `work-profiles`, … |
 | Daemon | `src/daemon_main.rs` | GPUI app, socket listener, tray |
-| Config | `src/config.rs` | JSON load/save, project/workspace model |
-| Workspace | `src/workspace.rs` | `Manager` — worktree, tag, app lifecycle |
-| WM adapter | `src/wm.rs` | `Adapter` trait; Linux `AwesomeAdapter`, macOS `MacosAdapter` |
-| HTTP/ACP | `src/server.rs` | REST API, ACP reverse proxy (axum + tokio) |
-| Agent supervisor | `src/agent_supervisor.rs` | Agent process lifecycle, health checks, graceful stop |
-| ARP store | `src/arp_store.rs` | SQLite-backed state for workspaces, agents, task tracking |
-| A2A proxy | `src/a2a_proxy.rs` | A2A v1.0 HTTP proxy + AgentCard enrichment |
-| Auth | `src/auth.rs` | HMAC token generation/validation for remote clients |
-| QR code | `src/qr.rs` | QR code generation + GPUI display window |
-| Picker | `src/picker.rs` | GPUI fuzzy picker + create form |
-| Projects UI | `src/projects_ui.rs` | GPUI project CRUD window |
-| Agents UI | `src/agents_ui.rs` | GPUI agent status dashboard |
-| Tray | `src/tray.rs` | System tray icon + popup menu (GTK on Linux, osascript on macOS) |
-| Notifications | `src/notify.rs` | Error windows, background task runner |
-| Core lib | `core/` | Shared API client crate with UniFFI for Android |
-| Android | `android/` | Kotlin/Compose mobile app |
-| macOS bundle | `macos/` | Info.plist for .app bundle |
-| Packaging | `packaging/` | Homebrew formula + AUR PKGBUILD templates |
+| Model | `src/model/` | AWM contracts |
+| Switchboard | `src/switchboard/` | MCP client |
+| Service | `src/work_session_service.rs` | Shared orchestration |
+| Runtime store | `src/runtime_store.rs` | Host-local realization |
+| Workspace helpers | `src/workspace.rs` | git/WM realization helpers |
+| WM adapter | `src/wm.rs` | `Adapter` trait |
+| HTTP/ACP | `src/server.rs` | REST `/api/work-sessions`, projects, ACP |
+| Agent supervisor | `src/agent_supervisor.rs` | Agent process lifecycle |
+| ARP store | `src/arp_store.rs` | Agent/task runtime tables |
+| A2A proxy | `src/a2a_proxy.rs` | A2A v1.0 HTTP proxy |
+| Auth | `src/auth.rs` | HMAC tokens |
+| QR code | `src/qr.rs` | QR display window |
+| Picker | `src/picker.rs` | GPUI picker + create form |
+| Projects UI | `src/projects_ui.rs` | GPUI project CRUD |
+| Agents UI | `src/agents_ui.rs` | Agent status dashboard |
+| Tray | `src/tray.rs` | System tray |
+| Core lib | `core/` | UniFFI Android client |
+| Android | `android/` | Kotlin/Compose app |
+| Packaging | `packaging/` | Homebrew + AUR |
 
 ## Build & Install
 
@@ -150,17 +170,14 @@ The mobile app lives in `android/`. It uses Jetpack Compose with
 Material 3 (Catppuccin Mocha theme) and connects to the desktop server
 via the REST API. Core API client logic is in `core/` (Rust + UniFFI).
 
-Screens: Workspaces, Projects, ACP Agent Chat, Settings/QR Scanner.
+Screens: WorkSessions, Projects, ACP Agent Chat, Settings/QR Scanner.
 
 ## Detailed Docs
 
 - [Architecture](docs/architecture.md)
 - [Keybindings](docs/keybindings.md)
-- [Lifecycle](docs/workspace-system/lifecycle.md)
-- [CLI Reference](docs/workspace-system/ws-cli.md)
-- [Configuration](docs/workspace-system/configuration.md)
-- [WM Integration](docs/workspace-system/lua-module.md)
 - [ARP Spec](arp-spec/index.md)
+- [AWM cutover plan](docs/plans/switchboard-awm-single-pass/index.md)
 
 ## CI/CD
 
@@ -182,8 +199,6 @@ and `macos/Info.plist`, then tag and push:
 git tag v2026.4.8
 git push origin v2026.4.8
 ```
-
-The release workflow handles everything else automatically.
 
 ### Required Secrets
 

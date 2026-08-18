@@ -14,7 +14,7 @@ dependencies = [
  "base64",
  "futures-core",
  "rand 0.8.6",
- "reqwest",
+ "reqwest 0.12.28",
  "serde",
  "serde_json",
  "sha2",
@@ -658,6 +658,7 @@ dependencies = [
  "a2a-rs-client",
  "a2a-rs-core",
  "anyhow",
+ "async-trait",
  "awesometree-core",
  "axum",
  "axum-extra",
@@ -665,6 +666,7 @@ dependencies = [
  "chrono",
  "clap",
  "crush-acp-sdk",
+ "fs2",
  "futures",
  "futures-channel",
  "futures-util",
@@ -673,6 +675,7 @@ dependencies = [
  "gtk",
  "headers",
  "hmac",
+ "hostname",
  "http-body-util",
  "hyper",
  "hyper-util",
@@ -682,7 +685,7 @@ dependencies = [
  "prost-types",
  "qrcode",
  "rand 0.9.4",
- "reqwest",
+ "reqwest 0.12.28",
  "rmcp",
  "rusqlite",
  "schemars",
@@ -690,6 +693,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "tempfile",
+ "thiserror 2.0.18",
  "tokio",
  "tokio-stream",
  "tonic",
@@ -1647,7 +1651,7 @@ version = "0.1.0"
 source = "git+https://github.com/aleksclark/crush-modules?branch=master#20697154822e27059307e8c13767d6e002d4fe01"
 dependencies = [
  "futures",
- "reqwest",
+ "reqwest 0.12.28",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
@@ -2304,6 +2308,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "88a41f105fe1d5b6b34b2055e3dc59bb79b46b48b2040b9e6c7b4b5de097aa41"
 dependencies = [
  "autocfg",
+]
+
+[[package]]
+name = "fs2"
+version = "0.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9564fc758e15025b46aa6643b1b77d047d1a56a1aea6e01002ac0c7026876213"
+dependencies = [
+ "libc",
+ "winapi",
 ]
 
 [[package]]
@@ -3211,6 +3225,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cc627f471c528ff0c4a49e1d5e60450c8f6461dd6d10ba9dcd3a61d3dff7728d"
 dependencies = [
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "hostname"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "617aaa3557aef3810a6369d0a99fac8a080891b68bd9f9812a1eeda0c0730cbd"
+dependencies = [
+ "cfg-if",
+ "libc",
+ "windows-link 0.2.1",
 ]
 
 [[package]]
@@ -5419,7 +5444,41 @@ dependencies = [
  "url",
  "wasm-bindgen",
  "wasm-bindgen-futures",
- "wasm-streams",
+ "wasm-streams 0.4.2",
+ "web-sys",
+]
+
+[[package]]
+name = "reqwest"
+version = "0.13.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "219c5811de6525e5416c7d5d53bb656d3afdbc6c5af816e0802bcfa42dbdc1c3"
+dependencies = [
+ "base64",
+ "bytes",
+ "futures-core",
+ "futures-util",
+ "http",
+ "http-body",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "js-sys",
+ "log",
+ "percent-encoding",
+ "pin-project-lite",
+ "serde",
+ "serde_json",
+ "sync_wrapper",
+ "tokio",
+ "tokio-util",
+ "tower",
+ "tower-http",
+ "tower-service",
+ "url",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "wasm-streams 0.5.0",
  "web-sys",
 ]
 
@@ -5470,14 +5529,18 @@ dependencies = [
  "base64",
  "chrono",
  "futures",
+ "http",
  "pastey 0.2.2",
  "pin-project-lite",
+ "reqwest 0.13.4",
  "rmcp-macros",
  "schemars",
  "serde",
  "serde_json",
+ "sse-stream",
  "thiserror 2.0.18",
  "tokio",
+ "tokio-stream",
  "tokio-util",
  "tracing",
 ]
@@ -6173,6 +6236,19 @@ dependencies = [
  "js-sys",
  "rsqlite-vfs",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "sse-stream"
+version = "0.2.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c123f296ade4ec4b8b0f6162116e6629f5146922ca5ab40ca9d3c2e73ab4761e"
+dependencies = [
+ "bytes",
+ "futures-util",
+ "http-body",
+ "http-body-util",
+ "pin-project-lite",
 ]
 
 [[package]]
@@ -7669,6 +7745,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "wasm-streams"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9d1ec4f6517c9e11ae630e200b2b65d193279042e28edd4a2cda233e46670bbb"
+dependencies = [
+ "futures-util",
+ "js-sys",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+]
+
+[[package]]
 name = "wasmparser"
 version = "0.244.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8794,7 +8883,7 @@ dependencies = [
  "url",
  "wasm-bindgen",
  "wasm-bindgen-futures",
- "wasm-streams",
+ "wasm-streams 0.4.2",
  "web-sys",
  "windows-registry 0.4.0",
 ]

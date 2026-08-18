@@ -6,7 +6,6 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -15,7 +14,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import dev.awesometree.mobile.data.ApiClient
 import dev.awesometree.mobile.data.ConnectionStore
-import dev.awesometree.mobile.data.ProjectDetail
 import dev.awesometree.mobile.data.ProjectInfo
 import kotlinx.coroutines.launch
 
@@ -30,7 +28,6 @@ fun ProjectsScreen(connectionStore: ConnectionStore) {
     var loading by remember { mutableStateOf(true) }
     var error by remember { mutableStateOf<String?>(null) }
     var showCreate by remember { mutableStateOf(false) }
-    var editingProject by remember { mutableStateOf<ProjectInfo?>(null) }
 
     fun refresh() {
         scope.launch {
@@ -82,13 +79,17 @@ fun ProjectsScreen(connectionStore: ConnectionStore) {
                 }
                 else -> {
                     LazyColumn(Modifier.fillMaxSize()) {
-                        items(projects, key = { it.name }) { proj ->
+                        items(projects, key = { it.projectId }) { proj ->
                             ProjectItem(
                                 proj,
-                                onEdit = { editingProject = proj },
                                 onDelete = {
                                     scope.launch {
-                                        client.deleteProject(proj.name)
+                                        val rev = proj.sourceRevision
+                                        if (rev.isNullOrBlank()) {
+                                            error = "missing sourceRevision for CAS delete"
+                                            return@launch
+                                        }
+                                        client.deleteProject(proj.projectId, rev)
                                             .onSuccess { refresh() }
                                             .onFailure { error = it.message }
                                     }
@@ -102,34 +103,12 @@ fun ProjectsScreen(connectionStore: ConnectionStore) {
     }
 
     if (showCreate) {
-        ProjectFormDialog(
-            title = "Create Project",
-            initial = ProjectDetail(name = "", repo = null, branch = "master"),
+        CreateProjectDialog(
             onDismiss = { showCreate = false },
-            onSubmit = { detail ->
+            onSubmit = { projectId, repo, branch ->
                 scope.launch {
-                    client.createProject(detail)
+                    client.createProject(projectId, repo, branch)
                         .onSuccess { showCreate = false; refresh() }
-                        .onFailure { error = it.message }
-                }
-            },
-        )
-    }
-
-    editingProject?.let { proj ->
-        ProjectFormDialog(
-            title = "Edit ${proj.name}",
-            initial = ProjectDetail(
-                name = proj.name,
-                repo = proj.repo,
-                branch = proj.branch,
-            ),
-            nameEditable = false,
-            onDismiss = { editingProject = null },
-            onSubmit = { detail ->
-                scope.launch {
-                    client.updateProject(proj.name, detail)
-                        .onSuccess { editingProject = null; refresh() }
                         .onFailure { error = it.message }
                 }
             },
@@ -140,28 +119,23 @@ fun ProjectsScreen(connectionStore: ConnectionStore) {
 @Composable
 private fun ProjectItem(
     proj: ProjectInfo,
-    onEdit: () -> Unit,
     onDelete: () -> Unit,
 ) {
     var showConfirm by remember { mutableStateOf(false) }
 
     ListItem(
-        headlineContent = { Text(proj.name) },
+        headlineContent = { Text(proj.projectId) },
         supportingContent = {
             val parts = listOfNotNull(
-                proj.repo?.let { "repo: $it" },
-                proj.branch?.let { "branch: $it" },
+                proj.title.takeIf { it.isNotBlank() && it != proj.projectId }?.let { "title: $it" },
+                proj.description?.let { "desc: $it" },
+                proj.revision?.let { "rev: ${it.take(20)}…" },
             )
             if (parts.isNotEmpty()) Text(parts.joinToString("  "))
         },
         trailingContent = {
-            Row {
-                IconButton(onClick = onEdit) {
-                    Icon(Icons.Default.Edit, "Edit")
-                }
-                IconButton(onClick = { showConfirm = true }) {
-                    Icon(Icons.Default.Delete, "Delete")
-                }
+            IconButton(onClick = { showConfirm = true }) {
+                Icon(Icons.Default.Delete, "Delete")
             }
         },
     )
@@ -170,7 +144,7 @@ private fun ProjectItem(
         AlertDialog(
             onDismissRequest = { showConfirm = false },
             title = { Text("Delete project?") },
-            text = { Text("Delete \"${proj.name}\"? This cannot be undone.") },
+            text = { Text("Delete \"${proj.projectId}\"? Blocked if WorkSessions still reference it.") },
             confirmButton = {
                 TextButton(onClick = { showConfirm = false; onDelete() }) {
                     Text("Delete", color = MaterialTheme.colorScheme.error)
@@ -184,28 +158,24 @@ private fun ProjectItem(
 }
 
 @Composable
-private fun ProjectFormDialog(
-    title: String,
-    initial: ProjectDetail,
-    nameEditable: Boolean = true,
+private fun CreateProjectDialog(
     onDismiss: () -> Unit,
-    onSubmit: (ProjectDetail) -> Unit,
+    onSubmit: (projectId: String, repo: String?, branch: String?) -> Unit,
 ) {
-    var name by remember { mutableStateOf(initial.name) }
-    var repo by remember { mutableStateOf(initial.repo ?: "") }
-    var branch by remember { mutableStateOf(initial.branch ?: "master") }
+    var name by remember { mutableStateOf("") }
+    var repo by remember { mutableStateOf("") }
+    var branch by remember { mutableStateOf("master") }
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text(title) },
+        title = { Text("Create Project") },
         text = {
             Column {
                 OutlinedTextField(
                     value = name,
                     onValueChange = { name = it },
-                    label = { Text("Name") },
+                    label = { Text("project_id") },
                     singleLine = true,
-                    enabled = nameEditable,
                     modifier = Modifier.fillMaxWidth(),
                 )
                 Spacer(Modifier.height(8.dp))
@@ -231,11 +201,9 @@ private fun ProjectFormDialog(
                 enabled = name.isNotBlank(),
                 onClick = {
                     onSubmit(
-                        ProjectDetail(
-                            name = name.trim(),
-                            repo = repo.trim().ifEmpty { null },
-                            branch = branch.trim().ifEmpty { null },
-                        )
+                        name.trim(),
+                        repo.trim().ifEmpty { null },
+                        branch.trim().ifEmpty { null },
                     )
                 },
             ) { Text("Save") }

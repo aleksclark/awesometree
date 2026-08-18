@@ -11,6 +11,7 @@ import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.automirrored.filled.Chat
 import androidx.compose.material.icons.filled.Circle
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Stop
@@ -19,12 +20,15 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import androidx.navigation.NavController
 import dev.awesometree.mobile.data.ApiClient
 import dev.awesometree.mobile.data.ConnectionStore
-import dev.awesometree.mobile.data.WorkspaceInfo
+import dev.awesometree.mobile.data.WorkProfileInfo
+import dev.awesometree.mobile.data.WorkSessionInfo
 import kotlinx.coroutines.launch
 import java.net.URLEncoder
-import androidx.navigation.NavController
+
+private const val DEFAULT_PROFILE_ID = "default"
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -33,7 +37,7 @@ fun WorkspacesScreen(connectionStore: ConnectionStore, navController: NavControl
     val client = remember(connection) { ApiClient(connection) }
     val scope = rememberCoroutineScope()
 
-    var workspaces by remember { mutableStateOf<List<WorkspaceInfo>>(emptyList()) }
+    var sessions by remember { mutableStateOf<List<WorkSessionInfo>>(emptyList()) }
     var loading by remember { mutableStateOf(true) }
     var error by remember { mutableStateOf<String?>(null) }
     var showCreate by remember { mutableStateOf(false) }
@@ -42,8 +46,8 @@ fun WorkspacesScreen(connectionStore: ConnectionStore, navController: NavControl
         scope.launch {
             loading = true
             error = null
-            client.listWorkspaces()
-                .onSuccess { workspaces = it; loading = false }
+            client.listWorkSessions()
+                .onSuccess { sessions = it; loading = false }
                 .onFailure { error = it.message; loading = false }
         }
     }
@@ -53,7 +57,7 @@ fun WorkspacesScreen(connectionStore: ConnectionStore, navController: NavControl
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Workspaces") },
+                title = { Text("Work Sessions") },
                 actions = {
                     IconButton(onClick = { refresh() }) {
                         Icon(Icons.Default.Refresh, "Refresh")
@@ -78,9 +82,9 @@ fun WorkspacesScreen(connectionStore: ConnectionStore, navController: NavControl
                         Button(onClick = { refresh() }) { Text("Retry") }
                     }
                 }
-                workspaces.isEmpty() -> {
+                sessions.isEmpty() -> {
                     Text(
-                        "No workspaces",
+                        "No work sessions",
                         modifier = Modifier.align(Alignment.Center),
                         style = MaterialTheme.typography.bodyLarge,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -88,34 +92,41 @@ fun WorkspacesScreen(connectionStore: ConnectionStore, navController: NavControl
                 }
                 else -> {
                     LazyColumn(Modifier.fillMaxSize()) {
-                        items(workspaces, key = { it.name }) { ws ->
-                            WorkspaceItem(
+                        items(sessions, key = { it.workSessionId }) { ws ->
+                            WorkSessionItem(
                                 ws = ws,
-                                onStart = {
+                                onPause = {
                                     scope.launch {
-                                        client.startWorkspace(ws.name)
+                                        client.transitionWorkSession(ws.workSessionId, "paused")
                                             .onSuccess { refresh() }
                                             .onFailure { error = it.message }
                                     }
                                 },
-                                onStop = {
+                                onResume = {
                                     scope.launch {
-                                        client.stopWorkspace(ws.name)
+                                        client.transitionWorkSession(ws.workSessionId, "open")
+                                            .onSuccess { refresh() }
+                                            .onFailure { error = it.message }
+                                    }
+                                },
+                                onClose = {
+                                    scope.launch {
+                                        client.transitionWorkSession(ws.workSessionId, "closed")
                                             .onSuccess { refresh() }
                                             .onFailure { error = it.message }
                                     }
                                 },
                                 onDelete = {
                                     scope.launch {
-                                        client.deleteWorkspace(ws.name)
+                                        client.deleteWorkSession(ws.workSessionId)
                                             .onSuccess { refresh() }
                                             .onFailure { error = it.message }
                                     }
                                 },
                                 onAgent = {
-                                    navController.navigate("acp/${URLEncoder.encode(ws.name, "UTF-8")}") {
-                                        launchSingleTop = true
-                                    }
+                                    navController.navigate(
+                                        "acp/${URLEncoder.encode(ws.workSessionId, "UTF-8")}"
+                                    ) { launchSingleTop = true }
                                 },
                             )
                         }
@@ -126,7 +137,7 @@ fun WorkspacesScreen(connectionStore: ConnectionStore, navController: NavControl
     }
 
     if (showCreate) {
-        CreateWorkspaceDialog(
+        CreateWorkSessionDialog(
             client = client,
             onDismiss = { showCreate = false },
             onCreated = { showCreate = false; refresh() },
@@ -135,62 +146,45 @@ fun WorkspacesScreen(connectionStore: ConnectionStore, navController: NavControl
 }
 
 @Composable
-private fun WorkspaceItem(
-    ws: WorkspaceInfo,
-    onStart: () -> Unit,
-    onStop: () -> Unit,
+private fun WorkSessionItem(
+    ws: WorkSessionInfo,
+    onPause: () -> Unit,
+    onResume: () -> Unit,
+    onClose: () -> Unit,
     onDelete: () -> Unit,
     onAgent: () -> Unit,
 ) {
     var expanded by remember { mutableStateOf(false) }
     var showConfirm by remember { mutableStateOf(false) }
-    val hasAcp = ws.acpStatus != null
-    val acpRunning = ws.acpStatus == "running"
+    val isOpen = ws.state == "open"
+    val isPaused = ws.state == "paused"
+    val hasAcp = ws.acpPort != null
 
     Column {
         ListItem(
-            headlineContent = { Text(ws.name) },
+            headlineContent = { Text(ws.displayName ?: ws.workSessionId) },
             supportingContent = {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("project: ${ws.project}")
-                    if (hasAcp) {
-                        Spacer(Modifier.width(8.dp))
-                        Text(
-                            "ACP",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = if (acpRunning)
-                                MaterialTheme.colorScheme.primary
-                            else
-                                MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
+                Column {
+                    Text("project: ${ws.projectId ?: "-"}  profile: ${ws.workProfileId ?: "-"}")
+                    Text("state: ${ws.state}  ${ws.realizationStatus ?: ""}")
                 }
             },
             leadingContent = {
                 Icon(
                     Icons.Default.Circle,
-                    contentDescription = if (ws.active) "Active" else "Inactive",
-                    tint = if (ws.active)
-                        MaterialTheme.colorScheme.secondary
-                    else
-                        MaterialTheme.colorScheme.onSurfaceVariant,
+                    contentDescription = ws.state,
+                    tint = when (ws.state) {
+                        "open" -> MaterialTheme.colorScheme.secondary
+                        "paused" -> MaterialTheme.colorScheme.tertiary
+                        else -> MaterialTheme.colorScheme.onSurfaceVariant
+                    },
                     modifier = Modifier.size(12.dp),
                 )
             },
             trailingContent = {
                 if (hasAcp) {
-                    IconButton(
-                        onClick = onAgent,
-                        enabled = acpRunning,
-                    ) {
-                        Icon(
-                            Icons.AutoMirrored.Filled.Chat,
-                            contentDescription = "Agent",
-                            tint = if (acpRunning)
-                                MaterialTheme.colorScheme.primary
-                            else
-                                MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.38f),
-                        )
+                    IconButton(onClick = onAgent, enabled = isOpen) {
+                        Icon(Icons.AutoMirrored.Filled.Chat, contentDescription = "Agent")
                     }
                 }
             },
@@ -204,17 +198,23 @@ private fun WorkspaceItem(
                     .padding(start = 40.dp, end = 16.dp, bottom = 8.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                if (ws.active) {
-                    FilledTonalButton(onClick = onStop) {
-                        Icon(Icons.Default.Stop, null, Modifier.size(18.dp))
+                when {
+                    isOpen -> FilledTonalButton(onClick = onPause) {
+                        Icon(Icons.Default.Pause, null, Modifier.size(18.dp))
                         Spacer(Modifier.width(4.dp))
-                        Text("Stop")
+                        Text("Pause")
                     }
-                } else {
-                    Button(onClick = onStart) {
+                    isPaused -> Button(onClick = onResume) {
                         Icon(Icons.Default.PlayArrow, null, Modifier.size(18.dp))
                         Spacer(Modifier.width(4.dp))
-                        Text("Start")
+                        Text("Resume")
+                    }
+                }
+                if (isOpen || isPaused) {
+                    FilledTonalButton(onClick = onClose) {
+                        Icon(Icons.Default.Stop, null, Modifier.size(18.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text("Close")
                     }
                 }
                 OutlinedButton(
@@ -234,8 +234,8 @@ private fun WorkspaceItem(
     if (showConfirm) {
         AlertDialog(
             onDismissRequest = { showConfirm = false },
-            title = { Text("Delete workspace?") },
-            text = { Text("Delete \"${ws.name}\"? This cannot be undone.") },
+            title = { Text("Delete work session?") },
+            text = { Text("Delete \"${ws.workSessionId}\"? This cannot be undone.") },
             confirmButton = {
                 TextButton(onClick = { showConfirm = false; onDelete() }) {
                     Text("Delete", color = MaterialTheme.colorScheme.error)
@@ -249,7 +249,7 @@ private fun WorkspaceItem(
 }
 
 @Composable
-private fun CreateWorkspaceDialog(
+private fun CreateWorkSessionDialog(
     client: ApiClient,
     onDismiss: () -> Unit,
     onCreated: () -> Unit,
@@ -258,24 +258,47 @@ private fun CreateWorkspaceDialog(
     var name by remember { mutableStateOf("") }
     var selectedProject by remember { mutableStateOf("") }
     var projects by remember { mutableStateOf<List<String>>(emptyList()) }
+    var profiles by remember { mutableStateOf<List<WorkProfileInfo>>(emptyList()) }
+    var selectedProfile by remember { mutableStateOf(DEFAULT_PROFILE_ID) }
+    var missingDefault by remember { mutableStateOf(false) }
     var creating by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
-    var expanded by remember { mutableStateOf(false) }
+    var projectExpanded by remember { mutableStateOf(false) }
+    var profileExpanded by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
         client.listProjects()
-            .onSuccess { list -> projects = list.map { it.name } }
+            .onSuccess { list -> projects = list.map { it.projectId } }
+            .onFailure { error = it.message }
+        client.listWorkProfiles()
+            .onSuccess { list ->
+                profiles = list
+                val hasDefault = list.any { it.workProfileId == DEFAULT_PROFILE_ID }
+                missingDefault = !hasDefault
+                selectedProfile = if (hasDefault) {
+                    DEFAULT_PROFILE_ID
+                } else {
+                    list.firstOrNull()?.workProfileId ?: ""
+                }
+            }
+            .onFailure { error = it.message }
     }
+
+    val canSubmit = name.isNotBlank() &&
+        selectedProject.isNotBlank() &&
+        selectedProfile.isNotBlank() &&
+        !missingDefault &&
+        !creating
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Create Workspace") },
+        title = { Text("Create Work Session") },
         text = {
             Column {
                 OutlinedTextField(
                     value = name,
                     onValueChange = { name = it },
-                    label = { Text("Name") },
+                    label = { Text("work_session_id") },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
                 )
@@ -289,29 +312,75 @@ private fun CreateWorkspaceDialog(
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth(),
                         trailingIcon = {
-                            IconButton(onClick = { expanded = true }) {
+                            IconButton(onClick = { projectExpanded = true }) {
                                 Icon(Icons.Default.ArrowDropDown, "Select project")
                             }
                         },
                     )
-                    DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+                    DropdownMenu(expanded = projectExpanded, onDismissRequest = { projectExpanded = false }) {
                         projects.forEach { proj ->
                             DropdownMenuItem(
                                 text = { Text(proj) },
                                 onClick = {
                                     selectedProject = proj
-                                    expanded = false
+                                    projectExpanded = false
                                 },
                             )
                         }
-                        if (projects.isEmpty()) {
+                    }
+                }
+                Spacer(Modifier.height(8.dp))
+                Box(Modifier.fillMaxWidth()) {
+                    val profileLabel = profiles
+                        .firstOrNull { it.workProfileId == selectedProfile }
+                        ?.let { p ->
+                            val dn = p.displayName ?: p.workProfileId
+                            if (dn == p.workProfileId) dn else "$dn (${p.workProfileId})"
+                        }
+                        ?: selectedProfile
+                    OutlinedTextField(
+                        value = profileLabel,
+                        onValueChange = {},
+                        label = { Text("WorkProfile") },
+                        readOnly = true,
+                        singleLine = true,
+                        enabled = !missingDefault,
+                        modifier = Modifier.fillMaxWidth(),
+                        trailingIcon = {
+                            IconButton(onClick = { profileExpanded = true }, enabled = profiles.isNotEmpty()) {
+                                Icon(Icons.Default.ArrowDropDown, "Select profile")
+                            }
+                        },
+                    )
+                    DropdownMenu(expanded = profileExpanded, onDismissRequest = { profileExpanded = false }) {
+                        profiles.forEach { p ->
                             DropdownMenuItem(
-                                text = { Text("Loading...") },
-                                enabled = false,
-                                onClick = {},
+                                text = {
+                                    Text(
+                                        buildString {
+                                            append(p.displayName ?: p.workProfileId)
+                                            if (p.workProfileId == DEFAULT_PROFILE_ID) append(" [default]")
+                                            if ((p.displayName ?: "") != p.workProfileId) {
+                                                append(" (${p.workProfileId})")
+                                            }
+                                        }
+                                    )
+                                },
+                                onClick = {
+                                    selectedProfile = p.workProfileId
+                                    profileExpanded = false
+                                },
                             )
                         }
                     }
+                }
+                if (missingDefault) {
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        "WorkProfile with work_profile_id exactly \"default\" is missing in Switchboard. Create it before opening sessions without an explicit profile.",
+                        color = MaterialTheme.colorScheme.error,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
                 }
                 error?.let {
                     Spacer(Modifier.height(8.dp))
@@ -321,11 +390,15 @@ private fun CreateWorkspaceDialog(
         },
         confirmButton = {
             TextButton(
-                enabled = name.isNotBlank() && selectedProject.isNotBlank() && !creating,
+                enabled = canSubmit,
                 onClick = {
                     creating = true
                     scope.launch {
-                        client.createWorkspace(name.trim(), selectedProject)
+                        client.createWorkSession(
+                            workSessionId = name.trim(),
+                            projectId = selectedProject,
+                            workProfileId = selectedProfile.takeIf { it.isNotBlank() },
+                        )
                             .onSuccess { onCreated() }
                             .onFailure { error = it.message; creating = false }
                     }
