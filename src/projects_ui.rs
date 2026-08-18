@@ -1,16 +1,32 @@
-use crate::interop::{self, Project};
+//! GPUI Projects browser backed by Switchboard Project Catalog.
+
 use crate::log as dlog;
+use crate::model::project::{definition_for_create, AwesometreeExt, ProjectSummary};
+use crate::service_access;
 use crate::text_input::TextInput;
 use crate::theme::*;
-use crate::ui_helpers::{self, button, checkbox, chip_button, field_box, ButtonKind, ChipKind};
+use crate::ui_helpers::{self, button, chip_button, ButtonKind, ChipKind};
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 
+fn rt_block_on<F: std::future::Future>(f: F) -> F::Output {
+    match tokio::runtime::Handle::try_current() {
+        Ok(h) => tokio::task::block_in_place(|| h.block_on(f)),
+        Err(_) => {
+            let rt = tokio::runtime::Runtime::new().expect("tokio");
+            rt.block_on(f)
+        }
+    }
+}
+
+fn list_projects_blocking() -> Vec<ProjectSummary> {
+    let svc = service_access::service_blocking();
+    rt_block_on(svc.list_projects(None)).unwrap_or_default()
+}
+
 pub fn open_projects_window(cx: &mut App) {
-    let projects = interop::list().unwrap_or_default();
-
+    let projects = list_projects_blocking();
     crate::text_input::bind_text_input_keys(cx);
-
     let opts = ui_helpers::centered_window_options(cx, "awesometree-projects", 700., 500.);
     cx.open_window(
         opts,
@@ -20,8 +36,7 @@ pub fn open_projects_window(cx: &mut App) {
 }
 
 pub fn run_projects_ui() {
-    let projects = interop::list().unwrap_or_default();
-
+    let projects = list_projects_blocking();
     let app = Application::new();
     app.run(move |cx: &mut App| {
         crate::text_input::bind_text_input_keys(cx);
@@ -31,7 +46,6 @@ pub fn run_projects_ui() {
             KeyBinding::new("tab", NextField, None),
             KeyBinding::new("shift-tab", PrevField, None),
         ]);
-
         let opts = ui_helpers::centered_window_options(cx, "awesometree-projects", 700., 500.);
         cx.open_window(
             opts,
@@ -42,7 +56,6 @@ pub fn run_projects_ui() {
 }
 
 actions!(projects_ui, [Dismiss, ConfirmAction, NextField, PrevField]);
-
 
 #[derive(Clone, Copy, PartialEq)]
 enum Mode {
@@ -57,61 +70,58 @@ enum FormField {
     Repo,
     Branch,
     WorktreeDir,
-    LaunchPrompt,
     McpUrl,
-    AcpEnabled,
     App(usize),
 }
 
 struct ProjectsView {
-    projects: Vec<Project>,
+    projects: Vec<ProjectSummary>,
+    /// CAS tokens for edits: project_id → source_revision
+    source_revisions: std::collections::HashMap<String, String>,
     mode: Mode,
     form_name: Entity<TextInput>,
     form_repo: Entity<TextInput>,
     form_branch: Entity<TextInput>,
     form_worktree_dir: Entity<TextInput>,
-    form_launch_prompt: Entity<TextInput>,
     form_mcp_url: Entity<TextInput>,
-    form_acp_enabled: bool,
     form_apps: Vec<Entity<TextInput>>,
     form_field: FormField,
+    form_error: Option<String>,
     focus: FocusHandle,
 }
 
 impl ProjectsView {
-    fn new(projects: Vec<Project>, cx: &mut Context<Self>) -> Self {
+    fn new(projects: Vec<ProjectSummary>, cx: &mut Context<Self>) -> Self {
+        let mut source_revisions = std::collections::HashMap::new();
+        for p in &projects {
+            if let Some(rev) = &p.source_revision {
+                source_revisions.insert(p.project_id.clone(), rev.clone());
+            }
+        }
         Self {
             projects,
+            source_revisions,
             mode: Mode::List,
-            form_name: cx.new(|cx| TextInput::new("e.g. curri", cx)),
+            form_name: cx.new(|cx| TextInput::new("project id", cx)),
             form_repo: cx.new(|cx| TextInput::new("/path/to/git/repo", cx)),
             form_branch: cx.new(|cx| TextInput::new("master", cx)),
-            form_worktree_dir: cx.new(|cx| TextInput::new("~/worktrees/project-name (default)", cx)),
-            form_launch_prompt: cx.new(|cx| TextInput::new("system prompt for agent", cx)),
-            form_mcp_url: cx.new(|cx| TextInput::new("http://localhost:8080/{project}", cx)),
-            form_acp_enabled: false,
-            form_apps: vec![],
+            form_worktree_dir: cx.new(|cx| TextInput::new("optional worktree base", cx)),
+            form_mcp_url: cx.new(|cx| TextInput::new("optional mcp url", cx)),
+            form_apps: vec![cx.new(|cx| TextInput::new("e.g. zeditor -n {dir}", cx))],
             form_field: FormField::Name,
+            form_error: None,
             focus: cx.focus_handle(),
         }
     }
 
-    fn active_field_entity(&self) -> Option<&Entity<TextInput>> {
-        match self.form_field {
-            FormField::Name => Some(&self.form_name),
-            FormField::Repo => Some(&self.form_repo),
-            FormField::Branch => Some(&self.form_branch),
-            FormField::WorktreeDir => Some(&self.form_worktree_dir),
-            FormField::LaunchPrompt => Some(&self.form_launch_prompt),
-            FormField::McpUrl => Some(&self.form_mcp_url),
-            FormField::AcpEnabled => None,
-            FormField::App(i) => self.form_apps.get(i),
-        }
-    }
-
-    fn focus_active_field(&self, window: &mut Window, cx: &App) {
-        if let Some(entity) = self.active_field_entity() {
-            window.focus(&entity.read(cx).focus_handle(cx));
+    fn reload(&mut self) {
+        self.projects = list_projects_blocking();
+        self.source_revisions.clear();
+        for p in &self.projects {
+            if let Some(rev) = &p.source_revision {
+                self.source_revisions
+                    .insert(p.project_id.clone(), rev.clone());
+            }
         }
     }
 
@@ -121,9 +131,7 @@ impl ProjectsView {
             FormField::Repo => self.form_repo.read(cx).value().to_string(),
             FormField::Branch => self.form_branch.read(cx).value().to_string(),
             FormField::WorktreeDir => self.form_worktree_dir.read(cx).value().to_string(),
-            FormField::LaunchPrompt => self.form_launch_prompt.read(cx).value().to_string(),
             FormField::McpUrl => self.form_mcp_url.read(cx).value().to_string(),
-            FormField::AcpEnabled => String::new(),
             FormField::App(i) => self
                 .form_apps
                 .get(i)
@@ -133,59 +141,69 @@ impl ProjectsView {
     }
 
     fn clear_form(&mut self, cx: &mut Context<Self>) {
-        self.form_name.update(cx, |input, cx| input.clear(cx));
-        self.form_repo.update(cx, |input, cx| input.clear(cx));
-        self.form_branch.update(cx, |input, cx| input.clear(cx));
-        self.form_worktree_dir.update(cx, |input, cx| input.clear(cx));
-        self.form_launch_prompt.update(cx, |input, cx| input.clear(cx));
-        self.form_mcp_url.update(cx, |input, cx| input.clear(cx));
-        self.form_acp_enabled = false;
-        self.form_apps.clear();
+        for e in [
+            &self.form_name,
+            &self.form_repo,
+            &self.form_branch,
+            &self.form_worktree_dir,
+            &self.form_mcp_url,
+        ] {
+            e.update(cx, |input, cx| input.set_value("", cx));
+        }
+        self.form_apps = vec![cx.new(|cx| TextInput::new("e.g. zeditor -n {dir}", cx))];
         self.form_field = FormField::Name;
+        self.form_error = None;
     }
 
     fn start_add(&mut self, cx: &mut Context<Self>) {
         self.clear_form(cx);
-        self.form_field = FormField::Name;
         self.mode = Mode::Adding;
     }
 
     fn start_edit(&mut self, idx: usize, cx: &mut Context<Self>) {
         let p = &self.projects[idx];
-        self.form_name.update(cx, |input, icx| input.set_value(&p.name, icx));
-        self.form_repo.update(cx, |input, icx| {
-            input.set_value(p.repo.as_deref().unwrap_or(""), icx);
+        let svc = service_access::service_blocking();
+        let env = match rt_block_on(svc.get_project(&p.project_id)) {
+            Ok(e) => e,
+            Err(e) => {
+                self.form_error = Some(format!("load project: {e}"));
+                return;
+            }
+        };
+        self.source_revisions
+            .insert(env.project_id.clone(), env.source_revision.clone());
+        let ext = env.awesometree_ext();
+        self.form_name.update(cx, |i, cx| {
+            i.set_value(&env.project_id, cx);
         });
-        self.form_branch.update(cx, |input, icx| {
-            input.set_value(p.branch.as_deref().unwrap_or(""), icx);
+        self.form_repo.update(cx, |i, cx| {
+            i.set_value(&env.primary_repo().unwrap_or_default(), cx);
         });
-        self.form_launch_prompt.update(cx, |input, icx| {
-            input.set_value(
-                p.launch
-                    .as_ref()
-                    .and_then(|l| l.prompt.as_deref())
-                    .unwrap_or(""),
-                icx,
-            );
+        self.form_branch.update(cx, |i, cx| {
+            i.set_value(&env.branch().unwrap_or_else(|| "master".into()), cx);
         });
-        let ext = p.awesometree_ext();
-        self.form_worktree_dir.update(cx, |input, icx| {
-            input.set_value(ext.worktree_dir.as_deref().unwrap_or(""), icx);
+        self.form_worktree_dir.update(cx, |i, cx| {
+            i.set_value(&ext.worktree_dir.clone().unwrap_or_default(), cx);
         });
-        self.form_mcp_url.update(cx, |input, icx| {
-            input.set_value(ext.mcp.as_deref().unwrap_or(""), icx);
+        self.form_mcp_url.update(cx, |i, cx| {
+            i.set_value(&ext.mcp.clone().unwrap_or_default(), cx);
         });
-        self.form_acp_enabled = ext.acp.as_ref().map(|a| a.enabled).unwrap_or(false);
-        self.form_apps = ext
-            .apps
-            .iter()
-            .map(|app| cx.new(|cx| {
-                let mut input = TextInput::new("e.g. zeditor -n {dir}", cx);
-                input.set_value(app, cx);
-                input
-            }))
-            .collect();
+        self.form_apps = if ext.apps.is_empty() {
+            vec![cx.new(|cx| TextInput::new("e.g. zeditor -n {dir}", cx))]
+        } else {
+            ext.apps
+                .iter()
+                .map(|app| {
+                    cx.new(|cx| {
+                        let mut input = TextInput::new("e.g. zeditor -n {dir}", cx);
+                        input.set_value(app, cx);
+                        input
+                    })
+                })
+                .collect()
+        };
         self.form_field = FormField::Name;
+        self.form_error = None;
         self.mode = Mode::Editing(idx);
     }
 
@@ -194,361 +212,177 @@ impl ProjectsView {
         let repo = self.read_field(FormField::Repo, cx);
         let branch_val = self.read_field(FormField::Branch, cx);
         let worktree_dir = self.read_field(FormField::WorktreeDir, cx);
-        let launch_prompt = self.read_field(FormField::LaunchPrompt, cx);
         let mcp_url = self.read_field(FormField::McpUrl, cx);
-        let apps = self.read_apps(cx);
-
+        let apps: Vec<String> = self
+            .form_apps
+            .iter()
+            .map(|e| e.read(cx).value().to_string())
+            .filter(|s| !s.trim().is_empty())
+            .collect();
+        if name.is_empty() {
+            return;
+        }
+        let branch = if branch_val.is_empty() {
+            None
+        } else {
+            Some(branch_val.as_str())
+        };
+        let ext = AwesometreeExt {
+            mcp: if mcp_url.is_empty() {
+                None
+            } else {
+                Some(mcp_url)
+            },
+            apps,
+            layout: String::new(),
+            worktree_dir: if worktree_dir.is_empty() {
+                None
+            } else {
+                Some(worktree_dir)
+            },
+        };
+        let def = definition_for_create(
+            &name,
+            None,
+            if repo.is_empty() { None } else { Some(&repo) },
+            branch,
+            Some(&ext),
+        );
+        let svc = service_access::service_blocking();
         match self.mode {
             Mode::Adding => {
-                if name.is_empty() || repo.is_empty() {
-                    return;
-                }
-                dlog::log(format!("Adding project: {name}"));
-                let branch = if branch_val.is_empty() {
-                    "master".to_string()
-                } else {
-                    branch_val
-                };
-                let mut proj = Project::new(&name, &repo, &branch);
-                if !launch_prompt.is_empty() {
-                    proj.launch = Some(interop::Launch {
-                        prompt: Some(launch_prompt),
-                        ..Default::default()
-                    });
-                }
-                {
-                    let mut ext = proj.awesometree_ext();
-                    if !mcp_url.is_empty() {
-                        ext.mcp = Some(mcp_url);
+                dlog::log(format!("Adding project via Switchboard: {name}"));
+                match rt_block_on(svc.create_project(def)) {
+                    Ok(_) => {
+                        self.reload();
+                        self.mode = Mode::List;
+                        self.clear_form(cx);
                     }
-                    if !worktree_dir.is_empty() {
-                        ext.worktree_dir = Some(worktree_dir);
-                    }
-                    if self.form_acp_enabled {
-                        ext.acp = Some(interop::AcpConfig {
-                            enabled: true,
-                            ..ext.acp.unwrap_or_default()
-                        });
-                    } else {
-                        ext.acp = None;
-                    }
-                    ext.apps = clean_apps(&apps);
-                    proj.set_awesometree_ext(&ext);
+                    Err(e) => self.form_error = Some(e.to_string()),
                 }
-                let _ = interop::save(&proj);
-                self.projects.push(proj);
-                self.mode = Mode::List;
-                self.clear_form(cx);
             }
-            Mode::Editing(idx) => {
-                if name.is_empty() || repo.is_empty() {
+            Mode::Editing(_) => {
+                let expected = self
+                    .source_revisions
+                    .get(&name)
+                    .cloned()
+                    .unwrap_or_default();
+                if expected.is_empty() {
+                    self.form_error =
+                        Some("missing sourceRevision for CAS update; reload and retry".into());
                     return;
                 }
-                dlog::log(format!("Editing project: {name}"));
-                let p = &mut self.projects[idx];
-                p.name = name;
-                p.repo = Some(repo);
-                p.branch = Some(if branch_val.is_empty() {
-                    "master".to_string()
-                } else {
-                    branch_val
-                });
-                if launch_prompt.is_empty() {
-                    if let Some(launch) = &mut p.launch {
-                        launch.prompt = None;
+                dlog::log(format!("Updating project via Switchboard: {name}"));
+                // Full definition replace via patch with definition body.
+                let patch = serde_json::json!({ "definition": def });
+                match rt_block_on(svc.update_project(&name, &expected, patch)) {
+                    Ok(sum) => {
+                        if let Some(rev) = sum.source_revision {
+                            self.source_revisions.insert(name, rev);
+                        }
+                        self.reload();
+                        self.mode = Mode::List;
+                        self.clear_form(cx);
                     }
-                } else {
-                    let launch = p.launch.get_or_insert_with(interop::Launch::default);
-                    launch.prompt = Some(launch_prompt);
+                    Err(e) => self.form_error = Some(e.to_string()),
                 }
-                let mut ext = p.awesometree_ext();
-                if mcp_url.is_empty() {
-                    ext.mcp = None;
-                } else {
-                    ext.mcp = Some(mcp_url);
-                }
-                if worktree_dir.is_empty() {
-                    ext.worktree_dir = None;
-                } else {
-                    ext.worktree_dir = Some(worktree_dir);
-                }
-                ext.apps = clean_apps(&apps);
-                if self.form_acp_enabled {
-                    ext.acp = Some(interop::AcpConfig {
-                        enabled: true,
-                        ..ext.acp.unwrap_or_default()
-                    });
-                } else {
-                    ext.acp = None;
-                }
-                p.set_awesometree_ext(&ext);
-                let _ = interop::save(p);
-                self.mode = Mode::List;
-                self.clear_form(cx);
             }
             Mode::List => {}
         }
     }
 
-    fn read_apps(&self, cx: &App) -> Vec<String> {
-        self.form_apps
-            .iter()
-            .map(|e| e.read(cx).value().to_string())
-            .collect()
-    }
-
     fn delete_project(&mut self, idx: usize, cx: &mut Context<Self>) {
-        let name = self.projects[idx].name.clone();
-        dlog::log(format!("Deleting project: {name}"));
-        let _ = interop::delete(&name);
-        self.projects.remove(idx);
-        if let Mode::Editing(ei) = self.mode {
-            if ei == idx {
-                self.mode = Mode::List;
-                self.clear_form(cx);
+        let p = &self.projects[idx];
+        let id = p.project_id.clone();
+        let expected = self
+            .source_revisions
+            .get(&id)
+            .cloned()
+            .or_else(|| p.source_revision.clone())
+            .unwrap_or_default();
+        dlog::log(format!("Deleting project via Switchboard: {id}"));
+        let svc = service_access::service_blocking();
+        match rt_block_on(svc.delete_project(&id, &expected)) {
+            Ok(()) => {
+                self.reload();
+                if let Mode::Editing(ei) = self.mode {
+                    if ei == idx {
+                        self.mode = Mode::List;
+                        self.clear_form(cx);
+                    }
+                }
             }
+            Err(e) => self.form_error = Some(e.to_string()),
         }
     }
 
-    fn add_app_row(&mut self, cx: &mut Context<Self>) {
-        let new_input = cx.new(|cx| TextInput::new("e.g. zeditor -n {dir}", cx));
-        self.form_apps.push(new_input);
-        self.form_field = FormField::App(self.form_apps.len() - 1);
-    }
-
-    fn remove_app_row(&mut self, idx: usize) {
-        if idx < self.form_apps.len() {
-            self.form_apps.remove(idx);
-        }
-        if self.form_apps.is_empty() {
-            self.form_field = FormField::AcpEnabled;
-        } else {
-            let new_idx = idx.min(self.form_apps.len().saturating_sub(1));
-            self.form_field = FormField::App(new_idx);
-        }
-    }
-
-    fn on_dismiss(&mut self, _: &Dismiss, window: &mut Window, cx: &mut Context<Self>) {
+    fn on_dismiss(&mut self, _: &Dismiss, window: &mut Window, _cx: &mut Context<Self>) {
         match self.mode {
             Mode::List => window.remove_window(),
             _ => {
                 self.mode = Mode::List;
-                self.clear_form(cx);
-                cx.notify();
+                self.form_error = None;
             }
         }
     }
 
     fn on_confirm(&mut self, _: &ConfirmAction, _window: &mut Window, cx: &mut Context<Self>) {
-        if self.mode != Mode::List {
+        if matches!(self.mode, Mode::Adding | Mode::Editing(_)) {
             self.save_form(cx);
             cx.notify();
         }
     }
 
-    fn next_field(&self) -> FormField {
-        match self.form_field {
+    fn on_next_field(&mut self, _: &NextField, window: &mut Window, cx: &mut Context<Self>) {
+        if matches!(self.mode, Mode::List) {
+            return;
+        }
+        self.form_field = match self.form_field {
             FormField::Name => FormField::Repo,
             FormField::Repo => FormField::Branch,
             FormField::Branch => FormField::WorktreeDir,
-            FormField::WorktreeDir => FormField::LaunchPrompt,
-            FormField::LaunchPrompt => FormField::McpUrl,
-            FormField::McpUrl => FormField::AcpEnabled,
-            FormField::AcpEnabled => {
-                if self.form_apps.is_empty() {
-                    FormField::Name
-                } else {
-                    FormField::App(0)
-                }
-            }
-            FormField::App(i) => {
-                if i + 1 < self.form_apps.len() {
-                    FormField::App(i + 1)
-                } else {
-                    FormField::Name
-                }
-            }
-        }
-    }
-
-    fn prev_field(&self) -> FormField {
-        match self.form_field {
-            FormField::Name => {
-                if self.form_apps.is_empty() {
-                    FormField::AcpEnabled
-                } else {
-                    FormField::App(self.form_apps.len() - 1)
-                }
-            }
-            FormField::Repo => FormField::Name,
-            FormField::Branch => FormField::Repo,
-            FormField::WorktreeDir => FormField::Branch,
-            FormField::LaunchPrompt => FormField::WorktreeDir,
-            FormField::McpUrl => FormField::LaunchPrompt,
-            FormField::AcpEnabled => FormField::McpUrl,
-            FormField::App(i) => {
-                if i > 0 {
-                    FormField::App(i - 1)
-                } else {
-                    FormField::AcpEnabled
-                }
-            }
-        }
-    }
-
-    fn on_next_field(&mut self, _: &NextField, window: &mut Window, cx: &mut Context<Self>) {
-        if self.mode != Mode::List {
-            self.form_field = self.next_field();
-            self.focus_active_field(window, cx);
-            cx.notify();
-        }
+            FormField::WorktreeDir => FormField::McpUrl,
+            FormField::McpUrl => FormField::App(0),
+            FormField::App(i) if i + 1 < self.form_apps.len() => FormField::App(i + 1),
+            FormField::App(_) => FormField::Name,
+        };
+        self.focus_active(window, cx);
+        cx.notify();
     }
 
     fn on_prev_field(&mut self, _: &PrevField, window: &mut Window, cx: &mut Context<Self>) {
-        if self.mode != Mode::List {
-            self.form_field = self.prev_field();
-            self.focus_active_field(window, cx);
-            cx.notify();
+        if matches!(self.mode, Mode::List) {
+            return;
         }
-    }
-}
-
-fn clean_apps(apps: &[String]) -> Vec<String> {
-    apps.iter()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .collect()
-}
-
-fn render_field(
-    label: &str,
-    input: &Entity<TextInput>,
-    focused: bool,
-    field: FormField,
-    cx: &mut Context<'_, ProjectsView>,
-) -> Stateful<Div> {
-    let input_entity = input.clone();
-    ui_helpers::render_form_field(label, input, focused, move |view: &mut ProjectsView, window, cx| {
-        view.form_field = field;
-        window.focus(&input_entity.read(cx).focus_handle(cx));
-    }, cx)
-}
-
-fn render_apps_section(
-    apps: &[Entity<TextInput>],
-    field: FormField,
-    cx: &mut Context<'_, ProjectsView>,
-) -> Div {
-    let mut section = div()
-        .flex()
-        .flex_col()
-        .gap(px(6.));
-
-    section = section.child(
-        div()
-            .flex()
-            .items_center()
-            .justify_between()
-            .child(
-                div()
-                    .text_size(px(12.))
-                    .text_color(
-                        if matches!(field, FormField::App(_)) { accent() } else { fg_dim() },
-                    )
-                    .child("APPS ({dir} = worktree path)"),
-            )
-            .child(
-                div()
-                    .id("add-app-btn")
-                    .px(px(8.))
-                    .py(px(2.))
-                    .rounded(px(3.))
-                    .bg(bg_selected())
-                    .text_color(accent())
-                    .text_size(px(12.))
-                    .cursor_pointer()
-                    .hover(|s| s.bg(btn_bg()).text_color(btn_fg()))
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(|view, _, window, cx| {
-                            view.add_app_row(cx);
-                            view.focus_active_field(window, cx);
-                            cx.notify();
-                        }),
-                    )
-                    .child("+ Add"),
-            ),
-    );
-
-    for (i, app_input) in apps.iter().enumerate() {
-        let focused = field == FormField::App(i);
-        let input_entity = app_input.clone();
-
-        section = section.child(
-            div()
-                .flex()
-                .items_center()
-                .gap(px(6.))
-                .child(field_box(
-                    ElementId::Name(format!("app-field-{i}").into()),
-                    app_input,
-                    focused,
-                    move |view: &mut ProjectsView, window, cx| {
-                        view.form_field = FormField::App(i);
-                        window.focus(&input_entity.read(cx).focus_handle(cx));
-                    },
-                    cx,
-                ))
-                .child(
-                    div()
-                        .id(ElementId::Name(format!("rm-app-{i}").into()))
-                        .px(px(6.))
-                        .py(px(4.))
-                        .rounded(px(3.))
-                        .bg(bg_selected())
-                        .text_color(danger())
-                        .text_size(px(14.))
-                        .cursor_pointer()
-                        .hover(|s| s.bg(danger()).text_color(btn_fg()))
-                        .on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(move |view, _, _, cx| {
-                                view.remove_app_row(i);
-                                cx.notify();
-                            }),
-                        )
-                        .child("×"),
-                ),
-        );
+        self.form_field = match self.form_field {
+            FormField::Name => FormField::App(self.form_apps.len().saturating_sub(1)),
+            FormField::Repo => FormField::Name,
+            FormField::Branch => FormField::Repo,
+            FormField::WorktreeDir => FormField::Branch,
+            FormField::McpUrl => FormField::WorktreeDir,
+            FormField::App(0) => FormField::McpUrl,
+            FormField::App(i) => FormField::App(i - 1),
+        };
+        self.focus_active(window, cx);
+        cx.notify();
     }
 
-    if apps.is_empty() {
-        section = section.child(
-            div()
-                .text_size(px(12.))
-                .text_color(fg_dim())
-                .child("No apps configured (defaults to zeditor)"),
-        );
+    fn focus_active(&self, window: &mut Window, cx: &App) {
+        let entity = match self.form_field {
+            FormField::Name => &self.form_name,
+            FormField::Repo => &self.form_repo,
+            FormField::Branch => &self.form_branch,
+            FormField::WorktreeDir => &self.form_worktree_dir,
+            FormField::McpUrl => &self.form_mcp_url,
+            FormField::App(i) => self.form_apps.get(i).unwrap_or(&self.form_name),
+        };
+        window.focus(&entity.read(cx).focus_handle(cx));
     }
-
-    section
 }
 
 impl Render for ProjectsView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let projects: Vec<(usize, Project)> = self
-            .projects
-            .iter()
-            .enumerate()
-            .map(|(i, p)| (i, p.clone()))
-            .collect();
-
-        let mode = self.mode;
-        let form_name = self.read_field(FormField::Name, cx);
-        let form_repo = self.read_field(FormField::Repo, cx);
-        let field = self.form_field;
-        let can_save = !form_name.is_empty() && !form_repo.is_empty();
-
+        let err = self.form_error.clone();
         div()
             .key_context("Projects")
             .track_focus(&self.focus)
@@ -564,283 +398,196 @@ impl Render for ProjectsView {
             .font_family("monospace")
             .child(
                 div()
-                    .px(px(20.))
-                    .py(px(14.))
+                    .px(px(16.))
+                    .py(px(12.))
                     .border_b_1()
                     .border_color(border_color())
                     .flex()
                     .justify_between()
-                    .items_center()
                     .child(
                         div()
-                            .text_size(px(18.))
+                            .text_size(px(16.))
                             .text_color(accent())
-                            .child("Projects"),
+                            .child("Projects (Switchboard)"),
                     )
-                    .when(mode == Mode::List, |this: Div| {
-                        this.child(button(
-                            "add-btn",
-                            "+ Add Project",
-                            ButtonKind::Primary,
-                            |view, _window, cx| view.start_add(cx),
-                            cx,
-                        ))
-                    }),
+                    .child(button(
+                        "add-proj",
+                        "+ Add",
+                        ButtonKind::Primary,
+                        |view, _w, cx| {
+                            view.start_add(cx);
+                            cx.notify();
+                        },
+                        cx,
+                    )),
             )
+            .when_some(err, |s, e| {
+                s.child(
+                    div()
+                        .px(px(16.))
+                        .py(px(8.))
+                        .text_color(new_badge_fg())
+                        .text_size(px(12.))
+                        .child(e),
+                )
+            })
+            .child(match self.mode {
+                Mode::List => self.render_list(cx),
+                Mode::Adding | Mode::Editing(_) => self.render_form(cx),
+            })
+    }
+}
+
+impl ProjectsView {
+    fn render_list(&self, cx: &mut Context<Self>) -> Div {
+        let projects = self.projects.clone();
+        div()
+            .flex()
+            .flex_col()
+            .flex_1()
+            .p(px(12.))
+            .gap(px(6.))
+            .children(projects.into_iter().enumerate().map(|(idx, p)| {
+                let id = p.project_id.clone();
+                let title = if p.title.is_empty() {
+                    id.clone()
+                } else {
+                    p.title.clone()
+                };
+                div()
+                    .id(SharedString::from(format!("proj-{idx}")))
+                    .flex()
+                    .justify_between()
+                    .items_center()
+                    .px(px(10.))
+                    .py(px(8.))
+                    .rounded(px(4.))
+                    .bg(bg_selected())
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .child(div().text_size(px(14.)).child(title))
+                            .child(
+                                div()
+                                    .text_size(px(11.))
+                                    .text_color(fg_dim())
+                                    .child(p.description.clone().unwrap_or_default()),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .gap(px(6.))
+                            .child(chip_button(
+                                SharedString::from(format!("edit-{idx}")),
+                                "Edit",
+                                ChipKind::Neutral,
+                                move |view, _w, cx| {
+                                    view.start_edit(idx, cx);
+                                    cx.notify();
+                                },
+                                cx,
+                            ))
+                            .child(chip_button(
+                                SharedString::from(format!("del-{idx}")),
+                                "Delete",
+                                ChipKind::Danger,
+                                move |view, _w, cx| {
+                                    view.delete_project(idx, cx);
+                                    cx.notify();
+                                },
+                                cx,
+                            )),
+                    )
+            }))
+    }
+
+    fn render_form(&self, cx: &mut Context<Self>) -> Div {
+        let field = self.form_field;
+        div()
+            .flex()
+            .flex_col()
+            .flex_1()
+            .p(px(16.))
+            .gap(px(10.))
+            .child(form_field("PROJECT ID", &self.form_name, field == FormField::Name, FormField::Name, cx))
+            .child(form_field("REPO", &self.form_repo, field == FormField::Repo, FormField::Repo, cx))
+            .child(form_field(
+                "BRANCH",
+                &self.form_branch,
+                field == FormField::Branch,
+                FormField::Branch,
+                cx,
+            ))
+            .child(form_field(
+                "WORKTREE DIR",
+                &self.form_worktree_dir,
+                field == FormField::WorktreeDir,
+                FormField::WorktreeDir,
+                cx,
+            ))
+            .child(form_field(
+                "MCP URL",
+                &self.form_mcp_url,
+                field == FormField::McpUrl,
+                FormField::McpUrl,
+                cx,
+            ))
+            .children(self.form_apps.iter().enumerate().map(|(i, input)| {
+                form_field(
+                    if i == 0 { "APPS" } else { "" },
+                    input,
+                    field == FormField::App(i),
+                    FormField::App(i),
+                    cx,
+                )
+            }))
             .child(
                 div()
                     .flex()
-                    .flex_col()
-                    .flex_1()
-                    .id("projects-scroll")
-                    .overflow_y_scroll()
-                    .when(mode != Mode::List, |this: Stateful<Div>| {
-                        let title = match mode {
-                            Mode::Adding => "New Project",
-                            Mode::Editing(_) => "Edit Project",
-                            _ => "",
-                        };
-                        this.child(
-                            div()
-                                .px(px(20.))
-                                .py(px(16.))
-                                .flex()
-                                .flex_col()
-                                .gap(px(14.))
-                                .child(
-                                    div()
-                                        .text_size(px(15.))
-                                        .text_color(fg())
-                                        .child(title.to_string()),
-                                )
-                                .child(render_field(
-                                    "NAME",
-                                    &self.form_name,
-                                    field == FormField::Name,
-                                    FormField::Name,
-                                    cx,
-                                ))
-                                .child(render_field(
-                                    "REPO PATH",
-                                    &self.form_repo,
-                                    field == FormField::Repo,
-                                    FormField::Repo,
-                                    cx,
-                                ))
-                                .child(render_field(
-                                    "SOURCE BRANCH",
-                                    &self.form_branch,
-                                    field == FormField::Branch,
-                                    FormField::Branch,
-                                    cx,
-                                ))
-                                .child(render_field(
-                                    "WORKTREE DIR",
-                                    &self.form_worktree_dir,
-                                    field == FormField::WorktreeDir,
-                                    FormField::WorktreeDir,
-                                    cx,
-                                ))
-                                .child(render_field(
-                                    "LAUNCH PROMPT",
-                                    &self.form_launch_prompt,
-                                    field == FormField::LaunchPrompt,
-                                    FormField::LaunchPrompt,
-                                    cx,
-                                ))
-                                .child(render_field(
-                                    "MCP URL",
-                                    &self.form_mcp_url,
-                                    field == FormField::McpUrl,
-                                    FormField::McpUrl,
-                                    cx,
-                                ))
-                                .child({
-                                    let acp_on = self.form_acp_enabled;
-                                    let focused = field == FormField::AcpEnabled;
-                                    div()
-                                        .id("acp-toggle")
-                                        .flex()
-                                        .items_center()
-                                        .gap(px(10.))
-                                        .px(px(10.))
-                                        .py(px(6.))
-                                        .rounded(px(4.))
-                                        .border_1()
-                                        .border_color(if focused { border_focus() } else { border_color() })
-                                        .bg(bg_hover())
-                                        .cursor_pointer()
-                                        .on_mouse_down(
-                                            MouseButton::Left,
-                                            cx.listener(|view, _, _, cx| {
-                                                view.form_acp_enabled = !view.form_acp_enabled;
-                                                view.form_field = FormField::AcpEnabled;
-                                                cx.notify();
-                                            }),
-                                        )
-                                        .child(checkbox(acp_on))
-                                        .child(
-                                            div()
-                                                .text_size(px(12.))
-                                                .text_color(if focused { accent() } else { fg_dim() })
-                                                .child("ACP AGENT (crush serve)")
-                                        )
-                                })
-                                .child(render_apps_section(&self.form_apps, field, cx))
-                                .child(
-                                    div()
-                                        .flex()
-                                        .gap(px(10.))
-                                        .child(button(
-                                            "save-btn",
-                                            "Save",
-                                            if can_save { ButtonKind::Success } else { ButtonKind::Disabled },
-                                            |view, _window, cx| view.save_form(cx),
-                                            cx,
-                                        ))
-                                        .child(button(
-                                            "cancel-btn",
-                                            "Cancel",
-                                            ButtonKind::Secondary,
-                                            |view, _window, cx| {
-                                                view.mode = Mode::List;
-                                                view.clear_form(cx);
-                                            },
-                                            cx,
-                                        )),
-                                ),
-                        )
-                    })
-                    .when(mode == Mode::List, |this: Stateful<Div>| {
-                        this.children(projects.into_iter().map(|(idx, proj)| {
-                            let ext = proj.awesometree_ext();
-                            let mcp_label = ext.mcp.as_deref().unwrap_or("");
-                            let worktree_label = ext.worktree_dir.as_deref().unwrap_or("");
-                            let apps_count = ext.apps.len();
-                            let acp_enabled = ext.acp.as_ref().map(|a| a.enabled).unwrap_or(false);
-
-                            div()
-                                .id(ElementId::Name(format!("proj-{idx}").into()))
-                                .px(px(20.))
-                                .py(px(10.))
-                                .border_b_1()
-                                .border_color(border_color())
-                                .hover(|s| s.bg(bg_hover()))
-                                .flex()
-                                .justify_between()
-                                .items_center()
-                                .child(
-                                    div()
-                                        .flex()
-                                        .items_center()
-                                        .gap(px(10.))
-                                        .child(
-                                            div()
-                                                .text_size(px(15.))
-                                                .text_color(accent())
-                                                .child(proj.name.clone()),
-                                        )
-                                        .child(
-                                            div()
-                                                .text_size(px(12.))
-                                                .text_color(fg_dim())
-                                                .child(format!(
-                                                    "{}  ·  {}",
-                                                    proj.repo.as_deref().unwrap_or(""),
-                                                    proj.branch_or_default()
-                                                )),
-                                        )
-                                        .when(!worktree_label.is_empty(), |s: Div| {
-                                            s.child(
-                                                div()
-                                                    .text_size(px(11.))
-                                                    .text_color(fg_dim())
-                                                    .child(format!("worktrees: {worktree_label}")),
-                                            )
-                                        })
-                                        .when(!mcp_label.is_empty(), |s: Div| {
-                                            s.child(
-                                                div()
-                                                    .text_size(px(11.))
-                                                    .text_color(fg_dim())
-                                                    .child(format!("mcp: {mcp_label}")),
-                                            )
-                                        })
-                                        .when(apps_count > 0, |s: Div| {
-                                            s.child(
-                                                div()
-                                                    .text_size(px(11.))
-                                                    .text_color(fg_dim())
-                                                    .child(format!(
-                                                        "{apps_count} app{}",
-                                                        if apps_count == 1 { "" } else { "s" }
-                                                    )),
-                                            )
-                                        })
-                                        .when(acp_enabled, |s: Div| {
-                                            s.child(
-                                                div()
-                                                    .text_size(px(11.))
-                                                    .text_color(success())
-                                                    .child("acp: enabled"),
-                                            )
-                                        }),
-                                )
-                                .child(
-                                    div()
-                                        .flex()
-                                        .gap(px(6.))
-                                        .child(chip_button(
-                                            ElementId::Name(format!("edit-{idx}").into()),
-                                            "Edit",
-                                            ChipKind::Neutral,
-                                            move |view, _window, cx| view.start_edit(idx, cx),
-                                            cx,
-                                        ))
-                                        .child(chip_button(
-                                            ElementId::Name(format!("del-{idx}").into()),
-                                            "Delete",
-                                            ChipKind::Danger,
-                                            move |view, _window, cx| view.delete_project(idx, cx),
-                                            cx,
-                                        )),
-                                )
-                        }))
-                        .when(self.projects.is_empty(), |this: Stateful<Div>| {
-                            this.child(
-                                div()
-                                    .px(px(20.))
-                                    .py(px(40.))
-                                    .flex()
-                                    .justify_center()
-                                    .child(
-                                        div()
-                                            .text_size(px(14.))
-                                            .text_color(fg_dim())
-                                            .child("No projects configured. Click \"+ Add Project\" to get started."),
-                                    ),
-                            )
-                        })
-                    }),
-            )
-            .child(
-                div()
-                    .px(px(20.))
-                    .py(px(10.))
-                    .border_t_1()
-                    .border_color(border_color())
-                    .child(
-                        div()
-                            .text_size(px(11.))
-                            .text_color(fg_dim())
-                            .child("Esc to close  ·  Tab to switch fields  ·  Enter to save"),
-                    ),
+                    .gap(px(8.))
+                    .child(button(
+                        "save-proj",
+                        "Save",
+                        ButtonKind::Primary,
+                        |view, _w, cx| {
+                            view.save_form(cx);
+                            cx.notify();
+                        },
+                        cx,
+                    ))
+                    .child(button(
+                        "cancel-proj",
+                        "Cancel",
+                        ButtonKind::Secondary,
+                        |view, _w, cx| {
+                            view.mode = Mode::List;
+                            view.form_error = None;
+                            cx.notify();
+                        },
+                        cx,
+                    )),
             )
     }
 }
 
-impl Focusable for ProjectsView {
-    fn focus_handle(&self, _: &App) -> FocusHandle {
-        self.focus.clone()
-    }
+fn form_field(
+    label: &str,
+    input: &Entity<TextInput>,
+    focused: bool,
+    field: FormField,
+    cx: &mut Context<'_, ProjectsView>,
+) -> Stateful<Div> {
+    let input_entity = input.clone();
+    ui_helpers::render_form_field(
+        label,
+        input,
+        focused,
+        move |view: &mut ProjectsView, window, cx| {
+            view.form_field = field;
+            window.focus(&input_entity.read(cx).focus_handle(cx));
+        },
+        cx,
+    )
 }

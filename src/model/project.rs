@@ -112,8 +112,6 @@ pub struct ProjectSnapshotRef {
 pub struct AwesometreeExt {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mcp: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub acp: Option<AcpConfig>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub apps: Vec<String>,
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -122,22 +120,6 @@ pub struct AwesometreeExt {
     pub worktree_dir: Option<String>,
 }
 
-#[derive(Debug, Default, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AcpConfig {
-    #[serde(default = "default_true")]
-    pub enabled: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub command: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub url: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub agent: Option<String>,
-}
-
-fn default_true() -> bool {
-    true
-}
 
 /// Build a minimal Switchboard project definition for create.
 pub fn definition_for_create(

@@ -4,6 +4,8 @@
 
 Refactor awesometree in one coordinated cutover so its product language and public contracts conform to the canonical Agent Work Model (AWM), while Switchboard becomes the only mutable authority for `Project`, `WorkProfile`, and `WorkSession` records. Awesometree remains responsible for material workspace resources and local runtime realization such as git worktrees, window-manager tags, launched applications, ports, processes, and credentials.
 
+**USER CORRECTION (overrides earlier plan text):** awesometree must contain **no ACP product support at all**. Remove ACP dependency, supervisors, routes, runtime fields/ports, config, UI, Android chat/navigation, docs/tests/artifacts. Do not treat ACP as an out-of-scope leftover — it is deleted from the product.
+
 This is intentionally a single implementation phase. The phase may contain ordered internal work packages, but it is merged and released only after every caller, UI, API, test, and document uses the replacement model. There is no period in which old and new stores are both supported production authorities.
 
 ## Current-state summary
@@ -51,7 +53,7 @@ This is intentionally a single implementation phase. The phase may contain order
 
 - Backward-compatible commands, endpoint aliases, protobuf fields/services, JSON field aliases, migration commands, or automatic import of old project-interop/state/ARP data.
 - Preserving records under `$XDG_CONFIG_HOME/project-interop`, `~/.config/awesometree/state.json`, or the old awesometree ARP SQLite schema.
-- Treating a WorkSession as an MCP transport session, ACP conversation, HostConversation, AgentRun, or Workspace Resource.
+- Treating a WorkSession as an MCP transport session, HostConversation, AgentRun, or Workspace Resource. ACP product support is deleted (not deferred).
 - Making Switchboard authoritative for host-local processes, ports, bearer tokens, window-manager tags, checkout health, or worktree filesystem contents.
 - Broadening the effort to every AWM term beyond those touched by the current awesometree product flow.
 - Maintaining the standalone awesometree Project/workspace CRUD MCP service as an alternate store. Any retained MCP façade must delegate to the same Switchboard-backed application service.

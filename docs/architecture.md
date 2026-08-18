@@ -26,7 +26,7 @@ Canonical reference: `/home/aleks/work/projects/agent-work-model/model/`.
 
 | Former | Now |
 |---|---|
-| `interop::Project` under `$XDG_CONFIG_HOME/project-interop` | Switchboard `Project` + immutable revision/snapshot |
+| ~~`interop::Project` under project-interop~~ (removed) | Switchboard `Project` + immutable revision/snapshot |
 | workspace-as-episode (`state.workspaces`) | `WorkSession` |
 | git worktree / tag / apps | AWM `Workspace` Resource + `WorkSessionRuntime` |
 | agent process records | unchanged agent instances (not renamed to WorkSession) |
@@ -38,7 +38,7 @@ Hotkey → awesometree pick → Unix socket → awesometree-daemon
   → GPUI picker → user selects WorkSession / creates with WorkProfile
   → WorkSessionService
        → Switchboard MCP (project_work_session_create, …)
-       → local Workspace realization (git worktree, WM tag, apps, ACP/Bezalel)
+       → local Workspace realization (git worktree, WM tag, apps, Bezalel)
 ```
 
 ## Binaries

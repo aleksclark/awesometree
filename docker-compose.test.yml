@@ -10,8 +10,8 @@ services:
       - ARP_DISABLE_AUTH=1
       - HOME=/home/testuser
     volumes:
-      - ./test/fixtures/state.json:/home/testuser/.config/awesometree/state.json:ro
-      - ./test/fixtures/test-project.project.json:/home/testuser/.config/project-interop/projects/test-project.project.json:ro
+      # Host-local agent rows only (no WorkSession authority). Switchboard provides Projects.
+      - ./test/fixtures/agents.json:/home/testuser/.config/awesometree/agents.json:ro
     depends_on:
       echo-agent:
         condition: service_started

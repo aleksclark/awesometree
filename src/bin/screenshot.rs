@@ -7,17 +7,17 @@ use std::sync::mpsc;
 
 fn sample_picker_items() -> Vec<PickerItem> {
     vec![
-        PickerItem { name: "aleks/make-docs-fancy".into(), project: "awesometree".into(), active: true, acp_status: Some("running".into()) },
-        PickerItem { name: "remote-protocol".into(), project: "awesometree".into(), active: false, acp_status: None },
-        PickerItem { name: "systemd-integration".into(), project: "awesometree".into(), active: false, acp_status: None },
-        PickerItem { name: "fix-data-node-compliance".into(), project: "blockyard".into(), active: false, acp_status: None },
-        PickerItem { name: "mgmt-api".into(), project: "blockyard".into(), active: false, acp_status: None },
-        PickerItem { name: "ublk-driver".into(), project: "blockyard".into(), active: false, acp_status: None },
-        PickerItem { name: "aleks/some-cool-thing".into(), project: "curri".into(), active: true, acp_status: None },
-        PickerItem { name: "aleks/booking-flow-slow".into(), project: "curri".into(), active: false, acp_status: None },
-        PickerItem { name: "aleks/graphql-ast-lint".into(), project: "curri".into(), active: false, acp_status: None },
-        PickerItem { name: "phase-3".into(), project: "streamlate".into(), active: true, acp_status: Some("running".into()) },
-        PickerItem { name: "phase-4".into(), project: "streamlate".into(), active: true, acp_status: None },
+        PickerItem { name: "aleks/make-docs-fancy".into(), project: "awesometree".into(), active: true, lifecycle: "open".into(), work_profile_id: "default".into() },
+        PickerItem { name: "remote-protocol".into(), project: "awesometree".into(), active: false, lifecycle: "open".into(), work_profile_id: "default".into() },
+        PickerItem { name: "systemd-integration".into(), project: "awesometree".into(), active: false, lifecycle: "open".into(), work_profile_id: "default".into() },
+        PickerItem { name: "fix-data-node-compliance".into(), project: "blockyard".into(), active: false, lifecycle: "open".into(), work_profile_id: "default".into() },
+        PickerItem { name: "mgmt-api".into(), project: "blockyard".into(), active: false, lifecycle: "open".into(), work_profile_id: "default".into() },
+        PickerItem { name: "ublk-driver".into(), project: "blockyard".into(), active: false, lifecycle: "open".into(), work_profile_id: "default".into() },
+        PickerItem { name: "aleks/some-cool-thing".into(), project: "curri".into(), active: true, lifecycle: "open".into(), work_profile_id: "default".into() },
+        PickerItem { name: "aleks/booking-flow-slow".into(), project: "curri".into(), active: false, lifecycle: "open".into(), work_profile_id: "default".into() },
+        PickerItem { name: "aleks/graphql-ast-lint".into(), project: "curri".into(), active: false, lifecycle: "open".into(), work_profile_id: "default".into() },
+        PickerItem { name: "phase-3".into(), project: "streamlate".into(), active: true, lifecycle: "open".into(), work_profile_id: "default".into() },
+        PickerItem { name: "phase-4".into(), project: "streamlate".into(), active: true, lifecycle: "open".into(), work_profile_id: "default".into() },
     ]
 }
 
@@ -70,7 +70,7 @@ fn main() {
             }
             "create" => {
                 let projects = sample_project_names();
-                picker::open_picker_window(cx, PickerMode::CreateForm { projects }, tx);
+                picker::open_picker_window(cx, PickerMode::CreateForm { projects, work_profiles: vec![("default".into(), "default".into())], default_missing: false }, tx);
                 signal_ready("create-form");
             }
             _ => {

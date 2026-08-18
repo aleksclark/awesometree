@@ -40,7 +40,6 @@ awesometree-core = { path = "core" }
 axum = "0.8"
 axum-extra = { version = "0.10", features = ["typed-header"] }
 clap = { version = "4.5.60", features = ["derive"] }
-crush-acp-sdk = { git = "https://github.com/aleksclark/crush-modules", branch = "master" }
 futures = "0.3"
 gpui = { version = "0.2.2", optional = true }
 headers = "0.4"

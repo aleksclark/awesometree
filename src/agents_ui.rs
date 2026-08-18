@@ -23,7 +23,7 @@ actions!(agents_ui, [DismissAgents, RefreshAgents, StopAgent]);
 #[derive(Clone)]
 struct AgentRow {
     agent: AgentInstanceState,
-    workspace: String,
+    work_session_id: String,
     project: String,
     supervisor_running: bool,
 }
@@ -38,21 +38,21 @@ fn load_agents() -> Vec<AgentRow> {
     };
 
     let mut rows = Vec::new();
-    for (ws_name, ws) in &st.workspaces {
-        for agent in &ws.agents {
+    for (ws_name, agents) in &st.agents {
+        for agent in agents {
             let supervisor_running = agent_supervisor::get()
                 .map(|sup| sup.is_running(&agent.id))
                 .unwrap_or(false);
             rows.push(AgentRow {
                 agent: agent.clone(),
-                workspace: ws_name.clone(),
-                project: ws.project.clone(),
+                work_session_id: ws_name.clone(),
+                project: ws_name.clone(),
                 supervisor_running,
             });
         }
     }
     rows.sort_by(|a, b| {
-        a.workspace.cmp(&b.workspace)
+        a.work_session_id.cmp(&b.work_session_id)
             .then(a.agent.name.cmp(&b.agent.name))
     });
     rows
@@ -293,7 +293,7 @@ impl Render for AgentsView {
                                             div()
                                                 .text_size(px(13.))
                                                 .text_color(fg())
-                                                .child(row.workspace.clone()),
+                                                .child(row.work_session_id.clone()),
                                         )
                                         .child(
                                             div()
@@ -393,7 +393,7 @@ mod tests {
                 id: "a-1".into(),
                 template: "echo".into(),
                 name: "echo".into(),
-                workspace: "ws".into(),
+                work_session_id: "ws".into(),
                 status,
                 port: 9200,
                 host: None,
@@ -401,7 +401,7 @@ mod tests {
                 started_at: String::new(),
                 ..Default::default()
             },
-            workspace: "ws".into(),
+            work_session_id: "ws".into(),
             project: "proj".into(),
             supervisor_running,
         }

@@ -1,6 +1,5 @@
 //! Single application service coordinating Switchboard authority and local realization.
 
-use crate::acp_supervisor;
 use crate::bezalel_supervisor;
 use crate::log as dlog;
 use crate::model::error::{ErrorCode, Result, SwitchboardError};
@@ -359,12 +358,9 @@ impl WorkSessionService {
             }
         }
 
-        let acp_port = runtime_store::allocate_acp_port(ws_id)?;
         if opts.launch_apps && !opts.headless {
-            launch_apps(project, &dir, acp_port);
+            launch_apps(project, &dir);
         }
-
-        let acp_url = start_acp_if_configured(ws_id, &dir, acp_port, project);
 
         let mut bezalel_port = None;
         let mut bezalel_token_ref = None;
@@ -407,9 +403,6 @@ impl WorkSessionService {
             resource_binding: Some(binding),
             tag_index: Some(tag_idx),
             tag_name: Some(tag),
-            acp_port,
-            acp_url,
-            acp_session_id: None,
             headless: opts.headless,
             bezalel_port,
             bezalel_token_ref,
@@ -426,7 +419,6 @@ impl WorkSessionService {
     }
 
     async fn pause_local(&self, id: &str) -> Result<()> {
-        acp_supervisor::stop_for_workspace(id);
         bezalel_supervisor::stop_for_workspace(id);
         let _ = runtime_store::modify(id, |rt| {
             rt.realization_status = RealizationStatus::Degraded;
@@ -435,7 +427,7 @@ impl WorkSessionService {
     }
 
     async fn resume_local(&self, id: &str) -> Result<()> {
-        // ACP/bezalel supervisors may be restarted by daemon sync; mark ready.
+        // Bezalel supervisor may be restarted by daemon sync; mark ready.
         let _ = runtime_store::modify(id, |rt| {
             rt.realization_status = RealizationStatus::Ready;
         });
@@ -443,7 +435,6 @@ impl WorkSessionService {
     }
 
     async fn teardown_local(&self, id: &str, keep_worktree: bool) -> Result<()> {
-        acp_supervisor::stop_for_workspace(id);
         bezalel_supervisor::stop_for_workspace(id);
 
         if let Ok(Some(rt)) = runtime_store::get(id) {
@@ -479,8 +470,6 @@ impl WorkSessionService {
                 r.realization_status = RealizationStatus::Cleaned;
                 r.tag_index = None;
                 r.tag_name = None;
-                r.acp_port = None;
-                r.acp_url = None;
                 r.bezalel_port = None;
             });
         }
@@ -543,9 +532,6 @@ fn ensure_worktree(ws_id: &str, project: &ProjectEnvelope, dir: &PathBuf) -> Res
             return Ok(());
         }
     };
-    if dir.exists() {
-        return Ok(());
-    }
     let repo = project
         .primary_repo()
         .ok_or_else(|| {
@@ -553,98 +539,12 @@ fn ensure_worktree(ws_id: &str, project: &ProjectEnvelope, dir: &PathBuf) -> Res
                 .with_operation("ensure_worktree")
         })?;
     let repo_path = paths::expand_home(&repo);
-    let repo_str = repo_path.to_string_lossy();
-    if !repo_path.exists() {
-        return Err(SwitchboardError::new(
-            ErrorCode::InvalidReference,
-            format!("repo not found: {repo_str}"),
-        ));
-    }
-    if let Some(parent) = dir.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| {
-            SwitchboardError::new(ErrorCode::InternalError, format!("create worktree dir: {e}"))
-        })?;
-    }
-    let _ = Command::new("git")
-        .args(["-C", &repo_str, "worktree", "prune"])
-        .output();
-    let _ = Command::new("git")
-        .args(["-C", &repo_str, "fetch", "origin", &branch])
-        .output();
-
-    let branch_exists = Command::new("git")
-        .args(["-C", &repo_str, "rev-parse", "--verify", ws_id])
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false);
-
-    let dir_str = dir.to_string_lossy();
-    let output = if branch_exists {
-        Command::new("git")
-            .args(["-C", &repo_str, "worktree", "add", &dir_str, ws_id])
-            .output()
-    } else {
-        let tracking = format!("origin/{branch}");
-        Command::new("git")
-            .args([
-                "-C",
-                &repo_str,
-                "worktree",
-                "add",
-                "-b",
-                ws_id,
-                &dir_str,
-                &tracking,
-            ])
-            .output()
-    };
-
-    match output {
-        Ok(o) if !o.status.success() => {
-            return Err(SwitchboardError::new(
-                ErrorCode::InternalError,
-                format!(
-                    "worktree create failed: {}",
-                    String::from_utf8_lossy(&o.stderr).trim()
-                ),
-            ));
-        }
-        Err(e) => {
-            return Err(SwitchboardError::new(
-                ErrorCode::InternalError,
-                format!("worktree create: {e}"),
-            ));
-        }
-        _ => {}
-    }
-    let _ = Command::new("git")
-        .args(["-C", &repo_str, "branch", "--unset-upstream", ws_id])
-        .output();
-    Ok(())
+    crate::workspace::ensure_git_worktree(ws_id, &repo_path, &branch, dir).map_err(|e| {
+        SwitchboardError::new(ErrorCode::InternalError, e).with_operation("ensure_worktree")
+    })
 }
 
-fn start_acp_if_configured(
-    ws_id: &str,
-    dir: &PathBuf,
-    acp_port: Option<u16>,
-    project: &ProjectEnvelope,
-) -> Option<String> {
-    let acp = project.awesometree_ext().acp?;
-    if !acp.enabled {
-        return None;
-    }
-    let port = acp_port?;
-    let dir_str = dir.to_string_lossy();
-    let cmd = acp.command.as_deref();
-    acp_supervisor::start_for_workspace(ws_id, &dir_str, port, cmd);
-    let url = acp.url.as_deref().unwrap_or("http://127.0.0.1:{port}");
-    Some(url.replace("{port}", &port.to_string()).replace(
-        "{project}",
-        project.name(),
-    ).replace("{dir}", &dir_str))
-}
-
-fn launch_apps(project: &ProjectEnvelope, dir: &PathBuf, acp_port: Option<u16>) {
+fn launch_apps(project: &ProjectEnvelope, dir: &PathBuf) {
     let ext = project.awesometree_ext();
     let dir_str = dir.to_string_lossy();
     let apps = if ext.apps.is_empty() {
@@ -653,12 +553,9 @@ fn launch_apps(project: &ProjectEnvelope, dir: &PathBuf, acp_port: Option<u16>) 
         ext.apps.clone()
     };
     for app_cmd in &apps {
-        let mut expanded = app_cmd
+        let expanded = app_cmd
             .replace("{project}", project.name())
             .replace("{dir}", &dir_str);
-        if let Some(p) = acp_port {
-            expanded = expanded.replace("{port}", &p.to_string());
-        }
         dlog::log(format!("Launching app: {expanded}"));
         let _ = Command::new("sh")
             .args(["-c", &expanded])

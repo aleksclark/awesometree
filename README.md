@@ -83,7 +83,6 @@ active ones are marked with a green dot. The `+` button (or `Ctrl+N`) opens the 
 
 Active workspaces show a red stop button to tear them down without switching to them first.
 Workspaces running an [ACP](https://github.com/nichochar/agent-control-protocol) agent show
-a green "ACP" badge.
 
 | Key | Action |
 |-----|--------|
@@ -403,20 +402,17 @@ awesometree generate-token   # print the HMAC auth token
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `GET` | `/api/workspaces` | List all workspaces |
-| `GET` | `/api/workspaces/:name` | Get workspace details |
-| `POST` | `/api/workspaces` | Create workspace (`{"name", "project"}`) |
-| `DELETE` | `/api/workspaces/:name` | Delete workspace |
-| `POST` | `/api/workspaces/:name/start` | Start workspace |
-| `POST` | `/api/workspaces/:name/stop` | Stop workspace |
+| `GET` | `/api/work-sessions` | List all workspaces |
+| `GET` | `/api/work-sessions/:name` | Get workspace details |
+| `POST` | `/api/work-sessions` | Create workspace (`{"name", "project"}`) |
+| `DELETE` | `/api/work-sessions/:name` | Delete workspace |
+| `POST` | `/api/work-sessions/:name/start` | Start workspace |
+| `POST` | `/api/work-sessions/:name/stop` | Stop workspace |
 | `GET` | `/api/projects` | List projects |
 | `GET` | `/api/projects/:name` | Get project details |
 | `POST` | `/api/projects` | Create project |
 | `PUT` | `/api/projects/:name` | Update project |
 | `DELETE` | `/api/projects/:name` | Delete project |
-| `POST` | `/acp/:workspace` | Send ACP message |
-| `POST` | `/acp/:workspace/stream` | Streaming ACP (NDJSON) |
-| `GET` | `/acp/:workspace/history` | Get ACP chat history |
 
 All endpoints require a `Bearer` token in the `Authorization` header.
 
@@ -556,4 +552,3 @@ The CI [release workflow](.github/workflows/release.yml) automatically:
 - [CLI Reference](docs/workspace-system/ws-cli.md) — complete command list
 - [WM Integration](docs/workspace-system/lua-module.md) — AwesomeWM adapter internals
 - [Keybindings](docs/keybindings.md) — full keybinding reference
-- [Project Interop Spec](docs/specs/project-interop/README.md) — cross-tool project definition RFCs

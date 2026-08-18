@@ -105,9 +105,6 @@ class ApiClient(private val connection: ServerConnection) {
             "DELETE",
             "/api/projects/${enc(id)}?expected_source_revision=${enc(expectedSourceRevision)}",
         ).map { }
-
-    suspend fun acpSend(workSessionId: String, message: String): Result<String> =
-        request("POST", "/acp/${enc(workSessionId)}", message)
 }
 
 private fun enc(value: String): String = URLEncoder.encode(value, "UTF-8")
@@ -123,7 +120,6 @@ data class WorkSessionInfo(
     val dir: String?,
     val realizationStatus: String?,
     val headless: Boolean,
-    val acpPort: Int?,
 )
 
 data class WorkProfileInfo(
@@ -167,9 +163,6 @@ private fun parseWorkSession(ws: JSONObject, runtime: JSONObject?): WorkSessionI
         dir = workspace?.optString("path", null),
         realizationStatus = runtime?.optString("realization_status", null),
         headless = runtime?.optBoolean("headless", false) ?: false,
-        acpPort = if (runtime != null && runtime.has("acp_port") && !runtime.isNull("acp_port")) {
-            runtime.getInt("acp_port")
-        } else null,
     )
 }
 

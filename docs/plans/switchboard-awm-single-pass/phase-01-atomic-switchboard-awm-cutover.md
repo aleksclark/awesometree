@@ -120,7 +120,7 @@ Afterward, future agent/run/resource work can attach to stable `work_session_id`
 - **Given** an open WorkSession and its git worktree
 - **When** the system renders details or serializes APIs
 - **Then** `WorkSession` names the bounded episode and `Workspace` names only the material Resource/environment
-- **And** ACP sessions, MCP connections, host conversations, agent runs, and process instances retain distinct identities and fields.
+- **And** MCP connections, host conversations, agent runs, and process instances retain distinct identities and fields (ACP product support is removed entirely).
 
 ### Scenario: Old episode terminology and contracts are gone
 
@@ -146,7 +146,7 @@ Afterward, future agent/run/resource work can attach to stable `work_session_id`
 
 ### Scenario: Secrets remain host-local
 
-- **Given** a headless WorkSession with Bezalel and ACP runtime credentials
+- **Given** a headless WorkSession with Bezalel runtime credentials
 - **When** ProjectSnapshots, WorkProfiles, WorkSessions, list APIs, logs, and exported diagnostics are inspected
 - **Then** no bearer token or raw credential is present
 - **And** authorized host-local detail access resolves only the minimum required secret reference.
@@ -206,7 +206,7 @@ make -C /home/aleks/work/projects/agent-work-model check
    - WorkSession create/get/list/patch/transition/delete requests;
    - authorization checks before side effects;
    - local Workspace resource creation/removal;
-   - tag/app/ACP/agent/Bezalel realization;
+   - tag/app/agent/Bezalel realization;
    - compensation, idempotent retry, and restart reconciliation.
 4. Move all direct git worktree manipulation and state mutation currently duplicated in `src/workspace.rs`, `src/server.rs`, `src/mcp/tools_workspace.rs`, `src/grpc/workspace.rs`, and `src/daemon_main.rs` behind that service. Platform-specific `wm::Adapter` behavior remains an injected local runtime dependency.
 5. Preserve Switchboard Project CAS tokens end-to-end in edit forms and clients. A stale edit must render a conflict and refresh option, not silently merge with a local `.project.json`.
@@ -253,7 +253,7 @@ cargo test --workspace reconciliation
 6. gRPC/protobuf (`proto/arp/v1/`, `src/grpc/`): replace Workspace episode messages/services with WorkSession APIs and regenerate checked-in artifacts. Do not reserve old aliases for compatibility unless protobuf tooling requires reserving removed field numbers to prevent accidental reuse.
 7. Rust core/UniFFI (`core/`): replace duplicate Workspace models/client methods with WorkSession and WorkProfile contracts, including lifecycle, selected profile, and safe realization status.
 8. Android (`android/`): rename screens/navigation/models/client calls to WorkSession, load WorkProfiles, preselect `default`, allow another selection, show missing-default/Switchboard/conflict errors, and update UI tests/snapshots.
-9. Keep agent/A2A/ACP identity separate. Update authorization helpers that currently infer scope from workspace names to use Project and WorkSession IDs, preserving least privilege.
+9. Keep agent/A2A identity separate. ACP product support is removed entirely. Update authorization helpers that currently infer scope from workspace names to use Project and WorkSession IDs, preserving least privilege.
 
 Focused verification after each surface change:
 
@@ -349,7 +349,7 @@ Every remaining match must be reviewed and justified as a material Workspace/fra
 
 - Create two Projects and scoped credentials.
 - Assert each scope sees and mutates only allowed WorkSessions through REST/MCP/gRPC.
-- Create a headless WorkSession and inspect Switchboard files/resources, REST lists, logs, diagnostics, Android payloads, and ProjectSnapshot exports for Bezalel/ACP tokens. Assert none are present.
+- Create a headless WorkSession and inspect Switchboard files/resources, REST lists, logs, diagnostics, Android payloads, and ProjectSnapshot exports for Bezalel tokens. Assert none are present.
 
 ### Test 9: Contract removal
 

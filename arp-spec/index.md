@@ -28,7 +28,7 @@ Tools: `project/list`, `project/register`, `project/unregister`
 
 MCP tools for creating and destroying isolated workspaces (git worktrees) where agents operate.
 
-Tools: `workspace/create`, `workspace/list`, `workspace/get`, `workspace/destroy`
+Tools: `work_session/create`, `work_session/list`, `work_session/get`, `work_session/destroy`
 
 → [Workspace Tools](tools-workspace.md)
 

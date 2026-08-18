@@ -12,7 +12,6 @@ pub struct WorkSessionInfo {
     pub dir: Option<String>,
     pub realization_status: Option<String>,
     pub headless: bool,
-    pub acp_port: Option<u16>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
@@ -56,22 +55,6 @@ pub struct CreateProjectReq {
     pub description: String,
     pub repo: String,
     pub branch: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
-pub struct AcpMessage {
-    pub role: String,
-    pub content: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
-pub struct AcpSendRequest {
-    pub message: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]
-pub struct AcpConversation {
-    pub messages: Vec<AcpMessage>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]

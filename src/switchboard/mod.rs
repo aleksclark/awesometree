@@ -60,3 +60,8 @@ pub trait Catalog: Send + Sync {
     ) -> Result<WorkSession, SwitchboardError>;
     async fn delete_work_session(&self, id: &str) -> Result<(), SwitchboardError>;
 }
+
+/// Production catalog handle (Arc) for daemon/service wiring.
+pub fn live_catalog() -> std::sync::Arc<dyn Catalog> {
+    std::sync::Arc::new(SwitchboardClient::from_env())
+}

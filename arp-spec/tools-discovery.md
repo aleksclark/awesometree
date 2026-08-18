@@ -157,7 +157,7 @@ These patterns show how the four tool groups compose to solve real workflows.
 Two agents in one workspace — one writes code, the other reviews it.
 
 ```
-workspace/create  name="feat-auth" project="myapp"
+work_session/create  work_session_id="feat-auth" project_id="myapp"
 agent/spawn       workspace="feat-auth" template="crush" name="coder"
 agent/spawn       workspace="feat-auth" template="crush" name="reviewer"
 agent/message     agent_id="coder-xxx" message="Implement OAuth2 login flow"
@@ -170,7 +170,7 @@ agent/message     agent_id="reviewer-xxx" message="Review the changes in this wo
 Multiple agents work on different parts of a codebase simultaneously.
 
 ```
-workspace/create  name="refactor" project="myapp"
+work_session/create  work_session_id="refactor" project_id="myapp"
 agent/spawn       workspace="refactor" template="crush" name="backend"
 agent/spawn       workspace="refactor" template="crush" name="frontend"
 agent/task        agent_id="backend-xxx" message="Refactor the API layer to use GraphQL"
@@ -186,7 +186,7 @@ An MCP host (or agent) acts as supervisor, spawning specialist agents dynamicall
 
 ```
 # Host evaluates a complex task, decides to parallelize
-workspace/create  name="big-refactor" project="myapp"
+work_session/create  work_session_id="big-refactor" project_id="myapp"
 
 # Spawn a planning agent first
 agent/spawn       workspace="big-refactor" template="crush" name="planner"

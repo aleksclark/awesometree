@@ -1,5 +1,5 @@
 {
-  "$schema": "https://project-interop.dev/schemas/v1/project.schema.json",
+  "$schema": "https://switchboard.local/schemas/project.json",
   "version": "1",
   "name": "test-project",
   "repo": "/workspace",

@@ -1,5 +1,5 @@
 ---
-title: "ARP — Workspace Management Tools"
+title: "ARP — WorkSession Management Tools"
 version: 0.3.0
 created: 2026-04-06
 updated: 2026-04-28
@@ -7,19 +7,19 @@ status: draft
 tags: [arp, mcp, workspace, worktree]
 ---
 
-# Workspace Management Tools
+# WorkSession Management Tools
 
-MCP tools for creating and destroying isolated workspaces where agents operate. A workspace is typically a git worktree — an independent working directory branched from a project's repository.
+MCP tools for creating and destroying WorkSessions. Local realization creates a material Workspace resource (typically a git worktree). Switchboard is the authority for WorkSession lifecycle.
 
-Workspaces sit in the middle of the hierarchy: **Project → Workspace → Agent**. One project can have many workspaces. Each workspace can host multiple agents that share the filesystem but have independent A2A sessions.
+Hierarchy: **Project → WorkSession → Agent**, with Workspace as a material Resource binding only.
 
-## `workspace/create`
+## `work_session/create`
 
-Create a new workspace (git worktree) for a project.
+Create a new WorkSession and realize a local Workspace resource.
 
 ```json
 {
-  "name": "workspace/create",
+  "name": "work_session/create",
   "description": "Create a new isolated workspace for a project. Creates a git worktree and optionally spawns agents. Does NOT spawn agents by default — use agent/spawn after creation.",
   "inputSchema": {
     "type": "object",
@@ -49,17 +49,17 @@ Create a new workspace (git worktree) for a project.
 **Example:**
 
 ```
-workspace/create  name="feat-auth" project="myapp"
-workspace/create  name="feat-auth" project="myapp" auto_agents=["crush", "crush"]
+work_session/create  name="feat-auth" project="myapp"
+work_session/create  name="feat-auth" project="myapp" auto_agents=["crush", "crush"]
 ```
 
-## `workspace/list`
+## `work_session/list`
 
 List all workspaces with their agents and status.
 
 ```json
 {
-  "name": "workspace/list",
+  "name": "work_session/list",
   "description": "List all workspaces with agent status. Filter by project or status.",
   "inputSchema": {
     "type": "object",
@@ -105,13 +105,13 @@ List all workspaces with their agents and status.
 ]
 ```
 
-## `workspace/get`
+## `work_session/get`
 
 Get detailed information about a specific workspace.
 
 ```json
 {
-  "name": "workspace/get",
+  "name": "work_session/get",
   "description": "Get full details of a workspace including all agent instances and their status.",
   "inputSchema": {
     "type": "object",
@@ -125,13 +125,13 @@ Get detailed information about a specific workspace.
 
 **Returns:** Full `Workspace` object with resolved `AgentCard` per agent instance.
 
-## `workspace/destroy`
+## `work_session/destroy`
 
 Destroy a workspace, stopping all agents and removing the worktree.
 
 ```json
 {
-  "name": "workspace/destroy",
+  "name": "work_session/destroy",
   "description": "Destroy a workspace. Stops all agents, removes the git worktree, and cleans up all state.",
   "inputSchema": {
     "type": "object",

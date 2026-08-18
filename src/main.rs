@@ -214,10 +214,10 @@ fn cmd_work_session(cmd: WorkSessionCmd) {
                         resp.work_profile_id,
                         resp.project_revision.as_deref().unwrap_or("-")
                     );
-                    if let Some(rt) = resp.runtime {
-                        if let Some(ws) = rt.workspace {
-                            println!("workspace_path={}", ws.path);
-                        }
+                    if let Some(rt) = resp.runtime
+                        && let Some(ws) = rt.workspace
+                    {
+                        println!("workspace_path={}", ws.path);
                     }
                 }
                 Err(e) => {

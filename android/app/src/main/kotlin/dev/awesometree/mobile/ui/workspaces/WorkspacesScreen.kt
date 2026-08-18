@@ -8,7 +8,6 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowDropDown
-import androidx.compose.material.icons.automirrored.filled.Chat
 import androidx.compose.material.icons.filled.Circle
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Pause
@@ -26,13 +25,12 @@ import dev.awesometree.mobile.data.ConnectionStore
 import dev.awesometree.mobile.data.WorkProfileInfo
 import dev.awesometree.mobile.data.WorkSessionInfo
 import kotlinx.coroutines.launch
-import java.net.URLEncoder
 
 private const val DEFAULT_PROFILE_ID = "default"
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun WorkspacesScreen(connectionStore: ConnectionStore, navController: NavController) {
+fun WorkSessionsScreen(connectionStore: ConnectionStore, navController: NavController) {
     val connection = connectionStore.connection.collectAsState().value ?: return
     val client = remember(connection) { ApiClient(connection) }
     val scope = rememberCoroutineScope()
@@ -123,11 +121,6 @@ fun WorkspacesScreen(connectionStore: ConnectionStore, navController: NavControl
                                             .onFailure { error = it.message }
                                     }
                                 },
-                                onAgent = {
-                                    navController.navigate(
-                                        "acp/${URLEncoder.encode(ws.workSessionId, "UTF-8")}"
-                                    ) { launchSingleTop = true }
-                                },
                             )
                         }
                     }
@@ -152,14 +145,11 @@ private fun WorkSessionItem(
     onResume: () -> Unit,
     onClose: () -> Unit,
     onDelete: () -> Unit,
-    onAgent: () -> Unit,
 ) {
     var expanded by remember { mutableStateOf(false) }
     var showConfirm by remember { mutableStateOf(false) }
     val isOpen = ws.state == "open"
     val isPaused = ws.state == "paused"
-    val hasAcp = ws.acpPort != null
-
     Column {
         ListItem(
             headlineContent = { Text(ws.displayName ?: ws.workSessionId) },
@@ -180,13 +170,6 @@ private fun WorkSessionItem(
                     },
                     modifier = Modifier.size(12.dp),
                 )
-            },
-            trailingContent = {
-                if (hasAcp) {
-                    IconButton(onClick = onAgent, enabled = isOpen) {
-                        Icon(Icons.AutoMirrored.Filled.Chat, contentDescription = "Agent")
-                    }
-                }
             },
             modifier = Modifier.clickable { expanded = !expanded },
         )

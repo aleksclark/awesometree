@@ -41,7 +41,7 @@ Every team building multi-agent systems reinvents agent lifecycle management. AR
 | Group | Tools | Spec |
 |-------|-------|------|
 | Project Management | `project/list`, `project/register`, `project/unregister` | [tools-project.md](tools-project.md) |
-| Workspace Management | `workspace/create`, `workspace/list`, `workspace/get`, `workspace/destroy` | [tools-workspace.md](tools-workspace.md) |
+| Workspace Management | `work_session/create`, `work_session/list`, `work_session/get`, `work_session/destroy` | [tools-workspace.md](tools-workspace.md) |
 | Agent Lifecycle | `agent/spawn`, `agent/list`, `agent/status`, `agent/message`, `agent/task`, `agent/task_status`, `agent/stop`, `agent/restart` | [tools-agent.md](tools-agent.md) |
 | Discovery & Patterns | `agent/discover`, MCP resources, MCP prompts | [tools-discovery.md](tools-discovery.md) |
 | Identity & Scopes | `token/create`, scope enforcement, federation | [identity-and-scopes.md](identity-and-scopes.md) |
@@ -94,7 +94,7 @@ This spec builds on the A2A v1.0 protocol (`lf.a2a.v1`). Key types and RPCs refe
 │                       MCP HOST                              │
 │  (Claude, Cursor, Zed, custom agent, etc.)                 │
 │                                                             │
-│  Lifecycle tools:   workspace/create, agent/spawn, ...      │
+│  Lifecycle tools:   work_session/create, agent/spawn, ...      │
 │  Communication:     agent/message, agent/task, ...          │
 └──────────┬─────────────────────────────────────────────────┘
            │ MCP (stdio or HTTP)

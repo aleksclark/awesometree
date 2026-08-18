@@ -321,9 +321,9 @@ test_cases:
   # Category: api-workspaces — REST API for workspace listing
   # ===========================================================================
   - id: api-workspaces-list
-    name: GET /api/workspaces Returns Workspace Array
+    name: GET /api/work-sessions Returns WorkSession Array
     description: >
-      GET /api/workspaces returns a JSON array of workspace objects, each
+      GET /api/work-sessions returns a JSON array of workspace objects, each
       with at minimum name, project, and active fields.
     severity: required
     category: api-workspaces
@@ -336,7 +336,7 @@ test_cases:
       - action: send
         payload:
           http_method: GET
-          path: "/api/workspaces"
+          path: "/api/work-sessions"
       - action: expect
         expect:
           http_status: 200
@@ -344,9 +344,9 @@ test_cases:
             content-type: "application/json"
 
   - id: api-workspaces-get-single
-    name: GET /api/workspaces/{name} Returns Single Workspace
+    name: GET /api/work-sessions/{name} Returns Single WorkSession
     description: >
-      GET /api/workspaces/{name} with a valid workspace name returns the
+      GET /api/work-sessions/{name} with a valid workspace name returns the
       workspace object with name, project, active, dir, and other fields.
     severity: required
     category: api-workspaces
@@ -359,7 +359,7 @@ test_cases:
       - action: send
         payload:
           http_method: GET
-          path: "/api/workspaces/arp-test"
+          path: "/api/work-sessions/arp-test"
       - action: expect
         expect:
           http_status: 200
@@ -369,9 +369,9 @@ test_cases:
             active: true
 
   - id: api-workspaces-get-nonexistent
-    name: GET /api/workspaces/{name} Nonexistent Returns 404
+    name: GET /api/work-sessions/{name} Nonexistent Returns 404
     description: >
-      GET /api/workspaces/{name} with a nonexistent workspace returns 404.
+      GET /api/work-sessions/{name} with a nonexistent workspace returns 404.
     severity: required
     category: api-workspaces
     timeout: 10s
@@ -383,7 +383,7 @@ test_cases:
       - action: send
         payload:
           http_method: GET
-          path: "/api/workspaces/nonexistent-workspace-00000"
+          path: "/api/work-sessions/nonexistent-workspace-00000"
       - action: expect
         expect:
           http_status: 404

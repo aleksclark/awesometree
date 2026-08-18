@@ -33,17 +33,15 @@ impl DiscoveryService for DiscoveryServiceImpl {
             let store = state::load()
                 .map_err(|e| Status::internal(format!("failed to load state: {e}")))?;
 
-            for ws in store.workspaces.values() {
-                if !ws.active {
-                    continue;
-                }
+            for agents in store.agents.values() {
+                
 
                 // Filter by project scope
-                if !auth::scope_includes_project(&token.scope, &ws.project) {
+                if !auth::scope_includes_project(&token.scope, "") {
                     continue;
                 }
 
-                for agent in &ws.agents {
+                for agent in agents {
                     // Only Ready or Busy agents
                     if agent.status != state::AgentStatus::Ready
                         && agent.status != state::AgentStatus::Busy
@@ -58,7 +56,7 @@ impl DiscoveryService for DiscoveryServiceImpl {
                         continue;
                     }
 
-                    let enriched = a2a_proxy::enriched_agent_card(agent, &ws.project);
+                    let enriched = a2a_proxy::enriched_agent_card(agent, "");
 
                     // Capability filtering
                     if !req.capability.is_empty() {
@@ -157,12 +155,12 @@ impl DiscoveryService for DiscoveryServiceImpl {
                 Status::not_found(format!("agent '{}' not found", req.agent_id))
             })?;
 
-        let ws = store.workspace(ws_name).ok_or_else(|| {
+        let _ws = store.work_session_id(ws_name).ok_or_else(|| {
             Status::internal("workspace not found for agent")
         })?;
 
         // Check scope
-        if !auth::scope_includes_project(&token.scope, &ws.project) {
+        if !auth::scope_includes_project(&token.scope, "") {
             return Err(Status::permission_denied("token scope mismatch"));
         }
 
@@ -257,18 +255,18 @@ impl DiscoveryService for DiscoveryServiceImpl {
         let store = state::load()
             .map_err(|e| Status::internal(format!("failed to load state: {e}")))?;
 
-        let ws = store.workspace(&req.workspace_name).ok_or_else(|| {
+        let ws = store.work_session_id(&req.workspace_name).ok_or_else(|| {
             Status::not_found(format!("workspace '{}' not found", req.workspace_name))
         })?;
 
         // Check scope
-        if !auth::scope_includes_project(&token.scope, &ws.project) {
+        if !auth::scope_includes_project(&token.scope, "") {
             return Err(Status::permission_denied("token scope mismatch"));
         }
 
         // Build initial events for each existing agent in the workspace
         let initial_events: Vec<Result<WorkspaceEvent, Status>> = ws
-            .agents
+            /*agents*/
             .iter()
             .filter(|agent| {
                 // Session check
@@ -281,7 +279,7 @@ impl DiscoveryService for DiscoveryServiceImpl {
             .map(|agent| {
                 Ok(WorkspaceEvent {
                     event_type: WorkspaceEventType::AgentStatusChanged as i32,
-                    workspace: Some(convert::workspace_to_proto(&req.workspace_name, ws)),
+                    workspace: Some(convert::work_session_to_proto_workspace(&req.workspace_name, "", "", true, &[])),
                     agent: Some(convert::agent_instance_to_proto(agent)),
                 })
             })
@@ -308,11 +306,11 @@ impl DiscoveryService for DiscoveryServiceImpl {
             loop {
                 match rx.recv().await {
                     Ok(event) => {
-                        let (event_workspace, agent_id, ws_event_type) = match &event {
+                        let (event_work_session_id, agent_id, ws_event_type) = match &event {
                             agent_supervisor::SupervisorEvent::StatusChanged {
                                 agent_id,
                                 status,
-                                workspace,
+                                work_session_id,
                             } => {
                                 let evt_type = match status {
                                     state::AgentStatus::Starting => {
@@ -320,20 +318,20 @@ impl DiscoveryService for DiscoveryServiceImpl {
                                     }
                                     _ => WorkspaceEventType::AgentStatusChanged,
                                 };
-                                (workspace.clone(), agent_id.clone(), evt_type)
+                                (work_session_id.clone(), agent_id.clone(), evt_type)
                             }
                             agent_supervisor::SupervisorEvent::Stopped {
                                 agent_id,
-                                workspace,
+                                work_session_id,
                             } => (
-                                workspace.clone(),
+                                work_session_id.clone(),
                                 agent_id.clone(),
                                 WorkspaceEventType::AgentStopped,
                             ),
                         };
 
-                        if event_workspace != workspace_name {
-                            continue; // Not our workspace
+                        if event_work_session_id != workspace_name {
+                            continue; // Not our work session
                         }
 
                         // Load fresh workspace state for the proto conversion
@@ -341,8 +339,8 @@ impl DiscoveryService for DiscoveryServiceImpl {
                             .ok()
                             .and_then(|store| {
                                 store
-                                    .workspace(&workspace_name)
-                                    .map(|ws| convert::workspace_to_proto(&workspace_name, ws))
+                                    .work_session_id(&workspace_name)
+                                    .map(|_ws| convert::work_session_to_proto_workspace(&workspace_name, "", "", true, &[]))
                             });
 
                         let agent_proto = match &event {

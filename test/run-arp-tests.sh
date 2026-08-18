@@ -19,7 +19,7 @@ echo "==> Waiting for ARP server to be healthy..."
 MAX_WAIT=60
 WAITED=0
 while [ $WAITED -lt $MAX_WAIT ]; do
-    if curl -sf "$ARP_URL/api/workspaces" >/dev/null 2>&1; then
+    if curl -sf "$ARP_URL/api/work-sessions" >/dev/null 2>&1; then
         echo "    Server is ready (${WAITED}s)"
         break
     fi
@@ -38,9 +38,9 @@ echo ""
 echo "==> Running smoke tests..."
 FAILURES=0
 
-# Test 1: GET /api/workspaces
-echo -n "  GET /api/workspaces ... "
-RESP=$(curl -sf "$ARP_URL/api/workspaces")
+# Test 1: GET /api/work-sessions
+echo -n "  GET /api/work-sessions ... "
+RESP=$(curl -sf "$ARP_URL/api/work-sessions")
 if echo "$RESP" | grep -q "arp-test"; then
     echo "OK"
 else
@@ -49,9 +49,9 @@ else
     FAILURES=$((FAILURES + 1))
 fi
 
-# Test 2: GET /api/workspaces/arp-test
-echo -n "  GET /api/workspaces/arp-test ... "
-RESP=$(curl -sf "$ARP_URL/api/workspaces/arp-test")
+# Test 2: GET /api/work-sessions/arp-test
+echo -n "  GET /api/work-sessions/arp-test ... "
+RESP=$(curl -sf "$ARP_URL/api/work-sessions/arp-test")
 if echo "$RESP" | grep -q '"active":true'; then
     echo "OK"
 else
@@ -60,9 +60,9 @@ else
     FAILURES=$((FAILURES + 1))
 fi
 
-# Test 3: GET /api/workspaces/nonexistent -> 404
-echo -n "  GET /api/workspaces/nonexistent (expect 404) ... "
-STATUS=$(curl -sf -o /dev/null -w "%{http_code}" "$ARP_URL/api/workspaces/nonexistent" || true)
+# Test 3: GET /api/work-sessions/nonexistent -> 404
+echo -n "  GET /api/work-sessions/nonexistent (expect 404) ... "
+STATUS=$(curl -sf -o /dev/null -w "%{http_code}" "$ARP_URL/api/work-sessions/nonexistent" || true)
 if [ "$STATUS" = "404" ]; then
     echo "OK"
 else

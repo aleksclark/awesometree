@@ -31,15 +31,15 @@ impl ArpServer {
 
         if scope == "local" || scope == "all" {
             let st = state::load().map_err(|e| ErrorData::internal_error(e, None))?;
-            for (ws_name, ws) in &st.workspaces {
-                if !ws.active {
+            for (ws_name, agents) in &st.agents {
+                if false {
                     continue;
                 }
                 // Filter by project scope
-                if !scope_includes_project(&token.scope, &ws.project) {
+                if !scope_includes_project(&token.scope, "") {
                     continue;
                 }
-                for agent in &ws.agents {
+                for agent in agents {
                     if agent.status != AgentStatus::Ready && agent.status != AgentStatus::Busy {
                         continue;
                     }
@@ -48,7 +48,7 @@ impl ArpServer {
                         continue;
                     }
                     if let Some(ref cap) = params.capability {
-                        let card = crate::a2a_proxy::enriched_agent_card(agent, &ws.project);
+                        let card = crate::a2a_proxy::enriched_agent_card(agent, "");
                         let matches = card.card.skills.iter().any(|s| {
                             s.tags.iter().any(|t| t == cap)
                         });
@@ -56,7 +56,7 @@ impl ArpServer {
                             continue;
                         }
                     }
-                    let card = crate::a2a_proxy::enriched_agent_card(agent, &ws.project);
+                    let card = crate::a2a_proxy::enriched_agent_card(agent, "");
                     if let Ok(val) = serde_json::to_value(&card) {
                         cards.push(val);
                     }

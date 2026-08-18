@@ -8,8 +8,7 @@ use crate::model::work_session::{
 };
 use crate::model::WorkProfile;
 use crate::service_access;
-use axum::body::Body;
-use axum::extract::{Path, Query, Request, State};
+use axum::extract::{Path, Query, Request};
 use axum::http::StatusCode;
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Json, Response};
@@ -26,10 +25,8 @@ use utoipa_axum::routes;
 pub const DEFAULT_PORT: u16 = 9099;
 pub const DEFAULT_GRPC_PORT: u16 = 9098;
 
-#[derive(Clone)]
-struct AppState {
-    client: Arc<Client<hyper_util::client::legacy::connect::HttpConnector, Body>>,
-}
+#[derive(Clone, Default)]
+struct AppState;
 
 #[derive(Serialize, ToSchema)]
 struct ErrorBody {
@@ -131,8 +128,7 @@ struct ListFilter {
     tags(
         (name = "work-sessions", description = "WorkSession lifecycle and local realization"),
         (name = "work-profiles", description = "WorkProfile blueprints from Switchboard"),
-        (name = "projects", description = "Project Catalog via Switchboard"),
-        (name = "acp", description = "Agent Control Protocol proxy")
+        (name = "projects", description = "Project Catalog via Switchboard")
     )
 )]
 struct ApiDoc;
@@ -204,9 +200,7 @@ async fn auth_middleware(mut req: Request, next: Next) -> Result<Response, Respo
 pub async fn run(port: u16) {
     let client = Client::builder(TokioExecutor::new()).build_http();
     let client = Arc::new(client);
-    let state = AppState {
-        client: client.clone(),
-    };
+    let state = AppState;
 
     let (router, api) = build_api_router();
 
@@ -230,34 +224,6 @@ pub async fn run(port: u16) {
                     )
                 }
             }),
-        )
-        .route(
-            "/api/acp/{workspace}/health",
-            axum::routing::get(acp_health),
-        )
-        .route(
-            "/api/acp/{workspace}/send",
-            axum::routing::post(acp_send),
-        )
-        .route(
-            "/api/acp/{workspace}/messages",
-            axum::routing::get(acp_messages),
-        )
-        .route(
-            "/api/acp/{workspace}/history",
-            axum::routing::get(acp_history),
-        )
-        .route(
-            "/api/acp/{workspace}/stream",
-            axum::routing::post(acp_stream),
-        )
-        .route(
-            "/acp/{workspace}",
-            axum::routing::any(acp_proxy),
-        )
-        .route(
-            "/acp/{workspace}/{*rest}",
-            axum::routing::any(acp_proxy_path),
         )
         .layer(middleware::from_fn(auth_middleware))
         .with_state(state)
@@ -546,282 +512,6 @@ async fn delete_project(
         .map_err(map_err)?;
     dlog::log(format!("API: deleted project {id}"));
     Ok(StatusCode::NO_CONTENT)
-}
-
-async fn acp_proxy(
-    Path(workspace): Path<String>,
-    State(state): State<AppState>,
-    req: Request,
-) -> Result<Response, Response> {
-    proxy_to_acp(&workspace, "", req, &state).await
-}
-
-async fn acp_proxy_path(
-    Path((workspace, rest)): Path<(String, String)>,
-    State(state): State<AppState>,
-    req: Request,
-) -> Result<Response, Response> {
-    proxy_to_acp(&workspace, &rest, req, &state).await
-}
-
-fn resolve_acp_url(work_session_id: &str) -> Result<String, Response> {
-    let rt = crate::runtime_store::get(work_session_id)
-        .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-        .ok_or_else(|| {
-            err(
-                StatusCode::NOT_FOUND,
-                format!("no local runtime for work_session: {work_session_id}"),
-            )
-        })?;
-
-    if let Some(ref url) = rt.acp_url {
-        return Ok(url.clone());
-    }
-
-    let port = rt.acp_port.ok_or_else(|| {
-        err(
-            StatusCode::BAD_GATEWAY,
-            format!("work_session {work_session_id} has no ACP endpoint"),
-        )
-    })?;
-    Ok(format!("http://127.0.0.1:{port}"))
-}
-
-fn acp_client(workspace: &str) -> Result<crush_acp_sdk::Client, Response> {
-    let url = resolve_acp_url(workspace)?;
-    Ok(crush_acp_sdk::Client::new(&url))
-}
-
-async fn proxy_to_acp(
-    workspace: &str,
-    rest: &str,
-    req: Request,
-    state: &AppState,
-) -> Result<Response, Response> {
-    let base_url = resolve_acp_url(workspace)?;
-
-    let path = if rest.is_empty() {
-        String::new()
-    } else {
-        format!("/{rest}")
-    };
-
-    let query = req
-        .uri()
-        .query()
-        .map(|q| format!("?{q}"))
-        .unwrap_or_default();
-
-    let target_uri = format!("{base_url}{path}{query}");
-
-    let (parts, body) = req.into_parts();
-    let mut builder = hyper::Request::builder()
-        .method(parts.method)
-        .uri(&target_uri);
-
-    for (key, value) in &parts.headers {
-        if key != "host" {
-            builder = builder.header(key, value);
-        }
-    }
-
-    let proxy_req = builder
-        .body(body)
-        .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("build request: {e}")))?;
-
-    let resp = state
-        .client
-        .request(proxy_req)
-        .await
-        .map_err(|e| {
-            err(
-                StatusCode::BAD_GATEWAY,
-                format!("ACP backend ({workspace}): {e}"),
-            )
-        })?;
-
-    let (parts, body) = resp.into_parts();
-    Ok(Response::from_parts(parts, Body::new(body)))
-}
-
-#[derive(Deserialize)]
-struct AcpSendReq {
-    message: String,
-    #[serde(default)]
-    session_id: Option<String>,
-}
-
-async fn acp_health(Path(workspace): Path<String>) -> Result<Json<serde_json::Value>, Response> {
-    let client = acp_client(&workspace)?;
-    client
-        .ping()
-        .await
-        .map_err(|e| err(StatusCode::BAD_GATEWAY, format!("ACP ping failed: {e}")))?;
-    Ok(Json(serde_json::json!({"status": "ok"})))
-}
-
-async fn acp_send(
-    Path(workspace): Path<String>,
-    Json(req): Json<AcpSendReq>,
-) -> Result<Json<serde_json::Value>, Response> {
-    let client = acp_client(&workspace)?;
-
-    let result = if let Some(ref sid) = req.session_id {
-        client.resume(sid, &req.message).await
-    } else {
-        client.new_session(&req.message).await
-    };
-
-    let session_result = result.map_err(|e| err(StatusCode::BAD_GATEWAY, format!("ACP error: {e}")))?;
-
-    let session_id = session_result.run.as_ref().map(|r| r.session_id.clone());
-    let text = session_result.text();
-    let status = session_result.run.as_ref().map(|r| r.status.to_string());
-
-    if let Some(ref sid) = session_id {
-        let _ = save_session_id(&workspace, sid);
-    }
-
-    Ok(Json(serde_json::json!({
-        "session_id": session_id,
-        "text": text,
-        "status": status,
-    })))
-}
-
-async fn acp_messages(Path(workspace): Path<String>) -> Result<Json<serde_json::Value>, Response> {
-    let rt = crate::runtime_store::get(&workspace)
-        .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-        .ok_or_else(|| {
-            err(
-                StatusCode::NOT_FOUND,
-                format!("no local runtime for work_session: {workspace}"),
-            )
-        })?;
-
-    let session_id = rt.acp_session_id.as_ref().ok_or_else(|| {
-        err(
-            StatusCode::NOT_FOUND,
-            format!("no ACP session for work_session {workspace}"),
-        )
-    })?;
-
-    let client = acp_client(&workspace)?;
-    let snapshot = client
-        .dump(session_id)
-        .await
-        .map_err(|e| err(StatusCode::BAD_GATEWAY, format!("ACP dump failed: {e}")))?;
-
-    Ok(Json(serde_json::to_value(&snapshot).unwrap_or_default()))
-}
-
-async fn acp_history(Path(workspace): Path<String>) -> Result<Json<serde_json::Value>, Response> {
-    let rt = crate::runtime_store::get(&workspace)
-        .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-        .ok_or_else(|| {
-            err(
-                StatusCode::NOT_FOUND,
-                format!("no local runtime for work_session: {workspace}"),
-            )
-        })?;
-
-    let session_id = match rt.acp_session_id.as_ref() {
-        Some(sid) => sid.clone(),
-        None => return Ok(Json(serde_json::json!([]))),
-    };
-
-    let client = acp_client(&workspace)?;
-    let snapshot = client
-        .dump(&session_id)
-        .await
-        .map_err(|e| err(StatusCode::BAD_GATEWAY, format!("ACP dump failed: {e}")))?;
-
-    let messages: Vec<serde_json::Value> = snapshot
-        .messages
-        .iter()
-        .filter(|m| !m.is_summary_message)
-        .filter_map(|m| {
-            let parts: serde_json::Value = serde_json::from_str(&m.parts).ok()?;
-            let text: String = parts
-                .as_array()?
-                .iter()
-                .filter_map(|p| {
-                    if p.get("type")?.as_str()? == "text" {
-                        p.get("data")?.get("text")?.as_str().map(String::from)
-                    } else {
-                        None
-                    }
-                })
-                .collect::<Vec<_>>()
-                .join("");
-            if text.is_empty() {
-                return None;
-            }
-            let role = match m.role.as_str() {
-                "assistant" => "agent",
-                other => other,
-            };
-            Some(serde_json::json!({"role": role, "content": text}))
-        })
-        .collect();
-
-    Ok(Json(serde_json::json!(messages)))
-}
-
-async fn acp_stream(
-    Path(workspace): Path<String>,
-    Json(req): Json<AcpSendReq>,
-) -> Result<Response, Response> {
-    let client = acp_client(&workspace)?;
-
-    let stream_result = if let Some(ref sid) = req.session_id {
-        client.resume_stream(sid, &req.message).await
-    } else {
-        client.new_session_stream(&req.message).await
-    };
-
-    let mut acp_stream =
-        stream_result.map_err(|e| err(StatusCode::BAD_GATEWAY, format!("ACP stream: {e}")))?;
-
-    let ws_name = workspace.clone();
-    let (tx, rx) = tokio::sync::mpsc::channel::<Result<String, std::io::Error>>(64);
-
-    tokio::spawn(async move {
-        use crush_acp_sdk::EventType;
-        while let Some(event) = acp_stream.next().await {
-            if let Some(ref run) = event.run {
-                if !run.session_id.is_empty() {
-                    let _ = save_session_id(&ws_name, &run.session_id);
-                }
-            }
-            match event.event_type {
-                EventType::SessionMessage | EventType::SessionSnapshot => continue,
-                _ => {}
-            }
-            let line = serde_json::to_string(&event).unwrap_or_default();
-            if tx.send(Ok(format!("{line}\n"))).await.is_err() {
-                break;
-            }
-        }
-    });
-
-    let body_stream = tokio_stream::wrappers::ReceiverStream::new(rx);
-    let body = Body::from_stream(body_stream);
-
-    Ok(Response::builder()
-        .status(StatusCode::OK)
-        .header("content-type", "application/x-ndjson")
-        .header("cache-control", "no-cache")
-        .body(body)
-        .unwrap())
-}
-
-fn save_session_id(work_session_id: &str, session_id: &str) -> Result<(), String> {
-    crate::runtime_store::modify(work_session_id, |rt| {
-        rt.acp_session_id = Some(session_id.to_string());
-    })
-    .map(|_| ())
-    .map_err(|e| e.to_string())
 }
 
 #[cfg(test)]

@@ -10,7 +10,8 @@ pub struct PickerItem {
     pub name: String,
     pub project: String,
     pub active: bool,
-    pub acp_status: Option<String>,
+    pub lifecycle: String,
+    pub work_profile_id: String,
 }
 
 pub const CREATE_SENTINEL: &str = "\0CREATE";
@@ -22,15 +23,16 @@ pub enum PickerMode {
     Freeform { prompt: String },
     CreateForm {
         projects: Vec<String>,
+        /// (work_profile_id, display_name)
+        work_profiles: Vec<(String, String)>,
+        default_missing: bool,
     },
 }
 
 pub struct CreateFormResult {
     pub name: String,
     pub project: String,
-    pub repo_path: String,
-    pub branch: String,
-    pub is_new_project: bool,
+    pub work_profile_id: String,
 }
 
 pub fn open_picker_window(cx: &mut App, mode: PickerMode, tx: mpsc::Sender<String>) {
@@ -79,14 +81,12 @@ pub fn run_picker(mode: PickerMode) -> Option<String> {
 }
 
 pub fn parse_create_result(s: &str) -> Option<CreateFormResult> {
-    let parts: Vec<&str> = s.splitn(5, '\0').collect();
-    if parts.len() == 5 {
+    let parts: Vec<&str> = s.splitn(3, '\0').collect();
+    if parts.len() == 3 {
         Some(CreateFormResult {
             name: parts[0].to_string(),
             project: parts[1].to_string(),
-            repo_path: parts[2].to_string(),
-            branch: parts[3].to_string(),
-            is_new_project: parts[4] == "1",
+            work_profile_id: parts[2].to_string(),
         })
     } else {
         None
@@ -99,8 +99,7 @@ actions!(ws_picker, [Cancel, Confirm, SelectNext, SelectPrev, TabForward, TabBac
 enum FormField {
     Name,
     Project,
-    Repo,
-    Branch,
+    WorkProfile,
 }
 
 struct PickerView {
@@ -113,9 +112,12 @@ struct PickerView {
     form_field: FormField,
     form_name: Entity<TextInput>,
     form_project: Entity<TextInput>,
-    form_repo: Entity<TextInput>,
-    form_branch: Entity<TextInput>,
+    form_profile: Entity<TextInput>,
     projects: Vec<String>,
+    work_profiles: Vec<(String, String)>,
+    profile_filtered: Vec<usize>,
+    profile_selected: usize,
+    default_missing: bool,
     project_filtered: Vec<usize>,
     project_selected: usize,
     dropdown_scroll: ScrollHandle,
@@ -135,9 +137,8 @@ impl PickerView {
         let focus = cx.focus_handle();
         let query = cx.new(|cx| TextInput::new("type to filter...", cx));
         let form_name = cx.new(|cx| TextInput::new("e.g. aleks/my-feature", cx));
-        let form_project = cx.new(|cx| TextInput::new("select or type new name", cx));
-        let form_repo = cx.new(|cx| TextInput::new("/path/to/git/repo", cx));
-        let form_branch = cx.new(|cx| TextInput::new("master", cx));
+        let form_project = cx.new(|cx| TextInput::new("select project id", cx));
+        let form_profile = cx.new(|cx| TextInput::new("work profile id", cx));
 
         cx.subscribe_in(&query, _window, |view, _input, _event: &TextInputEvent, _window, cx| {
             view.filter(cx);
@@ -147,6 +148,12 @@ impl PickerView {
 
         cx.subscribe_in(&form_project, _window, |view, _input, _event: &TextInputEvent, _window, cx| {
             view.filter_projects(cx);
+            cx.notify();
+        })
+        .detach();
+
+        cx.subscribe_in(&form_profile, _window, |view, _input, _event: &TextInputEvent, _window, cx| {
+            view.filter_profiles(cx);
             cx.notify();
         })
         .detach();
@@ -164,9 +171,12 @@ impl PickerView {
                     form_field: FormField::Name,
                     form_name,
                     form_project,
-                    form_repo,
-                    form_branch,
+                    form_profile,
                     projects: vec![],
+                    work_profiles: vec![],
+                    profile_filtered: vec![],
+                    profile_selected: 0,
+                    default_missing: false,
                     project_filtered: vec![],
                     project_selected: 0,
                     dropdown_scroll: ScrollHandle::new(),
@@ -186,9 +196,12 @@ impl PickerView {
                 form_field: FormField::Name,
                 form_name,
                 form_project,
-                form_repo,
-                form_branch,
+                form_profile,
                 projects: vec![],
+                work_profiles: vec![],
+                profile_filtered: vec![],
+                profile_selected: 0,
+                default_missing: false,
                 project_filtered: vec![],
                 project_selected: 0,
                 dropdown_scroll: ScrollHandle::new(),
@@ -197,8 +210,28 @@ impl PickerView {
                 tx,
                 focus,
             },
-            PickerMode::CreateForm { projects } => {
+            PickerMode::CreateForm {
+                projects,
+                work_profiles,
+                default_missing,
+            } => {
                 let project_filtered = (0..projects.len()).collect();
+                let profile_filtered = (0..work_profiles.len()).collect();
+                // Preselect exact ID "default" if present.
+                let profile_selected = work_profiles
+                    .iter()
+                    .position(|(id, _)| id == "default")
+                    .unwrap_or(0);
+                let default_display = work_profiles
+                    .iter()
+                    .find(|(id, _)| id == "default")
+                    .map(|(_, dn)| dn.clone())
+                    .unwrap_or_default();
+                if !default_display.is_empty() {
+                    form_profile.update(cx, |input, cx| {
+                        input.set_value(&default_display, cx);
+                    });
+                }
                 Self {
                     items: vec![],
                     filtered: vec![],
@@ -209,9 +242,12 @@ impl PickerView {
                     form_field: FormField::Name,
                     form_name,
                     form_project,
-                    form_repo,
-                    form_branch,
+                    form_profile,
                     projects,
+                    work_profiles,
+                    profile_filtered,
+                    profile_selected,
+                    default_missing,
                     project_filtered,
                     project_selected: 0,
                     dropdown_scroll: ScrollHandle::new(),
@@ -228,8 +264,7 @@ impl PickerView {
         match field {
             FormField::Name => self.form_name.read(cx).value().to_string(),
             FormField::Project => self.form_project.read(cx).value().to_string(),
-            FormField::Repo => self.form_repo.read(cx).value().to_string(),
-            FormField::Branch => self.form_branch.read(cx).value().to_string(),
+            FormField::WorkProfile => self.form_profile.read(cx).value().to_string(),
         }
     }
 
@@ -237,14 +272,24 @@ impl PickerView {
         match self.form_field {
             FormField::Name => &self.form_name,
             FormField::Project => &self.form_project,
-            FormField::Repo => &self.form_repo,
-            FormField::Branch => &self.form_branch,
+            FormField::WorkProfile => &self.form_profile,
         }
     }
 
-    fn is_new_project(&self, cx: &App) -> bool {
-        let project = self.form_project.read(cx).value().to_string();
-        !project.is_empty() && !self.projects.iter().any(|p| p == &project)
+    fn resolved_work_profile_id(&self, cx: &App) -> String {
+        let typed = self.form_profile.read(cx).value().to_string();
+        // Prefer exact ID match, then display name match, else typed value.
+        if self.work_profiles.iter().any(|(id, _)| id == &typed) {
+            return typed;
+        }
+        if let Some((id, _)) = self.work_profiles.iter().find(|(_, dn)| dn == &typed) {
+            return id.clone();
+        }
+        if !self.profile_filtered.is_empty() {
+            let idx = self.profile_filtered[self.profile_selected.min(self.profile_filtered.len() - 1)];
+            return self.work_profiles[idx].0.clone();
+        }
+        typed
     }
 
     fn filter(&mut self, cx: &App) {
@@ -280,33 +325,37 @@ impl PickerView {
         self.project_selected = 0;
     }
 
-    fn next_form_field(&self, cx: &App) -> FormField {
+    fn filter_profiles(&mut self, cx: &App) {
+        let q = self.form_profile.read(cx).value().to_lowercase();
+        if q.is_empty() {
+            self.profile_filtered = (0..self.work_profiles.len()).collect();
+        } else {
+            self.profile_filtered = self
+                .work_profiles
+                .iter()
+                .enumerate()
+                .filter(|(_, (id, dn))| {
+                    fuzzy_match(&id.to_lowercase(), &q) || fuzzy_match(&dn.to_lowercase(), &q)
+                })
+                .map(|(i, _)| i)
+                .collect();
+        }
+        self.profile_selected = 0;
+    }
+
+    fn next_form_field(&self, _cx: &App) -> FormField {
         match self.form_field {
             FormField::Name => FormField::Project,
-            FormField::Project => {
-                if self.is_new_project(cx) {
-                    FormField::Repo
-                } else {
-                    FormField::Name
-                }
-            }
-            FormField::Repo => FormField::Branch,
-            FormField::Branch => FormField::Name,
+            FormField::Project => FormField::WorkProfile,
+            FormField::WorkProfile => FormField::Name,
         }
     }
 
-    fn prev_form_field(&self, cx: &App) -> FormField {
+    fn prev_form_field(&self, _cx: &App) -> FormField {
         match self.form_field {
-            FormField::Name => {
-                if self.is_new_project(cx) {
-                    FormField::Branch
-                } else {
-                    FormField::Project
-                }
-            }
+            FormField::Name => FormField::WorkProfile,
             FormField::Project => FormField::Name,
-            FormField::Repo => FormField::Project,
-            FormField::Branch => FormField::Repo,
+            FormField::WorkProfile => FormField::Project,
         }
     }
 
@@ -328,6 +377,11 @@ impl PickerView {
 
     fn on_confirm(&mut self, _: &Confirm, window: &mut Window, cx: &mut Context<Self>) {
         if self.is_form {
+            if self.default_missing {
+                // Cannot create without exact-ID default WorkProfile.
+                cx.notify();
+                return;
+            }
             let project_val = self.read_field(FormField::Project, cx);
             if self.form_field == FormField::Project && !self.project_filtered.is_empty() {
                 let idx = self.project_filtered[self.project_selected];
@@ -338,6 +392,15 @@ impl PickerView {
                 self.focus_active_field(window, cx);
                 cx.notify();
                 return;
+            }
+            if self.form_field == FormField::WorkProfile && !self.profile_filtered.is_empty() {
+                let idx = self.profile_filtered[self.profile_selected];
+                let (id, dn) = &self.work_profiles[idx];
+                let label = if dn.is_empty() { id.clone() } else { dn.clone() };
+                self.form_profile.update(cx, |input, cx| {
+                    input.set_value(&label, cx);
+                });
+                // Keep selection; submit on next enter from name/project filled state.
             }
             let name_val = self.read_field(FormField::Name, cx);
             if name_val.is_empty() {
@@ -352,9 +415,9 @@ impl PickerView {
                 cx.notify();
                 return;
             }
-            let repo_val = self.read_field(FormField::Repo, cx);
-            if self.is_new_project(cx) && repo_val.is_empty() {
-                self.form_field = FormField::Repo;
+            let profile_id = self.resolved_work_profile_id(cx);
+            if profile_id.is_empty() {
+                self.form_field = FormField::WorkProfile;
                 self.focus_active_field(window, cx);
                 cx.notify();
                 return;
@@ -381,24 +444,10 @@ impl PickerView {
     }
 
     fn submit_form(&mut self, window: &mut Window, cx: &App) {
-        let is_new = self.is_new_project(cx);
         let name = self.read_field(FormField::Name, cx);
         let project = self.read_field(FormField::Project, cx);
-        let repo = self.read_field(FormField::Repo, cx);
-        let branch_val = self.read_field(FormField::Branch, cx);
-        let branch = if branch_val.is_empty() {
-            "master".to_string()
-        } else {
-            branch_val
-        };
-        let result = format!(
-            "{}\0{}\0{}\0{}\0{}",
-            name,
-            project,
-            repo,
-            branch,
-            if is_new { "1" } else { "0" },
-        );
+        let profile = self.resolved_work_profile_id(cx);
+        let result = format!("{}\0{}\0{}", name, project, profile);
         let _ = self.tx.send(result);
         window.remove_window();
     }
@@ -408,6 +457,9 @@ impl PickerView {
             if self.form_field == FormField::Project && !self.project_filtered.is_empty() {
                 self.project_selected = (self.project_selected + 1) % self.project_filtered.len();
                 self.dropdown_scroll.scroll_to_item(self.project_selected);
+            } else if self.form_field == FormField::WorkProfile && !self.profile_filtered.is_empty() {
+                self.profile_selected = (self.profile_selected + 1) % self.profile_filtered.len();
+                self.dropdown_scroll.scroll_to_item(self.profile_selected);
             }
             cx.notify();
             return;
@@ -424,6 +476,9 @@ impl PickerView {
             if self.form_field == FormField::Project && !self.project_filtered.is_empty() {
                 self.project_selected = self.project_selected.checked_sub(1).unwrap_or(self.project_filtered.len() - 1);
                 self.dropdown_scroll.scroll_to_item(self.project_selected);
+            } else if self.form_field == FormField::WorkProfile && !self.profile_filtered.is_empty() {
+                self.profile_selected = self.profile_selected.checked_sub(1).unwrap_or(self.profile_filtered.len() - 1);
+                self.dropdown_scroll.scroll_to_item(self.profile_selected);
             }
             cx.notify();
             return;
@@ -529,6 +584,33 @@ fn render_dropdown_items(
                                     view.form_project.update(cx, |input, cx| {
                                         input.set_value(&item_for_click, cx);
                                     });
+                                    view.form_field = FormField::WorkProfile;
+                                    view.focus_active_field(window, cx);
+                                }
+                                FormField::WorkProfile => {
+                                    // item may be "display (id)" — resolve to id via index.
+                                    if let Some((id, dn)) = view
+                                        .work_profiles
+                                        .iter()
+                                        .find(|(id, dn)| {
+                                            id == &item_for_click
+                                                || dn == &item_for_click
+                                                || format!("{dn} ({id})") == item_for_click
+                                        })
+                                    {
+                                        let label = if dn.is_empty() {
+                                            id.clone()
+                                        } else {
+                                            dn.clone()
+                                        };
+                                        view.form_profile.update(cx, |input, cx| {
+                                            input.set_value(&label, cx);
+                                        });
+                                    } else {
+                                        view.form_profile.update(cx, |input, cx| {
+                                            input.set_value(&item_for_click, cx);
+                                        });
+                                    }
                                     view.form_field = FormField::Name;
                                     view.focus_active_field(window, cx);
                                 }
@@ -561,15 +643,29 @@ impl PickerView {
         let project_filtered = self.project_filtered.clone();
         let project_selected = self.project_selected;
         let projects = self.projects.clone();
+        let profile_filtered = self.profile_filtered.clone();
+        let profile_selected = self.profile_selected;
+        let profile_labels: Vec<String> = self
+            .work_profiles
+            .iter()
+            .map(|(id, dn)| {
+                if dn.is_empty() || dn == id {
+                    id.clone()
+                } else {
+                    format!("{dn} ({id})")
+                }
+            })
+            .collect();
         let dropdown_scroll = self.dropdown_scroll.clone();
         let field = self.form_field;
         let name_val = self.read_field(FormField::Name, cx);
         let project_val = self.read_field(FormField::Project, cx);
-        let repo_val = self.read_field(FormField::Repo, cx);
-        let is_new = self.is_new_project(cx);
-        let can_create = !name_val.is_empty()
+        let profile_id = self.resolved_work_profile_id(cx);
+        let default_missing = self.default_missing;
+        let can_create = !default_missing
+            && !name_val.is_empty()
             && !project_val.is_empty()
-            && (!is_new || !repo_val.is_empty());
+            && !profile_id.is_empty();
 
         div()
             .key_context("Picker")
@@ -599,9 +695,9 @@ impl PickerView {
                         div()
                             .text_size(px(16.))
                             .text_color(accent())
-                            .child("Create Workspace"),
+                            .child("Create WorkSession"),
                     )
-                    .when(is_new, |s: Div| {
+                    .when(default_missing, |s: Div| {
                         s.child(
                             div()
                                 .px(px(8.))
@@ -610,7 +706,7 @@ impl PickerView {
                                 .bg(new_badge())
                                 .text_color(new_badge_fg())
                                 .text_size(px(10.))
-                                .child("+ NEW PROJECT"),
+                                .child("MISSING default WorkProfile"),
                         )
                     }),
             )
@@ -653,22 +749,33 @@ impl PickerView {
                                 ))
                             }),
                     )
-                    .when(is_new, |this: Div| {
-                        this.child(render_form_field(
-                            "REPO PATH",
-                            &self.form_repo,
-                            field == FormField::Repo,
-                            FormField::Repo,
-                            cx,
-                        ))
-                        .child(render_form_field(
-                            "SOURCE BRANCH",
-                            &self.form_branch,
-                            field == FormField::Branch,
-                            FormField::Branch,
-                            cx,
-                        ))
-                    }),
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap(px(4.))
+                            .child(render_form_field(
+                                "WORK PROFILE",
+                                &self.form_profile,
+                                field == FormField::WorkProfile,
+                                FormField::WorkProfile,
+                                cx,
+                            ))
+                            .when(
+                                field == FormField::WorkProfile && !profile_filtered.is_empty(),
+                                |this: Div| {
+                                    this.child(render_dropdown_items(
+                                        &profile_labels,
+                                        &profile_filtered,
+                                        profile_selected,
+                                        "work_profile",
+                                        cx,
+                                        FormField::WorkProfile,
+                                        &dropdown_scroll,
+                                    ))
+                                },
+                            ),
+                    ),
             )
             .child(
                 div()
@@ -683,21 +790,24 @@ impl PickerView {
                         div()
                             .text_size(px(11.))
                             .text_color(fg_dim())
-                            .child("Tab to switch fields  ·  Enter to confirm  ·  Esc to cancel"),
+                            .child(if default_missing {
+                                "Cannot create: Switchboard has no WorkProfile with id exactly \"default\""
+                            } else {
+                                "Tab to switch fields  ·  Enter to confirm  ·  Esc to cancel"
+                            }),
                     )
                     .child(button(
                         "create-btn",
                         "Create",
                         if can_create { ButtonKind::Primary } else { ButtonKind::Disabled },
                         |view, window, cx| {
-                            let is_new = view.is_new_project(cx);
+                            if view.default_missing {
+                                return;
+                            }
                             let name = view.read_field(FormField::Name, cx);
                             let project = view.read_field(FormField::Project, cx);
-                            let repo = view.read_field(FormField::Repo, cx);
-                            let can_create = !name.is_empty()
-                                && !project.is_empty()
-                                && (!is_new || !repo.is_empty());
-                            if !can_create {
+                            let profile = view.resolved_work_profile_id(cx);
+                            if name.is_empty() || project.is_empty() || profile.is_empty() {
                                 return;
                             }
                             view.submit_form(window, cx);
@@ -861,17 +971,12 @@ impl PickerView {
                                                         })
                                                         .child(item.name.clone()),
                                                 )
-                                                .when_some(item.acp_status.clone(), |s, status| {
-                                                    let color = if status == "running" {
-                                                        success()
-                                                    } else {
-                                                        fg_dim()
-                                                    };
+                                                .when(!item.lifecycle.is_empty(), |s| {
                                                     s.child(
                                                         div()
                                                             .text_size(px(10.))
-                                                            .text_color(color)
-                                                            .child("ACP"),
+                                                            .text_color(fg_dim())
+                                                            .child(item.lifecycle.clone()),
                                                     )
                                                 }),
                                         )
@@ -991,30 +1096,29 @@ mod tests {
 
     #[test]
     fn parse_create_result_valid() {
-        let result = parse_create_result("name\0proj\0/repo\0main\01").unwrap();
+        let result = parse_create_result("name\0proj\0default").unwrap();
         assert_eq!(result.name, "name");
         assert_eq!(result.project, "proj");
-        assert_eq!(result.repo_path, "/repo");
-        assert_eq!(result.branch, "main");
-        assert!(result.is_new_project);
+        assert_eq!(result.work_profile_id, "default");
     }
 
     #[test]
-    fn parse_create_result_existing_project() {
-        let result = parse_create_result("ws\0proj\0/r\0master\00").unwrap();
-        assert!(!result.is_new_project);
+    fn parse_create_result_explicit_profile() {
+        let result = parse_create_result("ws\0proj\0code-review").unwrap();
+        assert_eq!(result.work_profile_id, "code-review");
     }
 
     #[test]
     fn parse_create_result_too_few_parts() {
-        assert!(parse_create_result("a\0b\0c").is_none());
+        assert!(parse_create_result("a\0b").is_none());
     }
 
     #[test]
     fn parse_create_result_empty_fields() {
-        let result = parse_create_result("\0\0\0\0").unwrap();
+        let result = parse_create_result("\0\0").unwrap();
         assert!(result.name.is_empty());
         assert!(result.project.is_empty());
+        assert!(result.work_profile_id.is_empty());
     }
 
     #[test]

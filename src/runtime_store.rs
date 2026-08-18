@@ -304,8 +304,6 @@ fn write_secrets(file: &mut File, doc: &RuntimeSecrets) -> Result<()> {
 
 /// Allocate next free tag index starting at TAG_OFFSET.
 pub const TAG_OFFSET: i32 = 10;
-pub const ACP_PORT_BASE: u16 = 9100;
-pub const ACP_PORT_MAX: u16 = 9199;
 pub const BEZALEL_PORT_BASE: u16 = 9200;
 pub const BEZALEL_PORT_MAX: u16 = 9299;
 
@@ -325,21 +323,6 @@ pub fn allocate_tag_index(exclude: &str) -> Result<i32> {
         idx += 1;
     }
     Ok(idx)
-}
-
-pub fn allocate_acp_port(exclude: &str) -> Result<Option<u16>> {
-    let all = load_all()?;
-    let used: std::collections::HashSet<u16> = all
-        .values()
-        .filter(|r| r.work_session_id != exclude)
-        .filter_map(|r| r.acp_port)
-        .collect();
-    for port in ACP_PORT_BASE..=ACP_PORT_MAX {
-        if !used.contains(&port) && is_port_available(port) {
-            return Ok(Some(port));
-        }
-    }
-    Ok(None)
 }
 
 pub fn allocate_bezalel_port(exclude: &str) -> Result<Option<u16>> {

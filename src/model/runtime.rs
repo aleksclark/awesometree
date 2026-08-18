@@ -49,12 +49,6 @@ pub struct WorkSessionRuntime {
     pub tag_index: Option<i32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tag_name: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub acp_port: Option<u16>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub acp_url: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub acp_session_id: Option<String>,
     #[serde(default)]
     pub headless: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]

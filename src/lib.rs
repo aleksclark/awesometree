@@ -18,7 +18,6 @@ pub mod switchboard;
 pub mod runtime_store;
 pub mod work_session_service;
 pub mod service_access;
-pub mod interop;
 pub mod state;
 pub mod workspace;
 pub mod wm;
@@ -43,7 +42,6 @@ pub mod auth;
 #[cfg(feature = "gui")]
 pub mod qr;
 pub mod server;
-pub mod acp_supervisor;
 pub mod bezalel_supervisor;
 pub mod agent_supervisor;
 pub mod a2a_proxy;

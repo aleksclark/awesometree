@@ -23,7 +23,7 @@ Creating a WorkSession (WorkProfile selection defaults to exact ID
 launches Zed. Another hotkey cycles between open WorkSession tags.
 
 The daemon also runs an HTTP server (port 9099) with a REST API for
-WorkSession/Project façades and an ACP reverse proxy. The mobile app
+WorkSession/Project façades The mobile app
 connects by scanning a QR code from the tray menu.
 
 Configure Switchboard via `AWESOMETREE_SWITCHBOARD_URL` (default
@@ -124,7 +124,7 @@ The `eval` method on macOS accepts AppleScript instead of Lua.
 | Runtime store | `src/runtime_store.rs` | Host-local realization |
 | Workspace helpers | `src/workspace.rs` | git/WM realization helpers |
 | WM adapter | `src/wm.rs` | `Adapter` trait |
-| HTTP/ACP | `src/server.rs` | REST `/api/work-sessions`, projects, ACP |
+| HTTP | `src/server.rs` | REST `/api/work-sessions`, projects |
 | Agent supervisor | `src/agent_supervisor.rs` | Agent process lifecycle |
 | ARP store | `src/arp_store.rs` | Agent/task runtime tables |
 | A2A proxy | `src/a2a_proxy.rs` | A2A v1.0 HTTP proxy |
@@ -170,7 +170,7 @@ The mobile app lives in `android/`. It uses Jetpack Compose with
 Material 3 (Catppuccin Mocha theme) and connects to the desktop server
 via the REST API. Core API client logic is in `core/` (Rust + UniFFI).
 
-Screens: WorkSessions, Projects, ACP Agent Chat, Settings/QR Scanner.
+Screens: WorkSessions, Projects, Settings/QR Scanner.
 
 ## Detailed Docs
 

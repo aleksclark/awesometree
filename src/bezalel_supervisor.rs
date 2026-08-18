@@ -1,5 +1,5 @@
 use crate::log as dlog;
-use crate::state;
+use crate::runtime_store;
 use rand::Rng;
 use std::collections::HashMap;
 use std::process::Stdio;
@@ -203,7 +203,33 @@ pub fn stop_all() {
 }
 
 pub fn start_active_workspaces() {
-    sync_workspaces();
+    let runtimes = match runtime_store::load_all() {
+        Ok(r) => r,
+        Err(e) => {
+            crate::log::log(format!("bezalel: load runtime: {e}"));
+            return;
+        }
+    };
+    let running_set: std::collections::HashSet<String> = get()
+        .map(|s| s.procs.lock().unwrap().keys().cloned().collect::<Vec<_>>())
+        .unwrap_or_default()
+        .into_iter()
+        .collect();
+    for (name, rt) in runtimes {
+        if !rt.headless {
+            continue;
+        }
+        if running_set.contains(name.as_str()) {
+            continue;
+        }
+        let Some(port) = rt.bezalel_port else { continue };
+        let dir = rt.workspace.as_ref().map(|w| w.path.clone()).unwrap_or_default();
+        let token = runtime_store::get_bezalel_token(&name).ok().flatten().unwrap_or_default();
+        if token.is_empty() {
+            continue;
+        }
+        start_for_workspace(&name, &dir, port, &token);
+    }
 }
 
 /// Start bezalel for every active headless workspace that has a port + token,
@@ -214,41 +240,34 @@ pub fn sync_workspaces() {
         None => return,
     };
 
-    let st = match state::load() {
-        Ok(s) => s,
-        Err(e) => {
-            dlog::log(format!("Bezalel supervisor: load state failed: {e}"));
-            return;
-        }
-    };
-
     let running = sup.running_workspaces();
     let running_set: std::collections::HashSet<&str> = running.iter().map(|s| s.as_str()).collect();
 
-    for (name, ws) in &st.workspaces {
-        if !ws.active || !ws.headless || ws.dir.is_empty() {
-            continue;
+    // Restart headless WorkSessions that have runtime ports/tokens but no live process.
+    if let Ok(runtimes) = runtime_store::load_all() {
+        for (ws_id, rt) in runtimes {
+            if !rt.headless {
+                continue;
+            }
+            if running_set.contains(ws_id.as_str()) {
+                continue;
+            }
+            let Some(port) = rt.bezalel_port else { continue; };
+            let Ok(Some(token)) = runtime_store::get_bezalel_token(&ws_id) else { continue; };
+            let dir = rt
+                .workspace
+                .as_ref()
+                .map(|w| w.path.clone())
+                .unwrap_or_default();
+            sup.start(&ws_id, &dir, port, &token);
         }
-        if running_set.contains(name.as_str()) {
-            continue;
-        }
-        let port = match ws.bezalel_port {
-            Some(p) => p,
-            None => continue,
-        };
-        let token = match &ws.bezalel_token {
-            Some(t) => t,
-            None => continue,
-        };
-        sup.start(name, &ws.dir, port, token);
     }
 
     for name in &running {
-        match st.workspaces.get(name) {
-            Some(ws) if ws.active && ws.headless => {}
+        match runtime_store::get(name) {
+            Ok(Some(rt)) if rt.headless => {}
             _ => {
-                dlog::log(format!("Bezalel supervisor: stopping orphan {name}"));
-                sup.stop(name);
+                stop_for_workspace(name);
             }
         }
     }

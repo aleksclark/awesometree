@@ -6,6 +6,7 @@ use crate::grpc::arp_proto::*;
 use crate::grpc::arp_proto::agent_service_server::AgentService;
 use crate::grpc::convert;
 use crate::grpc::extract_token;
+use crate::runtime_store;
 use crate::state;
 use tonic::{Request, Response, Status};
 
@@ -26,10 +27,6 @@ impl AgentService for AgentServiceImpl {
         if !auth::permission_allows(&token.permission, &auth::Permission::Session) {
             return Err(Status::permission_denied("insufficient permission"));
         }
-
-        if req.workspace.is_empty() {
-            return Err(Status::invalid_argument("workspace is required"));
-        }
         if req.template.is_empty() {
             return Err(Status::invalid_argument("template is required"));
         }
@@ -37,19 +34,24 @@ impl AgentService for AgentServiceImpl {
         let store = state::load()
             .map_err(|e| Status::internal(format!("failed to load state: {e}")))?;
 
-        let ws = store.workspace(&req.workspace).ok_or_else(|| {
-            Status::not_found(format!("workspace '{}' not found", req.workspace))
-        })?;
+        // WorkSession must have host-local runtime realization.
+        let rt = runtime_store::get(&req.workspace)
+            .map_err(|e| Status::internal(e.to_string()))?
+            .ok_or_else(|| Status::not_found(format!("work_session runtime '{}' not found", req.workspace)))?;
+        let dir = rt
+            .workspace
+            .as_ref()
+            .map(|w| w.path.clone())
+            .unwrap_or_default();
 
-        // Check scope includes this workspace's project
-        if !auth::scope_includes_project(&token.scope, &ws.project) {
+        if !auth::scope_includes_project(&token.scope, &req.workspace) {
             return Err(Status::permission_denied(format!(
-                "token scope does not include project '{}'",
-                ws.project
+                "token scope does not include work_session '{}'",
+                req.workspace
             )));
         }
 
-        let port = store.allocate_agent_port().ok_or_else(|| {
+        let port = store.allocate_agent_port(None).ok_or_else(|| {
             Status::resource_exhausted("no available ports for agent")
         })?;
 
@@ -59,20 +61,8 @@ impl AgentService for AgentServiceImpl {
             req.name.clone()
         };
 
-        // Look up the template from the project's registered templates.
-        let project = crate::interop::load(&ws.project)
-            .ok();
-        let tmpl_cfg = project
-            .as_ref()
-            .and_then(|p| p.agent_template(&req.template));
+        let command = format!("{} serve", req.template);
 
-        // Build the command: use template config if found, else fall back to `{template} serve`
-        let command = match &tmpl_cfg {
-            Some(cfg) if cfg.command.is_some() => cfg.command.clone().unwrap(),
-            _ => format!("{} serve", req.template),
-        };
-
-        // Create child token for the agent
         let child_token = auth::create_child_token(&token, None, None)
             .map_err(|e| Status::internal(format!("failed to create child token: {e}")))?;
         let mut child_token_with_session = child_token;
@@ -82,21 +72,9 @@ impl AgentService for AgentServiceImpl {
         let mut env = req.env;
         env.insert("ARP_TOKEN".to_string(), token_str);
 
-        // Merge template env if available (request env takes precedence)
-        if let Some(ref cfg) = tmpl_cfg {
-            for (k, v) in &cfg.env {
-                env.entry(k.clone()).or_insert_with(|| v.clone());
-            }
-            // Inject port via port_env if configured
-            if let Some(ref port_env) = cfg.port_env {
-                if !port_env.is_empty() {
-                    env.insert(port_env.clone(), port.to_string());
-                }
-            }
-        }
         let opts = agent_supervisor::SpawnOptions {
-            workspace: req.workspace.clone(),
-            dir: ws.dir.clone(),
+            work_session_id: req.workspace.clone(),
+            dir,
             template: req.template.clone(),
             name: name.clone(),
             port,
@@ -113,7 +91,7 @@ impl AgentService for AgentServiceImpl {
             id: result.agent_id.clone(),
             template: req.template,
             name,
-            workspace: req.workspace.clone(),
+            work_session_id: req.workspace.clone(),
             status: state::AgentStatus::Starting,
             port: result.port,
             host: None,
@@ -144,45 +122,28 @@ impl AgentService for AgentServiceImpl {
         let store = state::load()
             .map_err(|e| Status::internal(format!("failed to load state: {e}")))?;
 
-        let mut agents: Vec<AgentInstance> = Vec::new();
+        let mut out: Vec<AgentInstance> = Vec::new();
 
-        for (ws_name, ws) in &store.workspaces {
-            // Filter by project scope
-            if !auth::scope_includes_project(&token.scope, &ws.project) {
-                continue;
-            }
-
-            // Filter by workspace
+        for (ws_name, agents) in &store.agents {
             if !req.workspace.is_empty() && ws_name.as_str() != req.workspace {
                 continue;
             }
-
-            for agent in &ws.agents {
-                // For session-scoped tokens, only show own-session agents
+            for agent in agents.iter() {
+                if !auth::scope_includes_project(&token.scope, &agent.work_session_id)
+                    && !auth::session_matches(&token, agent)
+                {
+                    continue;
+                }
                 if token.permission == auth::Permission::Session
                     && !auth::session_matches(&token, agent)
                 {
                     continue;
                 }
-
-                // Filter by status
-                if req.status != AgentStatus::Unspecified as i32 {
-                    let agent_status = convert::agent_status_to_proto(&agent.status);
-                    if agent_status != req.status {
-                        continue;
-                    }
-                }
-
-                // Filter by template
-                if !req.template.is_empty() && agent.template != req.template {
-                    continue;
-                }
-
-                agents.push(convert::agent_instance_to_proto(agent));
+                out.push(convert::agent_instance_to_proto(agent));
             }
         }
 
-        Ok(Response::new(ListAgentsResponse { agents }))
+        Ok(Response::new(ListAgentsResponse { agents: out }))
     }
 
     async fn get_agent_status(
@@ -192,27 +153,15 @@ impl AgentService for AgentServiceImpl {
         let token = extract_token(&request);
         let req = request.into_inner();
 
-        if req.agent_id.is_empty() {
-            return Err(Status::invalid_argument("agent_id is required"));
-        }
-
         let store = state::load()
             .map_err(|e| Status::internal(format!("failed to load state: {e}")))?;
 
-        let (_ws_name, ws_state) = store
-            .find_agent(&req.agent_id)
-            .map(|(ws_name, agent)| {
-                let ws = store.workspace(ws_name).unwrap();
-                (ws_name, (ws, agent))
-            })
-            .ok_or_else(|| {
-                Status::not_found(format!("agent '{}' not found", req.agent_id))
-            })?;
-
-        let (ws, agent) = ws_state;
+        let (_ws_name, agent) = store.find_agent(&req.agent_id).ok_or_else(|| {
+            Status::not_found(format!("agent '{}' not found", req.agent_id))
+        })?;
 
         // Check scope
-        if !auth::scope_includes_project(&token.scope, &ws.project) {
+        if !auth::scope_includes_project(&token.scope, "") {
             return Err(Status::permission_denied("token scope mismatch"));
         }
 
@@ -232,10 +181,6 @@ impl AgentService for AgentServiceImpl {
     ) -> Result<Response<SendAgentMessageResponse>, Status> {
         let token = extract_token(&request);
         let req = request.into_inner();
-
-        if req.agent_id.is_empty() {
-            return Err(Status::invalid_argument("agent_id is required"));
-        }
         if req.message.is_empty() {
             return Err(Status::invalid_argument("message is required"));
         }
@@ -243,16 +188,14 @@ impl AgentService for AgentServiceImpl {
         let store = state::load()
             .map_err(|e| Status::internal(format!("failed to load state: {e}")))?;
 
-        let (ws_name, agent) = store
+        let (_ws_name, agent) = store
             .resolve_agent_flexible(&req.agent_id)
             .ok_or_else(|| {
                 Status::not_found(format!("agent '{}' not found", req.agent_id))
             })?;
 
-        let ws = store.workspace(ws_name).unwrap();
-
         // Check scope
-        if !auth::scope_includes_project(&token.scope, &ws.project) {
+        if !auth::scope_includes_project(&token.scope, "") {
             return Err(Status::permission_denied("token scope mismatch"));
         }
 
@@ -390,10 +333,6 @@ impl AgentService for AgentServiceImpl {
     ) -> Result<Response<prost_types::Struct>, Status> {
         let token = extract_token(&request);
         let req = request.into_inner();
-
-        if req.agent_id.is_empty() {
-            return Err(Status::invalid_argument("agent_id is required"));
-        }
         if req.message.is_empty() {
             return Err(Status::invalid_argument("message is required"));
         }
@@ -401,16 +340,14 @@ impl AgentService for AgentServiceImpl {
         let store = state::load()
             .map_err(|e| Status::internal(format!("failed to load state: {e}")))?;
 
-        let (ws_name, agent) = store
+        let (_ws_name, agent) = store
             .resolve_agent_flexible(&req.agent_id)
             .ok_or_else(|| {
                 Status::not_found(format!("agent '{}' not found", req.agent_id))
             })?;
 
-        let ws = store.workspace(ws_name).unwrap();
-
         // Check scope
-        if !auth::scope_includes_project(&token.scope, &ws.project) {
+        if !auth::scope_includes_project(&token.scope, "") {
             return Err(Status::permission_denied("token scope mismatch"));
         }
 
@@ -503,10 +440,6 @@ impl AgentService for AgentServiceImpl {
     ) -> Result<Response<prost_types::Struct>, Status> {
         let token = extract_token(&request);
         let req = request.into_inner();
-
-        if req.agent_id.is_empty() {
-            return Err(Status::invalid_argument("agent_id is required"));
-        }
         if req.task_id.is_empty() {
             return Err(Status::invalid_argument("task_id is required"));
         }
@@ -514,16 +447,14 @@ impl AgentService for AgentServiceImpl {
         let store = state::load()
             .map_err(|e| Status::internal(format!("failed to load state: {e}")))?;
 
-        let (ws_name, agent) = store
+        let (_ws_name, agent) = store
             .resolve_agent_flexible(&req.agent_id)
             .ok_or_else(|| {
                 Status::not_found(format!("agent '{}' not found", req.agent_id))
             })?;
 
-        let ws = store.workspace(ws_name).unwrap();
-
         // Check scope
-        if !auth::scope_includes_project(&token.scope, &ws.project) {
+        if !auth::scope_includes_project(&token.scope, "") {
             return Err(Status::permission_denied("token scope mismatch"));
         }
 
@@ -581,23 +512,17 @@ impl AgentService for AgentServiceImpl {
         let token = extract_token(&request);
         let req = request.into_inner();
 
-        if req.agent_id.is_empty() {
-            return Err(Status::invalid_argument("agent_id is required"));
-        }
-
         let store = state::load()
             .map_err(|e| Status::internal(format!("failed to load state: {e}")))?;
 
-        let (ws_name, agent) = store
+        let (_ws_name, agent) = store
             .find_agent(&req.agent_id)
             .ok_or_else(|| {
                 Status::not_found(format!("agent '{}' not found", req.agent_id))
             })?;
 
-        let ws = store.workspace(ws_name).unwrap();
-
         // Check scope
-        if !auth::scope_includes_project(&token.scope, &ws.project) {
+        if !auth::scope_includes_project(&token.scope, "") {
             return Err(Status::permission_denied("token scope mismatch"));
         }
 
@@ -640,25 +565,14 @@ impl AgentService for AgentServiceImpl {
         let token = extract_token(&request);
         let req = request.into_inner();
 
-        if req.agent_id.is_empty() {
-            return Err(Status::invalid_argument("agent_id is required"));
-        }
-
         let store = state::load()
             .map_err(|e| Status::internal(format!("failed to load state: {e}")))?;
 
-        let (ws_name, agent) = store
+        let (_ws_name, agent) = store
             .find_agent(&req.agent_id)
             .ok_or_else(|| {
                 Status::not_found(format!("agent '{}' not found", req.agent_id))
             })?;
-
-        let ws = store.workspace(ws_name).unwrap();
-
-        // Check scope
-        if !auth::scope_includes_project(&token.scope, &ws.project) {
-            return Err(Status::permission_denied("token scope mismatch"));
-        }
 
         // Session-scoped tokens can only restart own-session agents
         if token.permission == auth::Permission::Session && !auth::session_matches(&token, agent) {
@@ -668,8 +582,12 @@ impl AgentService for AgentServiceImpl {
         // Capture the agent config and identity before stopping
         let template = agent.template.clone();
         let name = agent.name.clone();
-        let workspace = agent.workspace.clone();
-        let ws_dir = ws.dir.clone();
+        let workspace = agent.work_session_id.clone();
+        let ws_dir = runtime_store::get(&workspace)
+            .ok()
+            .flatten()
+            .and_then(|r| r.workspace.map(|w| w.path))
+            .unwrap_or_default();
         let old_token_id = agent.token_id.clone();
         let old_session_id = agent.session_id.clone();
         let old_spawned_by = agent.spawned_by.clone();
@@ -693,35 +611,14 @@ impl AgentService for AgentServiceImpl {
         let store = state::load()
             .map_err(|e| Status::internal(format!("failed to load state: {e}")))?;
 
-        let port = store.allocate_agent_port().ok_or_else(|| {
+        let port = store.allocate_agent_port(None).ok_or_else(|| {
             Status::resource_exhausted("no available ports for agent")
         })?;
 
-        // Look up the template from the project's registered templates for restart.
-        let project = crate::interop::load(&ws.project).ok();
-        let tmpl_cfg = project
-            .as_ref()
-            .and_then(|p| p.agent_template(&template));
-
-        let command = match &tmpl_cfg {
-            Some(cfg) if cfg.command.is_some() => cfg.command.clone().unwrap(),
-            _ => format!("{template} serve"),
-        };
-
-        // Merge template env into old_env
-        if let Some(ref cfg) = tmpl_cfg {
-            for (k, v) in &cfg.env {
-                old_env.entry(k.clone()).or_insert_with(|| v.clone());
-            }
-            if let Some(ref port_env) = cfg.port_env {
-                if !port_env.is_empty() {
-                    old_env.insert(port_env.clone(), port.to_string());
-                }
-            }
-        }
+        let command = format!("{template} serve");
 
         let opts = agent_supervisor::SpawnOptions {
-            workspace: workspace.clone(),
+            work_session_id: workspace.clone(),
             dir: ws_dir,
             template: template.clone(),
             name: name.clone(),
@@ -739,7 +636,7 @@ impl AgentService for AgentServiceImpl {
             id: result.agent_id.clone(),
             template,
             name,
-            workspace: workspace.clone(),
+            work_session_id: workspace.clone(),
             status: state::AgentStatus::Starting,
             port: result.port,
             host: None,

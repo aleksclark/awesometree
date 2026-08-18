@@ -14,7 +14,7 @@ pub mod http_bridge;
 
 // Re-export service impl structs for convenience.
 pub use project::ProjectServiceImpl;
-pub use workspace::{WorkSessionServiceImpl, WorkspaceServiceImpl};
+pub use workspace::WorkSessionServiceImpl;
 pub use agent::AgentServiceImpl;
 pub use discovery::DiscoveryServiceImpl;
 pub use token::TokenServiceImpl;
@@ -38,7 +38,7 @@ pub fn extract_token<T>(req: &tonic::Request<T>) -> auth::ScopedToken {
 pub fn grpc_router() -> tonic::transport::server::Router {
     tonic::transport::Server::builder()
         .add_service(arp_proto::project_service_server::ProjectServiceServer::new(ProjectServiceImpl))
-        .add_service(arp_proto::work_session_service_server::WorkSessionServiceServer::new(WorkSessionServiceImpl))
+        .add_service(arp_proto::work_session_service_server::WorkSessionServiceServer::new(WorkSessionServiceImpl::new()))
         .add_service(arp_proto::agent_service_server::AgentServiceServer::new(AgentServiceImpl))
         .add_service(arp_proto::discovery_service_server::DiscoveryServiceServer::new(DiscoveryServiceImpl))
         .add_service(arp_proto::token_service_server::TokenServiceServer::new(TokenServiceImpl))

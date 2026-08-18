@@ -1,366 +1,69 @@
-use crate::acp_supervisor;
-use crate::bezalel_supervisor;
-use crate::interop::{self, AwesometreeExt, Project};
-use crate::log as dlog;
-use crate::state::{self, Store};
-use crate::wm::{self, Adapter};
-use std::path::PathBuf;
+//! Material Workspace Resource helpers (git worktrees / environment).
+//!
+//! Does NOT create or own WorkSession authority — that lives in Switchboard via
+//! `WorkSessionService`. These helpers operate on filesystem git worktrees only.
+
+use crate::paths;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
-pub struct Manager {
-    pub state: Store,
-    pub wm: Box<dyn Adapter>,
+/// Expand `~` in a path string.
+pub fn expand_home(p: &str) -> PathBuf {
+    paths::expand_home(p)
 }
 
-pub struct UpOptions {
-    pub create_tag: bool,
-    pub launch_apps: bool,
-    pub headless: bool,
+/// Default base directory for worktrees.
+pub fn worktree_base() -> PathBuf {
+    paths::home_dir().join("worktrees")
 }
 
-pub struct DownOptions {
-    pub manage_tag: bool,
-    pub keep_worktree: bool,
-}
-
-#[derive(Debug)]
-pub struct ResolvedWorkspace {
-    pub name: String,
-    pub project: Project,
-    pub ext: AwesometreeExt,
-    pub active: bool,
-    pub tag_index: i32,
-    pub dir: PathBuf,
-}
-
-impl Manager {
-    pub fn new(state: Store, wm: Box<dyn Adapter>) -> Self {
-        Self { state, wm }
+/// Resolve a worktree directory for a WorkSession under a project name.
+pub fn resolve_worktree_path(
+    work_session_id: &str,
+    project_name: &str,
+    worktree_dir: Option<&str>,
+    primary_repo: Option<&str>,
+) -> PathBuf {
+    let safe = work_session_id.replace('/', "-");
+    if let Some(dir) = worktree_dir {
+        return expand_home(dir).join(&safe);
     }
-
-    pub fn resolve_workspace(&self, ws_name: &str) -> Result<ResolvedWorkspace, String> {
-        let ws_state = self
-            .state
-            .workspace(ws_name)
-            .ok_or_else(|| format!("workspace not found: {ws_name}"))?;
-        let project = interop::load(&ws_state.project)?;
-        let ext = project.awesometree_ext();
-        let dir = resolve_dir(ws_name, &project);
-        Ok(ResolvedWorkspace {
-            name: ws_name.to_string(),
-            project,
-            ext,
-            active: ws_state.active,
-            tag_index: ws_state.tag_index,
-            dir,
-        })
-    }
-
-    pub fn up(
-        &mut self,
-        ws_name: &str,
-        project: &Project,
-        opts: &UpOptions,
-    ) -> Result<(), String> {
-        eprintln!("  Creating workspace: {ws_name}");
-        let ext = project.awesometree_ext();
-        let dir = resolve_dir(ws_name, project);
-
-        ensure_worktree(ws_name, project, &dir)?;
-
-        let tag_idx = self.state.allocate_tag_index(ws_name);
-        let layout = if ext.layout.is_empty() {
-            "tile"
-        } else {
-            &ext.layout
-        };
-
-        if opts.create_tag {
-            let tag = wm::tag_name(&project.name, ws_name);
-            dlog::log(format!("Creating tag: {tag} (index: {tag_idx}, layout: {layout})"));
-            if let Err(e) = self.wm.create_tag(&tag, tag_idx, layout) {
-                dlog::log(format!("Warning: create tag failed: {e} — continuing with app launch"));
-            } else {
-                let _ = self.wm.switch_tag(&tag);
-            }
-        }
-
-        let acp_port = self.state.allocate_acp_port(ws_name);
-
-        if opts.launch_apps {
-            launch_apps(project, &dir, acp_port);
-        }
-
-        let acp_url = start_acp_if_configured(ws_name, &dir, acp_port, project);
-
-        let dir_str = dir.to_string_lossy().into_owned();
-        self.state
-            .set_active(ws_name, &project.name, tag_idx, &dir_str, acp_port, acp_url);
-
-        if opts.headless {
-            provision_bezalel(&mut self.state, ws_name, &dir_str);
-        }
-
-        state::save(&self.state)
-    }
-
-    pub fn down(&mut self, ws_name: &str, opts: &DownOptions) -> Result<(), String> {
-        eprintln!("  Removing workspace: {ws_name}");
-        let mut errors: Vec<String> = Vec::new();
-
-        let resolved = self.resolve_workspace(ws_name);
-
-        self.state.set_inactive(ws_name);
-        if let Err(e) = state::save(&self.state) {
-            errors.push(format!("save state: {e}"));
-        }
-
-        acp_supervisor::stop_for_workspace(ws_name);
-        bezalel_supervisor::stop_for_workspace(ws_name);
-
-        if let Ok(ref rw) = resolved {
-            if opts.manage_tag {
-                let tag = wm::tag_name(&rw.project.name, ws_name);
-                dlog::log(format!("Killing clients on tag: {tag}"));
-                let _ = self.wm.kill_tag_clients(&tag);
-                std::thread::sleep(std::time::Duration::from_millis(300));
-                dlog::log(format!("Deleting tag: {tag}"));
-                let _ = self.wm.delete_tag(&tag);
-            }
-
-            if !opts.keep_worktree {
-                if let Err(e) = remove_worktree(&rw.project, &rw.dir) {
-                    errors.push(format!("remove worktree: {e}"));
-                }
-            }
-        } else if let Err(e) = resolved {
-            errors.push(format!("resolve workspace: {e}"));
-        }
-
-        if errors.is_empty() {
-            Ok(())
-        } else {
-            Err(errors.join("; "))
+    if let Some(repo) = primary_repo {
+        let repo_path = expand_home(repo);
+        if let Some(parent) = repo_path.parent() {
+            return parent.join("worktrees").join(project_name).join(safe);
         }
     }
-
-    pub fn switch(&self, name: &str) -> Result<(), String> {
-        let rw = self.resolve_workspace(name)?;
-        let tag = wm::tag_name(&rw.project.name, name);
-        dlog::log(format!("Switching to tag: {tag}"));
-        self.wm.switch_tag(&tag)
-    }
-
-    pub fn is_dirty(&self, ws_name: &str) -> Result<bool, String> {
-        let rw = self.resolve_workspace(ws_name)?;
-        let output = Command::new("git")
-            .args(["-C", &rw.dir.to_string_lossy(), "status", "--porcelain"])
-            .output()
-            .map_err(|e| format!("git status: {e}"))?;
-        Ok(!String::from_utf8_lossy(&output.stdout).trim().is_empty())
-    }
-
-    pub fn launch_agent(
-        &self,
-        ws_name: &str,
-        agent_host: &str,
-    ) -> Result<(), String> {
-        let rw = self.resolve_workspace(ws_name)?;
-        let dir_str = rw.dir.to_string_lossy();
-        let prompt = interop::assemble_launch_prompt(&rw.project, &dir_str)?;
-        let mcp_url = rw.project.resolved_mcp_url(&dir_str);
-
-        let launch_env = rw
-            .project
-            .launch
-            .as_ref()
-            .and_then(|l| l.env.as_ref())
-            .cloned()
-            .unwrap_or_default();
-
-        match agent_host {
-            "claude" => {
-                let mut cmd = Command::new("claude");
-                if !prompt.is_empty() {
-                    cmd.args(["--append-system-prompt", &prompt]);
-                }
-                if let Some(url) = &mcp_url {
-                    cmd.args(["--mcp-server", url]);
-                }
-                cmd.current_dir(&rw.dir);
-                for (k, v) in &launch_env {
-                    cmd.env(k, v);
-                }
-                cmd.status()
-                    .map_err(|e| format!("launch claude: {e}"))?;
-            }
-            "codex" => {
-                let mut cmd = Command::new("codex");
-                if !prompt.is_empty() {
-                    cmd.args(["--system-prompt", &prompt]);
-                }
-                cmd.current_dir(&rw.dir);
-                for (k, v) in &launch_env {
-                    cmd.env(k, v);
-                }
-                if let Some(url) = &mcp_url {
-                    let mcp_json = serde_json::json!([{"url": url}]).to_string();
-                    cmd.env("OPENAI_MCP_SERVERS", mcp_json);
-                }
-                cmd.status()
-                    .map_err(|e| format!("launch codex: {e}"))?;
-            }
-            other => return Err(format!("unknown agent host: {other}")),
-        }
-
-        Ok(())
-    }
-
-    pub fn destroy(&mut self, ws_name: &str, opts: &DownOptions) -> Result<(), String> {
-        let down_result = self.down(ws_name, opts);
-        self.state.remove(ws_name);
-        let save_result = state::save(&self.state);
-        down_result?;
-        save_result
-    }
+    worktree_base().join(project_name).join(safe)
 }
 
-fn start_acp_if_configured(
-    ws_name: &str,
-    dir: &PathBuf,
-    acp_port: Option<u16>,
-    project: &Project,
-) -> Option<String> {
-    let acp = project.acp_config()?;
-    if !acp.enabled {
-        return None;
-    }
-    let port = acp_port?;
-    let dir_str = dir.to_string_lossy();
-    let cmd = acp.command.as_deref();
-    acp_supervisor::start_for_workspace(ws_name, &dir_str, port, cmd);
-    let url = acp.url.as_deref().unwrap_or("http://127.0.0.1:{port}");
-    Some(interop::interpolate_with_port(url, &project.name, &dir_str, Some(port)))
-}
-
-/// Provision (and, if the supervisor is running in this process, start) a
-/// bezalel MCP server for a headless workspace. The port + token are recorded
-/// in state so the daemon's sync loop can (re)start the instance. Returns the
-/// assigned port and token, or `None` if the bezalel port range is exhausted.
-pub fn provision_bezalel(
-    st: &mut state::Store,
-    ws_name: &str,
-    dir_str: &str,
-) -> Option<(u16, String)> {
-    let port = st.allocate_bezalel_port(ws_name)?;
-    let token = st
-        .workspace(ws_name)
-        .and_then(|ws| ws.bezalel_token.clone())
-        .unwrap_or_else(bezalel_supervisor::generate_token);
-    st.set_bezalel(ws_name, Some(port), Some(token.clone()));
-    bezalel_supervisor::start_for_workspace(ws_name, dir_str, port, &token);
-    Some((port, token))
-}
-
-pub fn launch_apps(project: &Project, dir: &PathBuf, acp_port: Option<u16>) {
-    let ext = project.awesometree_ext();
-    let dir_str = dir.to_string_lossy();
-    let apps = if ext.apps.is_empty() {
-        vec!["zeditor -n {dir}".to_string()]
-    } else {
-        ext.apps.clone()
-    };
-
-    for app_cmd in &apps {
-        let expanded = interop::interpolate_with_port(app_cmd, &project.name, &dir_str, acp_port);
-        dlog::log(format!("Launching app: {expanded}"));
-        match Command::new("sh")
-            .args(["-c", &expanded])
-            .current_dir(dir)
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::piped())
-            .spawn()
-        {
-            Ok(child) => {
-                let cmd_label = expanded.clone();
-                std::thread::spawn(move || {
-                    match child.wait_with_output() {
-                        Ok(output) if output.status.success() => {}
-                        Ok(output) => {
-                            let stderr = String::from_utf8_lossy(&output.stderr);
-                            let msg = stderr.trim();
-                            if msg.is_empty() {
-                                dlog::log(format!("App exited with {}: {cmd_label}", output.status));
-                            } else {
-                                dlog::log(format!("App exited with {}: {cmd_label}: {msg}", output.status));
-                            }
-                        }
-                        Err(e) => {
-                            dlog::log(format!("App wait failed: {cmd_label}: {e}"));
-                        }
-                    }
-                });
-            }
-            Err(e) => dlog::log(format!("Failed to spawn app: {expanded}: {e}")),
-        }
-    }
-}
-
-pub fn resolve_dir(ws_name: &str, project: &Project) -> PathBuf {
-    if project.branch.is_some() {
-        let safe = ws_name.replace('/', "-");
-        let ext = project.awesometree_ext();
-        let base = match &ext.worktree_dir {
-            Some(dir) => interop::expand_home(dir),
-            None => {
-                // Place worktrees relative to the project's repo parent directory:
-                // {repo_parent}/worktrees/{project_name}/{workspace_name}
-                match project.repo_path().and_then(|r| r.parent().map(|p| p.to_path_buf())) {
-                    Some(repo_parent) => repo_parent.join("worktrees").join(&project.name),
-                    None => interop::worktree_base().join(&project.name),
-                }
-            }
-        };
-        base.join(safe)
-    } else {
-        project
-            .repo_path()
-            .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
-    }
-}
-
-pub fn ensure_worktree(ws_name: &str, project: &Project, dir: &PathBuf) -> Result<(), String> {
-    let branch = match &project.branch {
-        Some(b) => b,
-        None => return Ok(()),
-    };
+/// Create a git worktree at `dir` from `repo` tracking `branch`, using
+/// `work_session_id` as the local branch name. Idempotent if `dir` exists.
+pub fn ensure_git_worktree(
+    work_session_id: &str,
+    repo: &Path,
+    branch: &str,
+    dir: &Path,
+) -> Result<(), String> {
     if dir.exists() {
         return Ok(());
     }
-
-    let repo = project
-        .repo_path()
-        .ok_or_else(|| "project has no repo path".to_string())?;
-    let repo_str = repo.to_string_lossy();
     if !repo.exists() {
-        return Err(format!("repo not found: {repo_str}"));
+        return Err(format!("repo not found: {}", repo.display()));
     }
-
     if let Some(parent) = dir.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("create worktree dir: {e}"))?;
     }
-
+    let repo_str = repo.to_string_lossy();
     let _ = Command::new("git")
         .args(["-C", &repo_str, "worktree", "prune"])
         .output();
-
     let _ = Command::new("git")
         .args(["-C", &repo_str, "fetch", "origin", branch])
         .output();
 
     let branch_exists = Command::new("git")
-        .args(["-C", &repo_str, "rev-parse", "--verify", ws_name])
+        .args(["-C", &repo_str, "rev-parse", "--verify", work_session_id])
         .output()
         .map(|o| o.status.success())
         .unwrap_or(false);
@@ -368,190 +71,125 @@ pub fn ensure_worktree(ws_name: &str, project: &Project, dir: &PathBuf) -> Resul
     let dir_str = dir.to_string_lossy();
     let output = if branch_exists {
         Command::new("git")
-            .args(["-C", &repo_str, "worktree", "add", &dir_str, ws_name])
+            .args(["-C", &repo_str, "worktree", "add", &dir_str, work_session_id])
             .output()
     } else {
-        let tracking = format!("origin/{branch}");
+        // Prefer origin/<branch> when a remote tracking ref exists; otherwise use the
+        // local branch tip so bare local repos (tests / offline) still realize.
+        let origin_ref = format!("origin/{branch}");
+        let origin_ok = Command::new("git")
+            .args(["-C", &repo_str, "rev-parse", "--verify", &origin_ref])
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        let start_ref = if origin_ok {
+            origin_ref
+        } else {
+            branch.to_string()
+        };
         Command::new("git")
             .args([
-                "-C", &repo_str, "worktree", "add", "-b", ws_name, &dir_str, &tracking,
+                "-C",
+                &repo_str,
+                "worktree",
+                "add",
+                "-b",
+                work_session_id,
+                &dir_str,
+                &start_ref,
             ])
             .output()
     };
 
     match output {
-        Ok(o) if !o.status.success() => {
-            return Err(format!(
-                "worktree create failed: {}",
-                String::from_utf8_lossy(&o.stderr).trim()
-            ));
+        Ok(o) if !o.status.success() => Err(format!(
+            "worktree create failed: {}",
+            String::from_utf8_lossy(&o.stderr).trim()
+        )),
+        Err(e) => Err(format!("worktree create: {e}")),
+        _ => {
+            let _ = Command::new("git")
+                .args(["-C", &repo_str, "branch", "--unset-upstream", work_session_id])
+                .output();
+            Ok(())
         }
-        Err(e) => return Err(format!("worktree create: {e}")),
-        _ => {}
     }
+}
 
-    let _ = Command::new("git")
-        .args(["-C", &repo_str, "branch", "--unset-upstream", ws_name])
-        .output();
+/// Remove a git worktree directory, preferring `git worktree remove`.
+pub fn remove_git_worktree(dir: &Path) -> Result<(), String> {
+    if !dir.exists() {
+        return Ok(());
+    }
+    if let Some(parent_repo) = find_git_common_dir(dir) {
+        let _ = Command::new("git")
+            .args([
+                "-C",
+                &parent_repo.to_string_lossy(),
+                "worktree",
+                "remove",
+                "--force",
+                &dir.to_string_lossy(),
+            ])
+            .output();
+    }
+    if dir.exists() {
+        std::fs::remove_dir_all(dir).map_err(|e| format!("remove worktree: {e}"))?;
+    }
     Ok(())
 }
 
-pub fn remove_worktree(project: &Project, dir: &PathBuf) -> Result<(), String> {
-    if project.branch.is_none() {
-        return Ok(());
+fn find_git_common_dir(worktree: &Path) -> Option<PathBuf> {
+    let output = Command::new("git")
+        .args([
+            "-C",
+            &worktree.to_string_lossy(),
+            "rev-parse",
+            "--git-common-dir",
+        ])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
     }
-    if let Some(repo) = project.repo_path() {
-        if dir.exists() {
-            let output = Command::new("git")
-                .args([
-                    "-C",
-                    &repo.to_string_lossy(),
-                    "worktree",
-                    "remove",
-                    &dir.to_string_lossy(),
-                ])
-                .output()
-                .map_err(|e| format!("git worktree remove: {e}"))?;
-            if !output.status.success() {
-                let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-                return Err(format!("git worktree remove failed: {stderr}"));
-            }
-        }
+    let s = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let p = PathBuf::from(s);
+    if p.ends_with(".git") {
+        p.parent().map(|x| x.to_path_buf())
+    } else {
+        p.parent().and_then(|x| x.parent()).map(|x| x.to_path_buf())
     }
-    Ok(())
+}
+
+/// Launch configured apps in a worktree directory.
+pub fn launch_apps(apps: &[String], project_name: &str, dir: &Path) {
+    let dir_str = dir.to_string_lossy();
+    let list = if apps.is_empty() {
+        vec!["zeditor -n {dir}".to_string()]
+    } else {
+        apps.to_vec()
+    };
+    for app_cmd in &list {
+        let expanded = app_cmd
+            .replace("{project}", project_name)
+            .replace("{dir}", &dir_str);
+        let _ = Command::new("sh")
+            .args(["-c", &expanded])
+            .current_dir(dir)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn();
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn project_with_branch(name: &str, branch: &str) -> Project {
-        Project::new(name, "/tmp/test-repo", branch)
-    }
-
-    fn project_no_branch(name: &str) -> Project {
-        Project {
-            name: name.into(),
-            repo: Some("/tmp/test-repo".into()),
-            version: "1".into(),
-            ..Default::default()
-        }
-    }
-
     #[test]
-    fn resolve_dir_with_branch() {
-        let p = project_with_branch("myproj", "main");
-        let dir = resolve_dir("feat-1", &p);
-        assert!(dir.to_string_lossy().contains("myproj"));
-        assert!(dir.to_string_lossy().ends_with("feat-1"));
-        // Worktrees should be relative to the project repo's parent directory
-        assert_eq!(dir, PathBuf::from("/tmp/worktrees/myproj/feat-1"));
-    }
-
-    #[test]
-    fn resolve_dir_slash_replacement() {
-        let p = project_with_branch("proj", "main");
-        let dir = resolve_dir("user/feature", &p);
-        assert!(dir.to_string_lossy().ends_with("user-feature"));
-        assert_eq!(dir, PathBuf::from("/tmp/worktrees/proj/user-feature"));
-    }
-
-    #[test]
-    fn resolve_dir_no_branch_uses_repo() {
-        let p = project_no_branch("proj");
-        let dir = resolve_dir("ws", &p);
-        assert_eq!(dir, PathBuf::from("/tmp/test-repo"));
-    }
-
-    #[test]
-    fn resolve_dir_custom_worktree_dir() {
-        let mut p = project_with_branch("proj", "main");
-        let ext = interop::AwesometreeExt {
-            worktree_dir: Some("/custom/wt".into()),
-            ..Default::default()
-        };
-        p.set_awesometree_ext(&ext);
-        let dir = resolve_dir("feat", &p);
-        assert_eq!(dir, PathBuf::from("/custom/wt/feat"));
-    }
-
-    #[test]
-    fn ensure_worktree_no_branch_noop() {
-        let p = project_no_branch("proj");
-        let dir = PathBuf::from("/tmp/nonexistent");
-        assert!(ensure_worktree("ws", &p, &dir).is_ok());
-    }
-
-    #[test]
-    fn ensure_worktree_dir_exists_noop() {
-        let p = project_with_branch("proj", "main");
-        let dir = PathBuf::from("/tmp");
-        assert!(ensure_worktree("ws", &p, &dir).is_ok());
-    }
-
-    #[test]
-    fn remove_worktree_no_branch_noop() {
-        let p = project_no_branch("proj");
-        let dir = PathBuf::from("/tmp/nonexistent");
-        assert!(remove_worktree(&p, &dir).is_ok());
-    }
-
-    struct MockAdapter {
-        tags_created: std::sync::Mutex<Vec<String>>,
-        tags_deleted: std::sync::Mutex<Vec<String>>,
-        tags_switched: std::sync::Mutex<Vec<String>>,
-    }
-
-    impl MockAdapter {
-        fn new() -> Self {
-            Self {
-                tags_created: std::sync::Mutex::new(vec![]),
-                tags_deleted: std::sync::Mutex::new(vec![]),
-                tags_switched: std::sync::Mutex::new(vec![]),
-            }
-        }
-    }
-
-    impl wm::Adapter for MockAdapter {
-        fn create_tag(&self, tag: &str, _index: i32, _layout: &str) -> Result<(), String> {
-            self.tags_created.lock().unwrap().push(tag.to_string());
-            Ok(())
-        }
-        fn delete_tag(&self, tag: &str) -> Result<(), String> {
-            self.tags_deleted.lock().unwrap().push(tag.to_string());
-            Ok(())
-        }
-        fn switch_tag(&self, tag: &str) -> Result<(), String> {
-            self.tags_switched.lock().unwrap().push(tag.to_string());
-            Ok(())
-        }
-        fn kill_tag_clients(&self, _tag: &str) -> Result<(), String> {
-            Ok(())
-        }
-        fn eval(&self, _lua: &str) -> Result<(), String> {
-            Ok(())
-        }
-        fn get_current_tag_name(&self) -> Result<Option<String>, String> {
-            Ok(None)
-        }
-        fn restore_previous_tag(&self) -> Result<(), String> {
-            Ok(())
-        }
-    }
-
-    #[test]
-    fn manager_new() {
-        let st = state::Store::default();
-        let mgr = Manager::new(st, Box::new(MockAdapter::new()));
-        assert!(mgr.state.all_names().is_empty());
-    }
-
-    #[test]
-    fn manager_resolve_workspace_not_found() {
-        let st = state::Store::default();
-        let mgr = Manager::new(st, Box::new(MockAdapter::new()));
-        let result = mgr.resolve_workspace("nonexistent");
-        assert!(result.is_err());
-        assert!(result.unwrap_err().contains("workspace not found"));
+    fn resolve_prefers_explicit_worktree_dir() {
+        let p = resolve_worktree_path("ws/a", "proj", Some("~/wt"), None);
+        assert!(p.to_string_lossy().contains("ws-a") || p.to_string_lossy().ends_with("ws-a"));
     }
 }

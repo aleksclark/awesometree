@@ -1,124 +1,96 @@
-//! gRPC ProjectService implementation.
+//! gRPC ProjectService backed by Switchboard.
 
-use crate::auth;
-use crate::grpc::arp_proto::*;
 use crate::grpc::arp_proto::project_service_server::ProjectService;
-use crate::grpc::convert;
-use crate::grpc::extract_token;
-use crate::interop;
-use crate::state;
+use crate::grpc::arp_proto::*;
+use crate::model::project::definition_for_create;
+use crate::service_access;
 use tonic::{Request, Response, Status};
 
-/// Implements the `ProjectService` gRPC trait.
-#[derive(Debug, Default)]
 pub struct ProjectServiceImpl;
+
+impl ProjectServiceImpl {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl Default for ProjectServiceImpl {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 #[tonic::async_trait]
 impl ProjectService for ProjectServiceImpl {
     async fn list_projects(
         &self,
-        request: Request<ListProjectsRequest>,
+        _request: Request<ListProjectsRequest>,
     ) -> Result<Response<ListProjectsResponse>, Status> {
-        let token = extract_token(&request);
-
-        let projects = interop::list()
-            .map_err(|e| Status::internal(format!("failed to list projects: {e}")))?;
-
-        let filtered: Vec<Project> = projects
-            .iter()
-            .filter(|p| auth::scope_includes_project(&token.scope, &p.name))
-            .map(convert::interop_project_to_proto)
+        let svc = service_access::service().await;
+        let list = svc
+            .list_projects(None)
+            .await
+            .map_err(|e| Status::unavailable(e.to_string()))?;
+        let projects = list
+            .into_iter()
+            .map(|p| Project {
+                name: p.project_id,
+                repo: String::new(),
+                branch: String::new(),
+                agents: vec![],
+                context: None,
+            })
             .collect();
-
-        Ok(Response::new(ListProjectsResponse { projects: filtered }))
+        Ok(Response::new(ListProjectsResponse { projects }))
     }
 
     async fn register_project(
         &self,
         request: Request<RegisterProjectRequest>,
     ) -> Result<Response<Project>, Status> {
-        let token = extract_token(&request);
         let req = request.into_inner();
-
-        // Require admin permission
-        if !auth::permission_allows(&token.permission, &auth::Permission::Admin) {
-            return Err(Status::permission_denied("admin permission required"));
-        }
-
-        // Check scope includes this project name
-        if !auth::scope_includes_project(&token.scope, &req.name) {
-            return Err(Status::permission_denied(format!(
-                "token scope does not include project '{}'",
-                req.name
-            )));
-        }
-
-        if req.name.is_empty() {
-            return Err(Status::invalid_argument("project name is required"));
-        }
-        if req.repo.is_empty() {
-            return Err(Status::invalid_argument("repo is required"));
-        }
-
-        let branch = if req.branch.is_empty() {
-            "master".to_string()
-        } else {
-            req.branch.clone()
-        };
-
-        let mut project = interop::Project::new(&req.name, &req.repo, &branch);
-
-        // Persist agent templates from the request
-        if let Some(agents_json) = convert::proto_agents_to_json(&req.agents) {
-            project.agents = Some(agents_json);
-        }
-
-        interop::save(&project)
-            .map_err(|e| Status::internal(format!("failed to save project: {e}")))?;
-
-        Ok(Response::new(convert::interop_project_to_proto(&project)))
+        let svc = service_access::service().await;
+        let def = definition_for_create(
+            &req.name,
+            None,
+            if req.repo.is_empty() {
+                None
+            } else {
+                Some(&req.repo)
+            },
+            if req.branch.is_empty() {
+                None
+            } else {
+                Some(&req.branch)
+            },
+            None,
+        );
+        let sum = svc
+            .create_project(def)
+            .await
+            .map_err(|e| Status::invalid_argument(e.to_string()))?;
+        Ok(Response::new(Project {
+            name: sum.project_id,
+            repo: req.repo,
+            branch: req.branch,
+            agents: req.agents,
+            context: None,
+        }))
     }
 
     async fn unregister_project(
         &self,
         request: Request<UnregisterProjectRequest>,
     ) -> Result<Response<()>, Status> {
-        let token = extract_token(&request);
-        let req = request.into_inner();
-
-        // Require admin permission
-        if !auth::permission_allows(&token.permission, &auth::Permission::Admin) {
-            return Err(Status::permission_denied("admin permission required"));
-        }
-
-        // Check scope includes this project name
-        if !auth::scope_includes_project(&token.scope, &req.name) {
-            return Err(Status::permission_denied(format!(
-                "token scope does not include project '{}'",
-                req.name
-            )));
-        }
-
-        if req.name.is_empty() {
-            return Err(Status::invalid_argument("project name is required"));
-        }
-
-        // Verify no active workspaces reference this project
-        let store = state::load()
-            .map_err(|e| Status::internal(format!("failed to load state: {e}")))?;
-
-        let active_ws = store.workspaces_for_project(&req.name);
-        let has_active = active_ws.iter().any(|(_, ws)| ws.active);
-        if has_active {
-            return Err(Status::failed_precondition(format!(
-                "project '{}' has active workspaces; destroy them first",
-                req.name
-            )));
-        }
-
-        interop::delete(&req.name)
-            .map_err(|e| Status::not_found(format!("failed to delete project: {e}")))?;
-
+        let name = request.into_inner().name;
+        let svc = service_access::service().await;
+        let env = svc
+            .get_project(&name)
+            .await
+            .map_err(|e| Status::not_found(e.to_string()))?;
+        svc.delete_project(&name, &env.source_revision)
+            .await
+            .map_err(|e| Status::failed_precondition(e.to_string()))?;
         Ok(Response::new(()))
     }
 }

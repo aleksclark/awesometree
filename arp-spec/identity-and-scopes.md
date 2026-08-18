@@ -128,10 +128,10 @@ Key rules:
 | `project/list` | Only scoped projects | Only scoped projects | All projects |
 | `project/register` | ✗ Denied | ✗ Denied | ✓ Within scope |
 | `project/unregister` | ✗ Denied | ✗ Denied | ✓ Within scope |
-| `workspace/create` | ✓ Within scoped projects | ✓ Within scoped projects | ✓ Any project |
-| `workspace/list` | Only workspaces with own-session agents | All in scoped projects | All |
-| `workspace/get` | Only if workspace has own-session agents | ✓ Within scoped projects | ✓ Any |
-| `workspace/destroy` | Only if all agents are own-session | ✓ Within scoped projects | ✓ Any |
+| `work_session/create` | ✓ Within scoped projects | ✓ Within scoped projects | ✓ Any project |
+| `work_session/list` | Only workspaces with own-session agents | All in scoped projects | All |
+| `work_session/get` | Only if workspace has own-session agents | ✓ Within scoped projects | ✓ Any |
+| `work_session/destroy` | Only if all agents are own-session | ✓ Within scoped projects | ✓ Any |
 | `agent/spawn` | ✓ Within scoped projects | ✓ Within scoped projects | ✓ Any project |
 | `agent/list` | Only own-session agents | All in scoped projects | All |
 | `agent/status` | Only own-session agents | ✓ Within scoped projects | ✓ Any |
@@ -214,7 +214,7 @@ agent/spawn workspace="feat" template="crush" name="specialist" \
 agent/spawn workspace="lib-fix" template="crush" name="helper"
   → Allowed — "shared-lib" is in scope
 
-workspace/list project="myapp"
+work_session/list project_id="myapp"
   → 403 Denied — "myapp" is not in specialist's scope
 ```
 

@@ -6,7 +6,6 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.Chat
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Workspaces
@@ -20,10 +19,9 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import dev.awesometree.mobile.data.ConnectionStore
 import dev.awesometree.mobile.ui.AwesometreeTheme
-import dev.awesometree.mobile.ui.acp.AcpScreen
 import dev.awesometree.mobile.ui.projects.ProjectsScreen
 import dev.awesometree.mobile.ui.settings.SettingsScreen
-import dev.awesometree.mobile.ui.workspaces.WorkspacesScreen
+import dev.awesometree.mobile.ui.workspaces.WorkSessionsScreen
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -58,9 +56,8 @@ fun MainScaffold(connectionStore: ConnectionStore) {
     data class NavItem(val route: String, val label: String, val icon: @Composable () -> Unit)
 
     val items = listOf(
-        NavItem("workspaces", "Workspaces") { Icon(Icons.Default.Workspaces, null) },
+        NavItem("work-sessions", "Sessions") { Icon(Icons.Default.Workspaces, null) },
         NavItem("projects", "Projects") { Icon(Icons.Default.FolderOpen, null) },
-        NavItem("acp", "Agent") { Icon(Icons.AutoMirrored.Filled.Chat, null) },
         NavItem("settings", "Settings") { Icon(Icons.Default.Settings, null) },
     )
 
@@ -73,7 +70,7 @@ fun MainScaffold(connectionStore: ConnectionStore) {
                         onClick = {
                             if (currentRoute != item.route) {
                                 navController.navigate(item.route) {
-                                    popUpTo("workspaces") { saveState = true }
+                                    popUpTo("work-sessions") { saveState = true }
                                     launchSingleTop = true
                                     restoreState = true
                                 }
@@ -88,16 +85,11 @@ fun MainScaffold(connectionStore: ConnectionStore) {
     ) { padding ->
         NavHost(
             navController = navController,
-            startDestination = "workspaces",
+            startDestination = "work-sessions",
             modifier = Modifier.padding(padding),
         ) {
-            composable("workspaces") { WorkspacesScreen(connectionStore, navController) }
+            composable("work-sessions") { WorkSessionsScreen(connectionStore, navController) }
             composable("projects") { ProjectsScreen(connectionStore) }
-            composable("acp") { AcpScreen(connectionStore) }
-            composable("acp/{workspace}") { backStackEntry ->
-                val workspace = backStackEntry.arguments?.getString("workspace")
-                AcpScreen(connectionStore, preselectedWorkspace = workspace)
-            }
             composable("settings") { SettingsScreen(connectionStore) }
         }
     }

@@ -65,6 +65,6 @@ Binary: `awesometree` (installed to `~/.local/bin/`).
 - `awesometree list` marks the workspace `(headless)` and prints the bezalel
   URL (`http://127.0.0.1:<port>/mcp`) and token. The REST API exposes the same
   via `headless`, `bezalel_port`, `bezalel_url`, and `bezalel_token` fields, and
-  `POST /api/workspaces` accepts a `"headless": true` flag.
+  `POST /api/work-sessions` accepts a `"headless": true` flag.
 
 See: [Configuration](configuration.md) | [Lifecycle](lifecycle.md)

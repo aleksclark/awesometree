@@ -1,24 +1,29 @@
 use awesometree::agents_ui;
 use awesometree::cleanup_ui;
-use awesometree::acp_supervisor;
 use awesometree::bezalel_supervisor;
 use awesometree::agent_supervisor;
 use awesometree::daemon::{self, DaemonCmd};
-use awesometree::interop;
 use awesometree::log as dlog;
+use awesometree::model::work_session::{
+    CreateWorkSessionRequest, RealizationOptions, DEFAULT_WORK_PROFILE_ID,
+};
 use awesometree::notify;
-use awesometree::picker::{self, parse_create_result, PickerItem, PickerMode, CREATE_SENTINEL, DESTROY_PREFIX, STOP_PREFIX};
+use awesometree::picker::{
+    self, parse_create_result, PickerItem, PickerMode, CREATE_SENTINEL, DESTROY_PREFIX, STOP_PREFIX,
+};
 use awesometree::projects_ui;
 use awesometree::qr;
+use awesometree::runtime_store;
 use awesometree::server;
-use awesometree::state;
+use awesometree::service_access;
 use awesometree::tray;
 use awesometree::wm;
-use awesometree::workspace::{self as ws, DownOptions, Manager, UpOptions};
+use awesometree::work_session_service::WorkSessionService;
 use futures_channel::mpsc;
 use futures_util::StreamExt;
 use gpui::*;
 use std::sync::mpsc as std_mpsc;
+use std::sync::Arc;
 use std::thread;
 
 extern crate libc;
@@ -50,12 +55,42 @@ fn main() {
     });
 
     thread::spawn(|| {
-        let st = state::load().unwrap_or_default();
-        let workspaces: Vec<(String, bool)> = st
-            .workspaces
-            .iter()
-            .filter(|(_, ws)| ws.active)
-            .map(|(name, ws)| (name.clone(), ws.active))
+        let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+        // Initialize the shared WorkSessionService before HTTP/gRPC start.
+        rt.block_on(async {
+            let catalog = awesometree::switchboard::live_catalog();
+            let wm = Some(wm::platform_adapter());
+            let svc = Arc::new(WorkSessionService::new(catalog, wm));
+            if let Ok(notes) = svc.reconcile_on_startup().await {
+                for n in notes {
+                    dlog::log(format!("reconcile: {n}"));
+                }
+            }
+            service_access::set_service(svc).await;
+        });
+
+        bezalel_supervisor::init(rt.handle().clone());
+        agent_supervisor::init(rt.handle().clone());
+        rt.block_on(async {
+            bezalel_supervisor::start_active_workspaces();
+            bezalel_supervisor::start_sync_loop(std::time::Duration::from_secs(5));
+            tokio::spawn(server::run_grpc(server::DEFAULT_GRPC_PORT));
+            server::run(server::DEFAULT_PORT).await;
+        });
+    });
+
+    thread::spawn(|| {
+        let workspaces: Vec<(String, bool)> = runtime_store::load_all()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|(_, rt)| {
+                matches!(
+                    rt.realization_status,
+                    awesometree::model::runtime::RealizationStatus::Ready
+                        | awesometree::model::runtime::RealizationStatus::Degraded
+                )
+            })
+            .map(|(id, _)| (id, true))
             .collect();
         if let Err(e) = std::panic::catch_unwind(|| {
             tray::run_tray(workspaces);
@@ -64,23 +99,8 @@ fn main() {
         }
     });
 
-    thread::spawn(|| {
-        let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
-        acp_supervisor::init(rt.handle().clone());
-        bezalel_supervisor::init(rt.handle().clone());
-        agent_supervisor::init(rt.handle().clone());
-        rt.block_on(async {
-            acp_supervisor::start_active_workspaces();
-            acp_supervisor::start_sync_loop(std::time::Duration::from_secs(5));
-            bezalel_supervisor::start_active_workspaces();
-            bezalel_supervisor::start_sync_loop(std::time::Duration::from_secs(5));
-            tokio::spawn(server::run_grpc(server::DEFAULT_GRPC_PORT));
-            server::run(server::DEFAULT_PORT).await;
-        });
-    });
-
     awesometree::user_env::load();
-    dlog::log("Daemon starting");
+    dlog::log("Daemon starting (Switchboard-backed AWM)");
 
     let app = Application::new();
     app.run(move |cx: &mut App| {
@@ -123,8 +143,9 @@ fn main() {
         })
         .detach();
 
-        let progress_handle: std::sync::Arc<std::sync::Mutex<Option<WindowHandle<notify::ProgressView>>>> =
-            std::sync::Arc::new(std::sync::Mutex::new(None));
+        let progress_handle: std::sync::Arc<
+            std::sync::Mutex<Option<WindowHandle<notify::ProgressView>>>,
+        > = std::sync::Arc::new(std::sync::Mutex::new(None));
 
         cx.spawn(async move |cx: &mut AsyncApp| {
             while let Some(msg) = progress_rx.next().await {
@@ -196,7 +217,6 @@ fn main() {
                     DaemonCmd::LaunchAgent => {}
                     DaemonCmd::Restart => {
                         dlog::log("Daemon restarting");
-                        acp_supervisor::stop_all();
                         bezalel_supervisor::stop_all();
                         daemon::cleanup();
                         std::process::exit(0);
@@ -221,46 +241,70 @@ fn main() {
 }
 
 extern "C" fn handle_signal(_sig: libc::c_int) {
-    acp_supervisor::stop_all();
     bezalel_supervisor::stop_all();
     std::process::exit(0);
 }
 
-fn do_pick(cx: &mut App, cmd_tx: mpsc::UnboundedSender<DaemonCmd>) {
-    let projects = interop::list().unwrap_or_default();
-    let st = state::load().unwrap_or_default();
-
-    let mut items: Vec<PickerItem> = Vec::new();
-    for (ws_name, ws) in &st.workspaces {
-        let acp_status = if ws.acp_url.is_some() || ws.acp_port.is_some() {
-            let running = acp_supervisor::get()
-                .map(|s| s.is_running(ws_name))
-                .unwrap_or(false);
-            Some(if running { "running" } else { "stopped" }.to_string())
-        } else {
-            None
-        };
-        items.push(PickerItem {
-            name: ws_name.clone(),
-            project: ws.project.clone(),
-            active: ws.active,
-            acp_status,
-        });
+fn rt_block_on<F: std::future::Future>(f: F) -> F::Output {
+    match tokio::runtime::Handle::try_current() {
+        Ok(h) => tokio::task::block_in_place(|| h.block_on(f)),
+        Err(_) => {
+            let rt = tokio::runtime::Runtime::new().expect("tokio");
+            rt.block_on(f)
+        }
     }
-    items.sort_by(|a, b| a.project.cmp(&b.project).then(a.name.cmp(&b.name)));
+}
 
-    let project_names: Vec<String> = projects.iter().map(|p| p.name.clone()).collect();
-    let _ = project_names;
+fn do_pick(cx: &mut App, cmd_tx: mpsc::UnboundedSender<DaemonCmd>) {
+    let items = rt_block_on(async {
+        let svc = service_access::service().await;
+        match svc.list_work_sessions(None, None).await {
+            Ok(list) => {
+                let mut items: Vec<PickerItem> = list
+                    .into_iter()
+                    .map(|v| {
+                        let active = v
+                            .runtime
+                            .as_ref()
+                            .map(|r| {
+                                matches!(
+                                    r.realization_status,
+                                    awesometree::model::runtime::RealizationStatus::Ready
+                                        | awesometree::model::runtime::RealizationStatus::Degraded
+                                )
+                            })
+                            .unwrap_or(false);
+                        PickerItem {
+                            name: v.work_session.work_session_id.clone(),
+                            project: v
+                                .work_session
+                                .project_id
+                                .clone()
+                                .unwrap_or_default(),
+                            active,
+                            lifecycle: v.work_session.state.to_string(),
+                            work_profile_id: v
+                                .work_session
+                                .work_profile_id
+                                .clone()
+                                .unwrap_or_default(),
+                        }
+                    })
+                    .collect();
+                items.sort_by(|a, b| a.project.cmp(&b.project).then(a.name.cmp(&b.name)));
+                items
+            }
+            Err(e) => {
+                dlog::log(format!("list work sessions failed: {e}"));
+                Vec::new()
+            }
+        }
+    });
 
     let (tx, rx) = std_mpsc::channel::<String>();
+    picker::open_picker_window(cx, PickerMode::List { items }, tx);
 
-    picker::open_picker_window(
-        cx,
-        PickerMode::List { items },
-        tx,
-    );
-
-    notify::spawn_task("Open workspace", move || {
+    notify::spawn_task("Open WorkSession", move || {
         let Ok(selection) = rx.recv() else {
             dlog::log("Picker dismissed");
             return Ok(());
@@ -272,59 +316,66 @@ fn do_pick(cx: &mut App, cmd_tx: mpsc::UnboundedSender<DaemonCmd>) {
             return Ok(());
         }
 
-        if let Some(ws_name) = selection.strip_prefix(DESTROY_PREFIX) {
-            dlog::log(format!("Picker: destroying workspace {ws_name}"));
-            return do_destroy_workspace(ws_name);
+        if let Some(ws_id) = selection.strip_prefix(DESTROY_PREFIX) {
+            dlog::log(format!("Picker: destroying work session {ws_id}"));
+            return do_destroy_session(ws_id);
         }
 
-        if let Some(ws_name) = selection.strip_prefix(STOP_PREFIX) {
-            dlog::log(format!("Picker: stopping workspace {ws_name}"));
-            return do_stop_workspace(ws_name);
+        if let Some(ws_id) = selection.strip_prefix(STOP_PREFIX) {
+            dlog::log(format!("Picker: pausing work session {ws_id}"));
+            return do_pause_session(ws_id);
         }
 
-        let st = state::load().map_err(|e| format!("load state: {e}"))?;
         let name = selection;
-
-        let ws = st.workspace(&name);
-        let is_active = ws.map(|w| w.active).unwrap_or(false);
-        let wm = wm::platform_adapter();
-
-        if is_active {
-            dlog::log(format!("Switching to active workspace: {name}"));
-            let mgr = Manager::new(st, wm);
-            mgr.switch(&name).map_err(|e| format!("switch to {name}: {e}"))?;
-        } else {
-            let project_name = ws
-                .map(|w| w.project.clone())
-                .ok_or_else(|| format!("workspace not found: {name}"))?;
-            dlog::log(format!("Bringing up workspace: {name} (project: {project_name})"));
-            let project = interop::load(&project_name)
-                .map_err(|e| format!("load project: {e}"))?;
-            let mut mgr = Manager::new(st, wm);
-            mgr.up(
-                &name,
-                &project,
-                &UpOptions {
-                    create_tag: true,
-                    launch_apps: true,
-                    headless: false,
-                },
-            )
-            .map_err(|e| format!("bring up {name}: {e}"))?;
-            mgr.switch(&name).map_err(|e| format!("switch to {name}: {e}"))?;
+        dlog::log(format!("Switching to work session: {name}"));
+        let svc = service_access::service_blocking();
+        let view = rt_block_on(svc.get_work_session(&name))
+            .map_err(|e| format!("get work session: {e}"))?;
+        if let Some(rt) = view.runtime
+            && let Some(tag) = rt.tag_name
+        {
+            let wm = wm::platform_adapter();
+            wm.switch_tag(&tag)
+                .map_err(|e| format!("switch tag: {e}"))?;
         }
-
         Ok(())
     });
 }
 
 fn do_create(cx: &mut App) {
-    let projects = interop::list().unwrap_or_default();
-    let project_names: Vec<String> = projects.iter().map(|p| p.name.clone()).collect();
+    let (projects, profiles, default_missing) = rt_block_on(async {
+        let svc = service_access::service().await;
+        let projects = svc
+            .list_projects(None)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .map(|p| p.project_id)
+            .collect::<Vec<_>>();
+        let profiles = svc.list_work_profiles().await.unwrap_or_default();
+        let default_missing = !profiles.iter().any(|p| p.work_profile_id == DEFAULT_WORK_PROFILE_ID);
+        let profile_ids: Vec<(String, String)> = profiles
+            .into_iter()
+            .map(|p| {
+                (
+                    p.work_profile_id.clone(),
+                    p.display_name.unwrap_or(p.work_profile_id),
+                )
+            })
+            .collect();
+        (projects, profile_ids, default_missing)
+    });
 
     let (tx, rx) = std_mpsc::channel::<String>();
-
-    picker::open_picker_window(cx, PickerMode::CreateForm { projects: project_names }, tx);
+    picker::open_picker_window(
+        cx,
+        PickerMode::CreateForm {
+            projects,
+            work_profiles: profiles,
+            default_missing,
+        },
+        tx,
+    );
 
     thread::spawn(move || {
         let Ok(result_str) = rx.recv() else {
@@ -335,131 +386,78 @@ fn do_create(cx: &mut App) {
         let result = match parse_create_result(&result_str) {
             Some(r) => r,
             None => {
-                notify::report_error("Create workspace: invalid form result");
+                notify::report_error("Create WorkSession: invalid form result");
                 return;
             }
         };
 
         dlog::log(format!(
-            "Creating workspace: {} (project: {}, repo: {}, branch: {})",
-            result.name, result.project, result.repo_path, result.branch
+            "Creating work session: {} (project: {}, profile: {})",
+            result.name, result.project, result.work_profile_id
         ));
 
-        let progress = notify::open_progress("Creating Workspace");
+        let progress = notify::open_progress("Creating WorkSession");
+        progress.update("Contacting Switchboard...");
 
-        if result.is_new_project {
-            dlog::log(format!("Creating new project: {}", result.project));
-            progress.update(format!("Saving project {}...", result.project));
-            let proj = interop::Project::new(
-                &result.project,
-                &result.repo_path,
-                &result.branch,
-            );
-            if let Err(e) = interop::save(&proj) {
-                progress.error(format!("Save project: {e}"));
-                return;
-            }
-        }
-
-        let project = match interop::load(&result.project) {
-            Ok(p) => p,
-            Err(e) => {
-                progress.error(format!("Load project: {e}"));
-                return;
-            }
-        };
-
-        let dir = ws::resolve_dir(&result.name, &project);
-        dlog::log(format!("Creating worktree at {}", dir.display()));
-        progress.update(format!(
-            "Creating worktree in {}...",
-            dir.display()
-        ));
-
-        if let Err(e) = ws::ensure_worktree(&result.name, &project, &dir) {
-            progress.error(format!("Worktree creation failed: {e}"));
-            return;
-        }
-
-        progress.update("Creating tag and launching apps...");
-
-        let st = match state::load() {
-            Ok(s) => s,
-            Err(e) => {
-                progress.error(format!("Load state: {e}"));
-                return;
-            }
-        };
-        let wm = wm::platform_adapter();
-        let mut mgr = Manager::new(st, wm);
-
-        if let Err(e) = mgr.up(
-            &result.name,
-            &project,
-            &UpOptions {
+        let svc = service_access::service_blocking();
+        let req = CreateWorkSessionRequest {
+            work_session_id: result.name.clone(),
+            project_id: result.project.clone(),
+            work_profile_id: if result.work_profile_id.is_empty() {
+                None
+            } else {
+                Some(result.work_profile_id.clone())
+            },
+            display_name: Some(result.name.clone()),
+            realization: RealizationOptions {
                 create_tag: true,
                 launch_apps: true,
                 headless: false,
+                no_wm: false,
             },
-        ) {
-            progress.error(format!("Bring up {}: {e}", result.name));
-            return;
-        }
+        };
 
-        if let Err(e) = mgr.switch(&result.name) {
-            progress.error(format!("Switch to {}: {e}", result.name));
-            return;
+        match rt_block_on(svc.create_work_session(req)) {
+            Ok(resp) => {
+                dlog::log(format!(
+                    "WorkSession {} created profile={} state={}",
+                    resp.work_session.work_session_id,
+                    resp.work_profile_id,
+                    resp.work_session.state
+                ));
+                if let Some(rt) = resp.runtime
+                    && let Some(tag) = rt.tag_name
+                {
+                    let wm = wm::platform_adapter();
+                    let _ = wm.switch_tag(&tag);
+                }
+                progress.done();
+            }
+            Err(e) => {
+                progress.error(format!("Create WorkSession failed: {e}"));
+            }
         }
-
-        dlog::log(format!("Workspace {} created and switched to", result.name));
-        progress.done();
     });
 }
 
-fn do_destroy_workspace(ws_name: &str) -> Result<(), String> {
-    dlog::log(format!("Destroying workspace: {ws_name}"));
-    let st = state::load().map_err(|e| format!("load state: {e}"))?;
-    let wm = wm::platform_adapter();
-    let mut mgr = Manager::new(st, wm);
-
-    if let Ok(true) = mgr.is_dirty(ws_name) {
-        dlog::log(format!("Destroy blocked: {ws_name} has uncommitted changes"));
-        return Err(format!(
-            "Cannot destroy {ws_name}: uncommitted changes.\nCommit or stash your changes first."
-        ));
-    }
-
-    dlog::log(format!("Restoring previous tag before destroying {ws_name}"));
-    let _ = mgr.wm.restore_previous_tag();
-
-    mgr.destroy(
-        ws_name,
-        &DownOptions {
-            manage_tag: true,
-            keep_worktree: false,
-        },
-    )
-    .map_err(|e| format!("destroy {ws_name}: {e}"))?;
-    dlog::log(format!("Workspace {ws_name} destroyed"));
+fn do_destroy_session(ws_id: &str) -> Result<(), String> {
+    dlog::log(format!("Destroying work session: {ws_id}"));
+    let svc = service_access::service_blocking();
+    let _ = wm::platform_adapter().restore_previous_tag();
+    rt_block_on(svc.destroy(ws_id, false)).map_err(|e| format!("destroy {ws_id}: {e}"))?;
+    dlog::log(format!("WorkSession {ws_id} destroyed"));
     Ok(())
 }
 
-fn do_stop_workspace(ws_name: &str) -> Result<(), String> {
-    dlog::log(format!("Stopping workspace: {ws_name}"));
-    let st = state::load().map_err(|e| format!("load state: {e}"))?;
-    let wm = wm::platform_adapter();
-    let mut mgr = Manager::new(st, wm);
-
-    let _ = mgr.wm.restore_previous_tag();
-
-    mgr.down(
-        ws_name,
-        &DownOptions {
-            manage_tag: true,
-            keep_worktree: true,
-        },
-    )
-    .map_err(|e| format!("stop {ws_name}: {e}"))?;
-    dlog::log(format!("Workspace {ws_name} stopped"));
+fn do_pause_session(ws_id: &str) -> Result<(), String> {
+    dlog::log(format!("Pausing work session: {ws_id}"));
+    let svc = service_access::service_blocking();
+    let _ = wm::platform_adapter().restore_previous_tag();
+    rt_block_on(svc.transition(
+        ws_id,
+        awesometree::model::lifecycle::WorkSessionState::Paused,
+    ))
+    .map_err(|e| format!("pause {ws_id}: {e}"))?;
+    dlog::log(format!("WorkSession {ws_id} paused"));
     Ok(())
 }

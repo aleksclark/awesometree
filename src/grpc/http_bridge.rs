@@ -112,7 +112,7 @@ pub struct ListWorkSessionsQuery {
 pub async fn list_work_sessions(
     Query(q): Query<ListWorkSessionsQuery>,
 ) -> impl IntoResponse {
-    let svc = WorkSessionServiceImpl;
+    let svc = WorkSessionServiceImpl::new();
     let req = arp_proto::ListWorkSessionsRequest {
         project_id: q.project_id,
         state: 0,
@@ -143,7 +143,7 @@ pub async fn create_work_session(
         headless: body.get("headless").and_then(|v| v.as_bool()).unwrap_or(false),
     };
 
-    let svc = WorkSessionServiceImpl;
+    let svc = WorkSessionServiceImpl::new();
     match svc.create_work_session(tonic::Request::new(req)).await {
         Ok(resp) => {
             let ws = resp.into_inner();
@@ -157,7 +157,7 @@ pub async fn create_work_session(
 pub async fn get_work_session(
     Path(work_session_id): Path<String>,
 ) -> impl IntoResponse {
-    let svc = WorkSessionServiceImpl;
+    let svc = WorkSessionServiceImpl::new();
     let req = arp_proto::GetWorkSessionRequest { work_session_id };
     match svc.get_work_session(tonic::Request::new(req)).await {
         Ok(resp) => {
@@ -172,7 +172,7 @@ pub async fn get_work_session(
 pub async fn destroy_work_session(
     Path(work_session_id): Path<String>,
 ) -> impl IntoResponse {
-    let svc = WorkSessionServiceImpl;
+    let svc = WorkSessionServiceImpl::new();
     let req = arp_proto::DestroyWorkSessionRequest {
         work_session_id,
         keep_worktree: false,

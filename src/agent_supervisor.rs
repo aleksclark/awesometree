@@ -15,11 +15,11 @@ pub enum SupervisorEvent {
     StatusChanged {
         agent_id: String,
         status: AgentStatus,
-        workspace: String,
+        work_session_id: String,
     },
     Stopped {
         agent_id: String,
-        workspace: String,
+        work_session_id: String,
     },
 }
 
@@ -32,7 +32,7 @@ const STOP_GRACE: Duration = Duration::from_secs(5);
 struct ManagedAgent {
     #[allow(dead_code)]
     agent_id: String,
-    workspace: String,
+    work_session_id: String,
     template: String,
     #[allow(dead_code)]
     name: String,
@@ -53,7 +53,7 @@ pub struct AgentSupervisor {
 }
 
 pub struct SpawnOptions {
-    pub workspace: String,
+    pub work_session_id: String,
     pub dir: String,
     pub template: String,
     pub name: String,
@@ -96,7 +96,7 @@ impl AgentSupervisor {
 
         let managed = Arc::new(ManagedAgent {
             agent_id: agent_id.clone(),
-            workspace: opts.workspace.clone(),
+            work_session_id: opts.work_session_id.clone(),
             template: opts.template.clone(),
             name: opts.name.clone(),
             port: opts.port,
@@ -119,19 +119,19 @@ impl AgentSupervisor {
         let agents_map = self.agents.clone();
         let aid = agent_id.clone();
         let event_tx = self.event_tx.clone();
-        let workspace = opts.workspace.clone();
+        let workspace = opts.work_session_id.clone();
 
         update_agent_state(&aid, AgentStatus::Starting, Some(opts.port));
         let _ = event_tx.send(SupervisorEvent::StatusChanged {
             agent_id: aid.clone(),
             status: AgentStatus::Starting,
-            workspace: workspace.clone(),
+            work_session_id: workspace.clone(),
         });
 
         self.rt.spawn(async move {
             dlog::log(format!(
                 "Agent supervisor: starting {} ({}) on port {} in workspace {}",
-                aid, managed.template, managed.port, managed.workspace
+                aid, managed.template, managed.port, managed.work_session_id
             ));
 
             let child = spawn_agent_process(&managed).await;
@@ -143,7 +143,7 @@ impl AgentSupervisor {
                     let _ = event_tx.send(SupervisorEvent::StatusChanged {
                         agent_id: aid.clone(),
                         status: AgentStatus::Error,
-                        workspace: workspace.clone(),
+                        work_session_id: workspace.clone(),
                     });
                     agents_map.lock().unwrap().remove(&aid);
                     return;
@@ -167,7 +167,7 @@ impl AgentSupervisor {
                 let _ = event_tx.send(SupervisorEvent::StatusChanged {
                     agent_id: aid.clone(),
                     status: AgentStatus::Error,
-                    workspace: workspace.clone(),
+                    work_session_id: workspace.clone(),
                 });
                 graceful_stop(&mut child, STOP_GRACE).await;
                 agents_map.lock().unwrap().remove(&aid);
@@ -183,7 +183,7 @@ impl AgentSupervisor {
             let _ = event_tx.send(SupervisorEvent::StatusChanged {
                 agent_id: aid.clone(),
                 status: AgentStatus::Ready,
-                workspace: workspace.clone(),
+                work_session_id: workspace.clone(),
             });
             dlog::log(format!("Agent supervisor: {} is ready", aid));
 
@@ -204,7 +204,7 @@ impl AgentSupervisor {
                     let _ = event_tx.send(SupervisorEvent::StatusChanged {
                         agent_id: aid.clone(),
                         status: AgentStatus::Busy,
-                        workspace: workspace.clone(),
+                        work_session_id: workspace.clone(),
                     });
                 }
             }
@@ -220,7 +220,7 @@ impl AgentSupervisor {
                     let _ = event_tx.send(SupervisorEvent::StatusChanged {
                         agent_id: aid.clone(),
                         status: AgentStatus::Error,
-                        workspace: workspace.clone(),
+                        work_session_id: workspace.clone(),
                     });
                 }
                 _ = stop_signal.notified() => {
@@ -229,7 +229,7 @@ impl AgentSupervisor {
                     let _ = event_tx.send(SupervisorEvent::StatusChanged {
                         agent_id: aid.clone(),
                         status: AgentStatus::Stopping,
-                        workspace: workspace.clone(),
+                        work_session_id: workspace.clone(),
                     });
 
                     cancel_agent_tasks(&aid, managed.port).await;
@@ -240,7 +240,7 @@ impl AgentSupervisor {
                     update_agent_state(&aid, AgentStatus::Stopped, None);
                     let _ = event_tx.send(SupervisorEvent::Stopped {
                         agent_id: aid.clone(),
-                        workspace: workspace.clone(),
+                        work_session_id: workspace.clone(),
                     });
                     dlog::log(format!("Agent supervisor: {} stopped", aid));
                 }
@@ -280,7 +280,7 @@ impl AgentSupervisor {
     pub fn stop_workspace_agents(&self, workspace: &str) {
         let agents = self.agents.lock().unwrap();
         for (id, managed) in agents.iter() {
-            if managed.workspace == workspace {
+            if managed.work_session_id == workspace {
                 dlog::log(format!(
                     "Agent supervisor: signaling stop for {id} (workspace {workspace})"
                 ));
@@ -311,7 +311,7 @@ impl AgentSupervisor {
 
     pub fn agent_workspace(&self, agent_id: &str) -> Option<String> {
         let agents = self.agents.lock().unwrap();
-        agents.get(agent_id).map(|m| m.workspace.clone())
+        agents.get(agent_id).map(|m| m.work_session_id.clone())
     }
 }
 
@@ -324,7 +324,6 @@ async fn spawn_agent_process(managed: &ManagedAgent) -> Result<Child, String> {
         .current_dir(&managed.dir)
         .env("PORT", &port_str)
         .env("A2A_PORT", &port_str)
-        .env("CRUSH_ACP_PORT", &port_str)
         .env("CRUSH_A2A_PORT", &port_str)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -446,9 +445,10 @@ async fn cancel_agent_tasks(agent_id: &str, port: u16) {
     let task_ids: Vec<String> = {
         match crate::arp_store::ArpStore::global() {
             Some(s) => s
-                .active_tasks(agent_id)
+                .list_tasks(agent_id)
                 .unwrap_or_default()
                 .into_iter()
+                .filter(|t| t.status == "working" || t.status == "submitted" || t.status == "input-required")
                 .map(|t| t.task_id)
                 .collect(),
             None => return,
@@ -630,14 +630,14 @@ mod tests {
         let _ = sup.event_tx.send(SupervisorEvent::StatusChanged {
             agent_id: "test-agent".into(),
             status: AgentStatus::Ready,
-            workspace: "ws1".into(),
+            work_session_id: "ws1".into(),
         });
         let event = rx.try_recv().unwrap();
         match event {
-            SupervisorEvent::StatusChanged { agent_id, status, workspace } => {
+            SupervisorEvent::StatusChanged { agent_id, status, work_session_id } => {
                 assert_eq!(agent_id, "test-agent");
                 assert_eq!(status, AgentStatus::Ready);
-                assert_eq!(workspace, "ws1");
+                assert_eq!(work_session_id, "ws1");
             }
             _ => panic!("expected StatusChanged event"),
         }
@@ -650,7 +650,7 @@ mod tests {
         // Sending with no receivers should not panic
         let _ = sup.event_tx.send(SupervisorEvent::Stopped {
             agent_id: "test-agent".into(),
-            workspace: "ws1".into(),
+            work_session_id: "ws1".into(),
         });
     }
 }

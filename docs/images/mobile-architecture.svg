@@ -56,13 +56,13 @@
   <text x="260" y="76" class="title" fill="#a6e3a1">awesometree-daemon</text>
 
   <rect x="256" y="88" width="168" height="28" rx="4" fill="#181825"/>
-  <text x="268" y="107" class="mono" fill="#cdd6f4">GET /api/workspaces</text>
+  <text x="268" y="107" class="mono" fill="#cdd6f4">GET /api/work-sessions</text>
 
   <rect x="256" y="122" width="168" height="28" rx="4" fill="#181825"/>
-  <text x="268" y="141" class="mono" fill="#cdd6f4">POST /api/workspaces</text>
+  <text x="268" y="141" class="mono" fill="#cdd6f4">POST /api/work-sessions</text>
 
   <rect x="256" y="156" width="168" height="28" rx="4" fill="#181825"/>
-  <text x="268" y="175" class="mono" fill="#cdd6f4">POST /acp/{ws}/stream</text>
+  <text x="268" y="175" class="mono" fill="#cdd6f4">POST /a2a/agents/{id}</text>
 
   <!-- QR code pairing flow -->
   <rect x="240" y="230" width="200" height="70" rx="8" fill="#1e1e2e" stroke="#f9e2af" stroke-width="1"/>

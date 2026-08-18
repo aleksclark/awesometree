@@ -665,7 +665,6 @@ dependencies = [
  "base64",
  "chrono",
  "clap",
- "crush-acp-sdk",
  "fs2",
  "futures",
  "futures-channel",
@@ -1644,21 +1643,6 @@ name = "crunchy"
 version = "0.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "460fbee9c2c2f33933d720630a6a0bac33ba7053db5344fac858d4b8952d77d5"
-
-[[package]]
-name = "crush-acp-sdk"
-version = "0.1.0"
-source = "git+https://github.com/aleksclark/crush-modules?branch=master#20697154822e27059307e8c13767d6e002d4fe01"
-dependencies = [
- "futures",
- "reqwest 0.12.28",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "tokio",
- "tokio-stream",
- "tokio-util",
-]
 
 [[package]]
 name = "crypto-common"

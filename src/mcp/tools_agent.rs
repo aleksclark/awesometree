@@ -5,6 +5,7 @@ use crate::auth::{
     ensure_session, localhost_admin_token,
 };
 use crate::mcp::{caller_token, check_agent_access, check_project_access, ArpServer};
+use crate::runtime_store;
 use crate::state::{self, AgentInstanceState, AgentStatus};
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::*;
@@ -15,7 +16,7 @@ use std::collections::HashMap;
 
 #[derive(Deserialize, JsonSchema)]
 pub struct AgentSpawnParams {
-    pub workspace: String,
+    pub work_session_id: String,
     pub template: String,
     #[serde(default)]
     pub name: Option<String>,
@@ -37,7 +38,7 @@ pub struct AgentSpawnParams {
 #[derive(Deserialize, JsonSchema)]
 pub struct AgentListParams {
     #[serde(default)]
-    pub workspace: Option<String>,
+    pub work_session_id: Option<String>,
     #[serde(default)]
     pub status: Option<String>,
     #[serde(default)]
@@ -164,8 +165,7 @@ fn resolve_agent_with_access(
     let (ws_name, agent) = st.find_agent(agent_id).ok_or_else(|| {
         ErrorData::invalid_params(format!("agent not found: {agent_id}"), None)
     })?;
-    let ws = st.workspace(ws_name).unwrap();
-    let project = ws.project.clone();
+    let project = agent.work_session_id.clone();
 
     check_agent_access(&token, agent, &project)?;
 
@@ -182,23 +182,21 @@ impl ArpServer {
         let token = caller_token();
 
         let st = state::load().map_err(|e| ErrorData::internal_error(e, None))?;
-        let ws = st.workspace(&params.workspace).ok_or_else(|| {
-            ErrorData::invalid_params(format!("workspace not found: {}", params.workspace), None)
+        let rt = runtime_store::get(&params.work_session_id)
+            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+        let rt = rt.ok_or_else(|| {
+            ErrorData::invalid_params(format!("work_session runtime not found: {}", params.work_session_id), None)
         })?;
-        if !ws.active {
-            return Err(ErrorData::invalid_params(
-                format!("workspace not active: {}", params.workspace),
-                None,
-            ));
-        }
-        let project = ws.project.clone();
+        let _ = st; // agents store available for later writes
+
+        let project = params.work_session_id.clone();
 
         // agent/spawn: scope must include the project
         check_project_access(&token, &project, &Permission::Session)?;
 
         let name = params.name.unwrap_or_else(|| params.template.clone());
 
-        let port = st.allocate_agent_port().ok_or_else(|| {
+        let port = st.allocate_agent_port(None).ok_or_else(|| {
             ErrorData::internal_error("no ports available", None)
         })?;
 
@@ -238,8 +236,8 @@ impl ArpServer {
         let command = format!("{} serve", params.template);
 
         let opts = agent_supervisor::SpawnOptions {
-            workspace: params.workspace.clone(),
-            dir: ws.dir.clone(),
+            work_session_id: params.work_session_id.clone(),
+            dir: rt.workspace.as_ref().map(|w| w.path.clone()).unwrap_or_default(),
             template: params.template.clone(),
             name: name.clone(),
             port,
@@ -256,7 +254,7 @@ impl ArpServer {
             id: result.agent_id.clone(),
             template: params.template,
             name,
-            workspace: params.workspace.clone(),
+            work_session_id: params.work_session_id.clone(),
             status: AgentStatus::Starting,
             port: result.port,
             host: None,
@@ -268,11 +266,11 @@ impl ArpServer {
         };
 
         state::modify(|st| {
-            st.add_agent(&params.workspace, agent.clone());
+            st.add_agent(&params.work_session_id, agent.clone());
         })
         .map_err(|e| ErrorData::internal_error(e, None))?;
 
-        let json = agent_to_json(&params.workspace, &agent, &project);
+        let json = agent_to_json(&params.work_session_id, &agent, &project);
         let out = serde_json::to_string_pretty(&json)
             .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
         Ok(CallToolResult::success(vec![Content::text(out)]))
@@ -287,17 +285,17 @@ impl ArpServer {
         let st = state::load().map_err(|e| ErrorData::internal_error(e, None))?;
         let mut results: Vec<serde_json::Value> = Vec::new();
 
-        for (ws_name, ws) in &st.workspaces {
+        for (ws_name, agents) in &st.agents {
             // Filter by project scope
-            if !scope_includes_project(&token.scope, &ws.project) {
+            if !scope_includes_project(&token.scope, ws_name) {
                 continue;
             }
-            if let Some(ref filter_ws) = params.workspace {
+            if let Some(ref filter_ws) = params.work_session_id {
                 if ws_name != filter_ws {
                     continue;
                 }
             }
-            for agent in &ws.agents {
+            for agent in agents {
                 // For session-scoped tokens, only show own-session agents
                 if token.permission == Permission::Session && !session_matches(&token, agent) {
                     continue;
@@ -312,7 +310,7 @@ impl ArpServer {
                         continue;
                     }
                 }
-                results.push(agent_to_json(ws_name, agent, &ws.project));
+                results.push(agent_to_json(ws_name, agent, ws_name));
             }
         }
         results.sort_by(|a, b| a["id"].as_str().cmp(&b["id"].as_str()));
@@ -541,11 +539,14 @@ impl ArpServer {
         let (ws_name, agent, _project) = resolve_agent_with_access(&params.agent_id)?;
 
         let st = state::load().map_err(|e| ErrorData::internal_error(e, None))?;
-        let ws = st.workspace(&ws_name).unwrap();
         let template = agent.template.clone();
         let name = agent.name.clone();
         let workspace = ws_name.to_string();
-        let dir = ws.dir.clone();
+        let dir = runtime_store::get(&workspace)
+            .ok()
+            .flatten()
+            .and_then(|r| r.workspace.map(|w| w.path))
+            .unwrap_or_default();
         let old_token_id = agent.token_id.clone();
         let old_session_id = agent.session_id.clone();
         let old_spawned_by = agent.spawned_by.clone();
@@ -553,12 +554,12 @@ impl ArpServer {
         agent_supervisor::stop_agent(&params.agent_id);
         std::thread::sleep(std::time::Duration::from_millis(500));
 
-        let port = st.allocate_agent_port().ok_or_else(|| {
+        let port = st.allocate_agent_port(None).ok_or_else(|| {
             ErrorData::internal_error("no ports available", None)
         })?;
 
         let opts = agent_supervisor::SpawnOptions {
-            workspace: workspace.clone(),
+            work_session_id: workspace.clone(),
             dir,
             template: template.clone(),
             name: name.clone(),
@@ -576,7 +577,7 @@ impl ArpServer {
             id: result.agent_id.clone(),
             template,
             name,
-            workspace: workspace.clone(),
+            work_session_id: workspace.clone(),
             status: AgentStatus::Starting,
             port: result.port,
             host: None,

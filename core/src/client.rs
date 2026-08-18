@@ -207,15 +207,6 @@ impl ApiClient {
         ))?;
         Ok(())
     }
-
-    pub fn acp_send(&self, work_session_id: String, message: String) -> Result<String, ApiError> {
-        let payload = serde_json::to_string(&AcpSendRequest { message }).map_err(|e| {
-            ApiError::Parse {
-                message: e.to_string(),
-            }
-        })?;
-        self.post(&format!("/acp/{work_session_id}"), &payload)
-    }
 }
 
 fn parse_work_session_list(body: &str) -> Result<Vec<WorkSessionInfo>, ApiError> {
@@ -285,10 +276,6 @@ fn parse_work_session_value(ws: &Value, runtime: Option<&Value>) -> Result<WorkS
             .and_then(|r| r.get("headless"))
             .and_then(|h| h.as_bool())
             .unwrap_or(false),
-        acp_port: runtime
-            .and_then(|r| r.get("acp_port"))
-            .and_then(|p| p.as_u64())
-            .map(|p| p as u16),
     })
 }
 
