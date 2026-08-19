@@ -19,9 +19,10 @@ echo "==> Waiting for ARP server to be healthy..."
 MAX_WAIT=60
 WAITED=0
 while [ $WAITED -lt $MAX_WAIT ]; do
-    # Health is TCP accept; auth may still apply to HTTP.
-    if curl -sf -o /dev/null -w "%{http_code}" "$ARP_URL/api/work-sessions" | grep -Eq '200|401|403|503'; then
-        echo "    Server is ready (${WAITED}s)"
+    # Do not use curl -f: 401/503 are healthy process signals.
+    CODE=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 2 "$ARP_URL/api/work-sessions" || echo "000")
+    if echo "$CODE" | grep -Eq '^(200|401|403|503)$'; then
+        echo "    Server is ready (${WAITED}s, HTTP $CODE)"
         break
     fi
     sleep 1

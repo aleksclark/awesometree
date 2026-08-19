@@ -2,6 +2,7 @@
 
 use crate::switchboard::SwitchboardClient;
 use crate::work_session_service::WorkSessionService;
+#[cfg(feature = "gui")]
 use crate::wm;
 use std::sync::{Arc, OnceLock};
 use tokio::sync::Mutex;
