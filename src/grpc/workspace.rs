@@ -11,9 +11,6 @@ use tonic::{Request, Response, Status};
 #[derive(Default, Clone, Copy)]
 pub struct WorkSessionServiceImpl;
 
-/// Backward-compat alias.
-pub type WorkspaceServiceImpl = WorkSessionServiceImpl;
-
 impl WorkSessionServiceImpl {
     pub fn new() -> Self {
         Self

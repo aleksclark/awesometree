@@ -113,7 +113,7 @@ impl ArpServer {
     router = self.tool_router,
     name = "awesometree-arp",
     version = "0.3.0",
-    instructions = "Agent Registry Protocol (ARP) MCP server. Manages A2A agent lifecycle within workspaces."
+    instructions = "Agent Registry Protocol (ARP) MCP server. Manages A2A agent lifecycle within WorkSessions."
 )]
 #[rmcp::prompt_handler(router = self.prompt_router)]
 impl ServerHandler for ArpServer {
@@ -130,8 +130,8 @@ impl ServerHandler for ArpServer {
             Implementation::new("awesometree-arp", "0.3.0"),
         )
         .with_instructions(
-            "Agent Registry Protocol (ARP) — manages A2A agent lifecycle within workspaces. \
-             Use project/ tools to register repos, workspace/ tools to create isolated environments, \
+            "Agent Registry Protocol (ARP) — manages A2A agent lifecycle within WorkSessions. \
+             Use project/ tools for Switchboard Projects, work_session/ tools for episodes + local Workspace realization, \
              and agent/ tools to spawn, message, and manage A2A agents.",
         )
     }

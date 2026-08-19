@@ -19,7 +19,7 @@ pub struct AgentDiscoverParams {
 
 #[rmcp::tool_router(router = tool_router_discovery, vis = "pub")]
 impl ArpServer {
-    #[tool(name = "agent/discover", description = "Discover available agents. Returns AgentCards from managed workspaces (local) or by probing URLs (network).")]
+    #[tool(name = "agent/discover", description = "Discover available agents. Returns AgentCards from managed WorkSessions (local) or by probing URLs (network).")]
     pub async fn agent_discover(
         &self,
         Parameters(params): Parameters<AgentDiscoverParams>,

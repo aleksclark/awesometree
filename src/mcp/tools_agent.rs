@@ -276,7 +276,7 @@ impl ArpServer {
         Ok(CallToolResult::success(vec![Content::text(out)]))
     }
 
-    #[tool(name = "agent/list", description = "List agent instances across all workspaces or filtered by workspace/status.")]
+    #[tool(name = "agent/list", description = "List agent instances across all WorkSessions or filtered by work_session_id/status.")]
     pub fn agent_list(
         &self,
         Parameters(params): Parameters<AgentListParams>,

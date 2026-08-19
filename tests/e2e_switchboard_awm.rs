@@ -900,3 +900,71 @@ async fn axum_test_serve(app: axum::Router) -> TestHttp {
         _join: join,
     }
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn e2e_daemon_ipc_create_work_session() {
+    let Some(fx) = E2eFixture::start().await else { return; };
+    fx.ensure_project("ipc-proj").await;
+
+    // Production Unix-socket path: bind listen_until in a background thread and
+    // send `work-session-create` through daemon::send_command (same IPC as CLI).
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let stop2 = stop.clone();
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let listener = std::thread::spawn(move || {
+        awesometree::daemon::listen_until(tx, stop2);
+    });
+
+    // Wait until socket accepts.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline {
+        if awesometree::daemon::is_running() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(
+        awesometree::daemon::is_running(),
+        "daemon socket did not become ready"
+    );
+
+    let resp = awesometree::daemon::send_command(
+        "work-session-create ipc-ws-1 ipc-proj --headless",
+    )
+    .expect("daemon ipc send");
+    assert!(
+        resp.starts_with("ok work_session=ipc-ws-1"),
+        "unexpected ipc response: {resp}"
+    );
+    assert!(
+        resp.contains("work_profile=default"),
+        "must resolve exact default: {resp}"
+    );
+
+    let got = fx.svc.get_work_session("ipc-ws-1").await.expect("sb readback");
+    assert_eq!(got.work_session.work_profile_id.as_deref(), Some("default"));
+    assert_eq!(got.work_session.project_id.as_deref(), Some("ipc-proj"));
+
+    let _ = fx.svc.destroy("ipc-ws-1", false).await;
+    stop.store(true, std::sync::atomic::Ordering::SeqCst);
+    awesometree::daemon::cleanup();
+    let _ = listener.join();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn e2e_daemon_ipc_handler_direct() {
+    // Same production handler function the socket invokes, without GPUI.
+    let Some(fx) = E2eFixture::start().await else { return; };
+    fx.ensure_project("ipc2-proj").await;
+
+    let resp = awesometree::daemon::work_session_create_ipc(
+        "ipc-ws-2 ipc2-proj --headless",
+    );
+    assert!(
+        resp.starts_with("ok work_session=ipc-ws-2"),
+        "handler response: {resp}"
+    );
+    let got = fx.svc.get_work_session("ipc-ws-2").await.expect("sb");
+    assert_eq!(got.work_session.work_profile_id.as_deref(), Some("default"));
+    let _ = fx.svc.destroy("ipc-ws-2", false).await;
+}
