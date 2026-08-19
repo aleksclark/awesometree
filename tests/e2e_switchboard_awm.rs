@@ -327,6 +327,19 @@ async fn e2e_default_profile_work_session_create() {
         .expect("runtime load")
         .expect("runtime present");
     assert_eq!(rt.work_session_id, "e2e-ws-1");
+    let path = rt
+        .workspace
+        .as_ref()
+        .map(|w| w.path.clone())
+        .expect("runtime workspace path");
+    let policy = got
+        .work_session
+        .policy
+        .as_ref()
+        .expect("Switchboard session must record workspace binding");
+    assert_eq!(policy["workspace"]["kind"], "git-worktree");
+    assert_eq!(policy["workspace"]["locator"], path);
+    assert_eq!(policy["workspace"]["resource_id"], "workspace:e2e-ws-1");
 
     let serialized = serde_json::to_string(&rt).unwrap();
     assert!(
@@ -1102,6 +1115,40 @@ async fn e2e_invalid_transition_from_closed() {
 }
 
 #[tokio::test]
+async fn e2e_close_keeps_worktree_destroy_removes_it() {
+    let Some(fx) = E2eFixture::start().await else { return; };
+    fx.ensure_project("life-proj").await;
+    let created = fx
+        .svc
+        .create_work_session(no_wm_create("life-ws-1", "life-proj"))
+        .await
+        .expect("create");
+    let path = created
+        .runtime
+        .as_ref()
+        .and_then(|r| r.workspace.as_ref())
+        .map(|w| std::path::PathBuf::from(&w.path))
+        .expect("worktree path");
+    assert!(path.exists(), "worktree must exist after create");
+
+    fx.svc
+        .transition(
+            "life-ws-1",
+            awesometree::model::lifecycle::WorkSessionState::Closed,
+        )
+        .await
+        .expect("close");
+    assert!(path.exists(), "close must keep the worktree");
+
+    fx.svc.destroy("life-ws-1", false).await.expect("destroy");
+    assert!(
+        !path.exists(),
+        "destroy must remove the worktree at {}",
+        path.display()
+    );
+}
+
+#[tokio::test]
 async fn e2e_project_snapshot_pin_survives_live_edit() {
     let Some(fx) = E2eFixture::start().await else { return; };
     fx.ensure_project("pin-proj").await;
@@ -1392,4 +1439,239 @@ async fn e2e_switchboard_outage_is_hard_failure_no_local_write() {
         resp.status(),
         resp.text().await.unwrap_or_default()
     );
+}
+
+// ── Desktop UI contract e2e ───────────────────────────────────────────────
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn e2e_projects_ui_daemon_command_is_recognized() {
+    let Some(_fx) = E2eFixture::start().await else { return; };
+
+    // The CLI/tray send "projects-ui". Before this fix parse_command returned
+    // None and the socket replied "unknown command" with no window / no log.
+    assert!(
+        matches!(
+            awesometree::daemon::parse_command("projects-ui"),
+            Some(awesometree::daemon::DaemonCmd::Projects)
+        ),
+        "projects-ui must map to DaemonCmd::Projects"
+    );
+    assert!(
+        matches!(
+            awesometree::daemon::parse_command("projects"),
+            Some(awesometree::daemon::DaemonCmd::Projects)
+        )
+    );
+
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let stop2 = stop.clone();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let listener = std::thread::spawn(move || {
+        awesometree::daemon::listen_until(tx, stop2);
+    });
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline {
+        if awesometree::daemon::is_running() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(awesometree::daemon::is_running(), "daemon socket not ready");
+
+    let resp = awesometree::daemon::send_command("projects-ui").expect("send projects-ui");
+    assert_eq!(resp, "ok", "projects-ui must be accepted, got {resp}");
+    let cmd = rx.recv_timeout(Duration::from_secs(2)).expect("daemon dispatched Projects");
+    assert!(
+        matches!(cmd, awesometree::daemon::DaemonCmd::Projects),
+        "expected Projects, got {cmd:?}"
+    );
+
+    stop.store(true, std::sync::atomic::Ordering::SeqCst);
+    awesometree::daemon::cleanup();
+    let _ = listener.join();
+}
+
+#[tokio::test]
+async fn e2e_create_form_profiles_require_selected_project() {
+    let Some(fx) = E2eFixture::start().await else { return; };
+    fx.ensure_project("form-alpha").await;
+    fx.ensure_project("form-beta").await;
+
+    let alpha_only = awesometree::model::work_profile::WorkProfile {
+        version: "1".into(),
+        work_profile_id: "alpha-only".into(),
+        display_name: Some("Alpha".into()),
+        description: None,
+        project_ids: vec!["form-alpha".into()],
+        intended_resources: vec![],
+        default_policy: None,
+    };
+    let beta_only = awesometree::model::work_profile::WorkProfile {
+        version: "1".into(),
+        work_profile_id: "beta-only".into(),
+        display_name: Some("Beta".into()),
+        description: None,
+        project_ids: vec!["form-beta".into()],
+        intended_resources: vec![],
+        default_policy: None,
+    };
+    fx.svc
+        .catalog()
+        .put_work_profile(alpha_only)
+        .await
+        .expect("put alpha-only");
+    fx.svc
+        .catalog()
+        .put_work_profile(beta_only)
+        .await
+        .expect("put beta-only");
+
+    let all = fx.svc.list_work_profiles().await.expect("list profiles");
+    assert!(
+        all.iter().any(|p| p.work_profile_id == "alpha-only"),
+        "catalog must include alpha-only"
+    );
+    assert!(
+        all.iter().any(|p| p.work_profile_id == "beta-only"),
+        "catalog must include beta-only"
+    );
+
+    // No project selected → create form must offer nothing (field disabled).
+    let none = awesometree::model::eligible_for_project(&all, "");
+    assert!(
+        none.is_empty(),
+        "profiles must stay disabled until a project is selected, got {:?}",
+        none.iter().map(|p| p.work_profile_id.as_str()).collect::<Vec<_>>(
+        )
+    );
+
+    let for_alpha: Vec<&str> = awesometree::model::eligible_for_project(&all, "form-alpha")
+        .iter()
+        .map(|p| p.work_profile_id.as_str())
+        .collect();
+    assert!(
+        for_alpha.contains(&"default"),
+        "global default must remain eligible: {for_alpha:?}"
+    );
+    assert!(
+        for_alpha.contains(&"alpha-only"),
+        "project-scoped alpha-only must be eligible: {for_alpha:?}"
+    );
+    assert!(
+        !for_alpha.contains(&"beta-only"),
+        "beta-only must not appear for form-alpha: {for_alpha:?}"
+    );
+
+    let for_beta: Vec<&str> = awesometree::model::eligible_for_project(&all, "form-beta")
+        .iter()
+        .map(|p| p.work_profile_id.as_str())
+        .collect();
+    assert!(for_beta.contains(&"beta-only"));
+    assert!(!for_beta.contains(&"alpha-only"));
+}
+
+#[tokio::test]
+async fn e2e_project_ui_replace_definition_updates_repo_and_apps() {
+    let Some(fx) = E2eFixture::start().await else { return; };
+    fx.ensure_project("edit-proj").await;
+
+    let env = fx.svc.get_project("edit-proj").await.expect("get");
+    assert!(!env.source_revision.is_empty());
+
+    // Reproduce the old bug: wrapping the definition as patch.definition must
+    // not be how the UI talks to Switchboard. The production path is
+    // replace_project_definition (top-level `definition` argument).
+    let ext = awesometree::model::project::AwesometreeExt {
+        apps: vec!["zeditor -n {dir}".into()],
+        worktree_dir: Some("/tmp/edit-wt".into()),
+        ..Default::default()
+    };
+    let merged = awesometree::model::project::merge_form_into_definition(
+        &env.definition,
+        "edit-proj",
+        Some("/tmp/edit-repo"),
+        Some("master"),
+        &ext,
+    );
+    assert_eq!(merged["repo"], "/tmp/edit-repo");
+    assert_eq!(merged["extensions"]["dev.awesometree"]["apps"][0], "zeditor -n {dir}");
+
+    let updated = fx
+        .svc
+        .replace_project_definition("edit-proj", &env.source_revision, merged)
+        .await
+        .expect("replace definition");
+    assert_eq!(updated.project_id, "edit-proj");
+
+    let got = fx.svc.get_project("edit-proj").await.expect("reload");
+    assert_eq!(got.primary_repo().as_deref(), Some("/tmp/edit-repo"));
+    assert_eq!(got.branch().as_deref(), Some("master"));
+    assert!(
+        got.definition.get("name").is_none()
+            || got.definition["name"] == "edit-proj",
+        "live definition name must stay edit-proj"
+    );
+    let ext = got.awesometree_ext();
+    assert_eq!(ext.apps, vec!["zeditor -n {dir}".to_string()]);
+    assert_eq!(ext.worktree_dir.as_deref(), Some("/tmp/edit-wt"));
+
+    // The broken shape (patch.definition) must not be how we send updates.
+    // A field patch of {"definition": ...} would nest instead of applying repo.
+    let nested = serde_json::json!({"definition": {"repo": "/should-not-win"}});
+    // If someone mistakenly calls update_project with that nested object, repo stays.
+    let after_nested = fx
+        .svc
+        .update_project(
+            "edit-proj",
+            &got.source_revision,
+            nested,
+        )
+        .await;
+    // Either Switchboard rejects it or it does not replace the real repo field.
+    if after_nested.is_ok() {
+        let again = fx.svc.get_project("edit-proj").await.expect("after nested");
+        assert_eq!(
+            again.primary_repo().as_deref(),
+            Some("/tmp/edit-repo"),
+            "nested patch.definition must not clobber repo"
+        );
+    }
+}
+
+#[tokio::test]
+async fn e2e_project_update_named_resource_branch_does_not_send_name() {
+    let Some(fx) = E2eFixture::start().await else { return; };
+    let def = serde_json::json!({
+        "version": "1",
+        "name": "audiobook-e2e",
+        "resources": {
+            "audiobook": {
+                "type": "repo",
+                "path": fx.repo.to_str().unwrap(),
+                "branch": "master"
+            }
+        }
+    });
+    fx.svc.create_project(def).await.expect("create audiobook-shaped project");
+    let env = fx.svc.get_project("audiobook-e2e").await.expect("get");
+    let merged = awesometree::model::project::merge_form_into_definition(
+        &env.definition,
+        "audiobook-e2e",
+        env.primary_repo().as_deref(),
+        Some("feat/chapters"),
+        &awesometree::model::project::AwesometreeExt::default(),
+    );
+    assert!(
+        merged.get("name").is_none(),
+        "payload must omit name, got {merged}"
+    );
+    assert_eq!(merged["resources"]["audiobook"]["branch"], "feat/chapters");
+
+    fx.svc
+        .replace_project_definition("audiobook-e2e", &env.source_revision, merged)
+        .await
+        .expect("branch-only update must succeed");
+    let got = fx.svc.get_project("audiobook-e2e").await.expect("reload");
+    assert_eq!(got.branch().as_deref(), Some("feat/chapters"));
+    assert_eq!(got.primary_repo().as_deref(), env.primary_repo().as_deref());
 }

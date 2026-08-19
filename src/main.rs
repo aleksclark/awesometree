@@ -47,6 +47,11 @@ enum Commands {
         #[arg(long, default_value = "claude")]
         agent: String,
     },
+    /// Destroy the focused WorkSession after a dirty-worktree check.
+    #[command(name = "destroy-current")]
+    DestroyCurrent,
+    /// Close the focused WorkSession, keep the worktree.
+    Close,
     /// List open WorkSessions (shortcut).
     List,
     /// Print worktree path for a WorkSession.
@@ -148,6 +153,8 @@ fn main() {
         Commands::WorkProfiles => cmd_work_profiles(),
         Commands::Cycle => send_daemon_cmd("cycle"),
         Commands::Switch { work_session_id } => send_daemon_cmd(&format!("switch {work_session_id}")),
+        Commands::DestroyCurrent => cmd_destroy_current(),
+        Commands::Close => cmd_close_current(),
         Commands::Pick => cmd_pick(),
         Commands::CreateInteractive => cmd_create_interactive(),
         Commands::LaunchAgent {
@@ -438,6 +445,30 @@ fn cmd_launch_agent(work_session_id: &str, agent: &str) {
     process::exit(1);
 }
 
+fn cmd_destroy_current() {
+    let svc = service_access::service_blocking();
+    match rt_block_on(svc.destroy_current()) {
+        Ok(id) => println!("destroyed {id}"),
+        Err(e) => {
+            awesometree::notify::report_error(e.to_string());
+            eprintln!("Error: {e}");
+            process::exit(1);
+        }
+    }
+}
+
+fn cmd_close_current() {
+    let svc = service_access::service_blocking();
+    match rt_block_on(svc.close_current()) {
+        Ok(id) => println!("closed {id}"),
+        Err(e) => {
+            awesometree::notify::report_error(e.to_string());
+            eprintln!("Error: {e}");
+            process::exit(1);
+        }
+    }
+}
+
 fn cmd_pick() {
     send_daemon_cmd("pick");
 }
@@ -447,9 +478,16 @@ fn cmd_create_interactive() {
 }
 
 fn send_daemon_cmd(cmd: &str) {
-    if let Err(e) = daemon::send_command(cmd) {
-        eprintln!("Error: {e}");
-        process::exit(1);
+    match daemon::send_command(cmd) {
+        Ok(resp) if resp == "ok" || resp.starts_with("ok ") => {}
+        Ok(resp) => {
+            eprintln!("Error: daemon: {resp}");
+            process::exit(1);
+        }
+        Err(e) => {
+            eprintln!("Error: {e}");
+            process::exit(1);
+        }
     }
 }
 

@@ -20,7 +20,7 @@ pub use lifecycle::WorkSessionState;
 pub use project::{ProjectEnvelope, ProjectSnapshotRef, ProjectSummary};
 pub use resource::{ResourceBinding, WorkspaceResourceRef};
 pub use runtime::{RealizationStatus, WorkSessionRuntime};
-pub use work_profile::WorkProfile;
+pub use work_profile::{eligible_for_project, WorkProfile};
 pub use work_session::{
     CreateWorkSessionRequest, CreateWorkSessionResponse, RealizationOptions, WorkSession,
     DEFAULT_WORK_PROFILE_ID,

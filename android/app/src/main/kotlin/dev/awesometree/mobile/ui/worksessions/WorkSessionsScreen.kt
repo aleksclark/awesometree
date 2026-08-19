@@ -267,6 +267,11 @@ private fun CreateWorkSessionDialog(
             .onFailure { error = it.message }
     }
 
+    val eligibleProfiles = if (selectedProject.isBlank()) {
+        emptyList()
+    } else {
+        profiles.filter { it.appliesTo(selectedProject) }
+    }
     val canSubmit = name.isNotBlank() &&
         selectedProject.isNotBlank() &&
         selectedProfile.isNotBlank() &&
@@ -307,6 +312,11 @@ private fun CreateWorkSessionDialog(
                                 onClick = {
                                     selectedProject = proj
                                     projectExpanded = false
+                                    val eligible = profiles.filter { it.appliesTo(proj) }
+                                    selectedProfile = when {
+                                        eligible.any { it.workProfileId == DEFAULT_PROFILE_ID } -> DEFAULT_PROFILE_ID
+                                        else -> eligible.firstOrNull()?.workProfileId ?: ""
+                                    }
                                 },
                             )
                         }
@@ -314,7 +324,7 @@ private fun CreateWorkSessionDialog(
                 }
                 Spacer(Modifier.height(8.dp))
                 Box(Modifier.fillMaxWidth()) {
-                    val profileLabel = profiles
+                    val profileLabel = eligibleProfiles
                         .firstOrNull { it.workProfileId == selectedProfile }
                         ?.let { p ->
                             val dn = p.displayName ?: p.workProfileId
@@ -327,16 +337,19 @@ private fun CreateWorkSessionDialog(
                         label = { Text("WorkProfile") },
                         readOnly = true,
                         singleLine = true,
-                        enabled = !missingDefault,
+                        enabled = !missingDefault && selectedProject.isNotBlank(),
                         modifier = Modifier.fillMaxWidth(),
                         trailingIcon = {
-                            IconButton(onClick = { profileExpanded = true }, enabled = profiles.isNotEmpty()) {
+                            IconButton(
+                                onClick = { profileExpanded = true },
+                                enabled = selectedProject.isNotBlank() && eligibleProfiles.isNotEmpty(),
+                            ) {
                                 Icon(Icons.Default.ArrowDropDown, "Select profile")
                             }
                         },
                     )
                     DropdownMenu(expanded = profileExpanded, onDismissRequest = { profileExpanded = false }) {
-                        profiles.forEach { p ->
+                        eligibleProfiles.forEach { p ->
                             DropdownMenuItem(
                                 text = {
                                     Text(

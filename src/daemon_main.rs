@@ -354,16 +354,7 @@ fn do_create(cx: &mut App) {
             .collect::<Vec<_>>();
         let profiles = svc.list_work_profiles().await.unwrap_or_default();
         let default_missing = !profiles.iter().any(|p| p.work_profile_id == DEFAULT_WORK_PROFILE_ID);
-        let profile_ids: Vec<(String, String)> = profiles
-            .into_iter()
-            .map(|p| {
-                (
-                    p.work_profile_id.clone(),
-                    p.display_name.unwrap_or(p.work_profile_id),
-                )
-            })
-            .collect();
-        (projects, profile_ids, default_missing)
+        (projects, profiles, default_missing)
     });
 
     let (tx, rx) = std_mpsc::channel::<String>();

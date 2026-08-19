@@ -70,7 +70,16 @@ fn main() {
             }
             "create" => {
                 let projects = sample_project_names();
-                picker::open_picker_window(cx, PickerMode::CreateForm { projects, work_profiles: vec![("default".into(), "default".into())], default_missing: false }, tx);
+                let work_profiles = vec![awesometree::model::WorkProfile {
+                    version: "1".into(),
+                    work_profile_id: "default".into(),
+                    display_name: Some("default".into()),
+                    description: None,
+                    project_ids: vec![],
+                    intended_resources: vec![],
+                    default_policy: None,
+                }];
+                picker::open_picker_window(cx, PickerMode::CreateForm { projects, work_profiles, default_missing: false }, tx);
                 signal_ready("create-form");
             }
             _ => {

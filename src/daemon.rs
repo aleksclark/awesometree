@@ -237,9 +237,10 @@ pub fn parse_command(input: &str) -> Option<DaemonCmd> {
     match input {
         "pick" => Some(DaemonCmd::Pick),
         "create" => Some(DaemonCmd::Create),
-        "projects" => Some(DaemonCmd::Projects),
+        // CLI/tray send "projects-ui"; keep "projects" as the socket verb.
+        "projects" | "projects-ui" => Some(DaemonCmd::Projects),
         "launch-agent" => Some(DaemonCmd::LaunchAgent),
-        "agents" => Some(DaemonCmd::Agents),
+        "agents" | "agents-ui" => Some(DaemonCmd::Agents),
         "restart" => Some(DaemonCmd::Restart),
         "reload" => Some(DaemonCmd::Reload),
         "logs" => Some(DaemonCmd::Logs),
@@ -270,6 +271,7 @@ mod tests {
     #[test]
     fn parse_command_projects() {
         assert!(matches!(parse_command("projects"), Some(DaemonCmd::Projects)));
+        assert!(matches!(parse_command("projects-ui"), Some(DaemonCmd::Projects)));
     }
 
     #[test]
@@ -280,6 +282,7 @@ mod tests {
     #[test]
     fn parse_command_agents() {
         assert!(matches!(parse_command("agents"), Some(DaemonCmd::Agents)));
+        assert!(matches!(parse_command("agents-ui"), Some(DaemonCmd::Agents)));
     }
 
     #[test]

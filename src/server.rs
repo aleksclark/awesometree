@@ -552,15 +552,23 @@ async fn update_project(
     Path(id): Path<String>,
     Json(req): Json<UpdateProjectHttpReq>,
 ) -> Result<Json<crate::model::ProjectSummary>, Response> {
-    let patch = req
-        .patch
-        .or(req.definition)
-        .ok_or_else(|| err(StatusCode::BAD_REQUEST, "patch or definition required"))?;
     let svc = service_access::service().await;
-    svc.update_project(&id, &req.expected_source_revision, patch)
-        .await
-        .map(Json)
-        .map_err(map_err)
+    let summary = match (req.definition, req.patch) {
+        (Some(definition), _) => svc
+            .replace_project_definition(&id, &req.expected_source_revision, definition)
+            .await,
+        (None, Some(patch)) => {
+            svc.update_project(&id, &req.expected_source_revision, patch)
+                .await
+        }
+        (None, None) => {
+            return Err(err(
+                StatusCode::BAD_REQUEST,
+                "patch or definition required",
+            ));
+        }
+    };
+    summary.map(Json).map_err(map_err)
 }
 
 #[utoipa::path(

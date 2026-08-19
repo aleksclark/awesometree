@@ -1,7 +1,7 @@
 //! GPUI Projects browser backed by Switchboard Project Catalog.
 
 use crate::log as dlog;
-use crate::model::project::{definition_for_create, AwesometreeExt, ProjectSummary};
+use crate::model::project::{definition_for_create, merge_form_into_definition, AwesometreeExt, ProjectSummary};
 use crate::service_access;
 use crate::text_input::TextInput;
 use crate::theme::*;
@@ -78,6 +78,8 @@ struct ProjectsView {
     projects: Vec<ProjectSummary>,
     /// CAS tokens for edits: project_id → source_revision
     source_revisions: std::collections::HashMap<String, String>,
+    /// Last loaded definition per project (so Save does not drop extra fields).
+    loaded_definitions: std::collections::HashMap<String, serde_json::Value>,
     mode: Mode,
     form_name: Entity<TextInput>,
     form_repo: Entity<TextInput>,
@@ -101,6 +103,7 @@ impl ProjectsView {
         Self {
             projects,
             source_revisions,
+            loaded_definitions: std::collections::HashMap::new(),
             mode: Mode::List,
             form_name: cx.new(|cx| TextInput::new("project id", cx)),
             form_repo: cx.new(|cx| TextInput::new("/path/to/git/repo", cx)),
@@ -172,6 +175,8 @@ impl ProjectsView {
         };
         self.source_revisions
             .insert(env.project_id.clone(), env.source_revision.clone());
+        self.loaded_definitions
+            .insert(env.project_id.clone(), env.definition.clone());
         let ext = env.awesometree_ext();
         self.form_name.update(cx, |i, cx| {
             i.set_value(&env.project_id, cx);
@@ -258,7 +263,10 @@ impl ProjectsView {
                         self.mode = Mode::List;
                         self.clear_form(cx);
                     }
-                    Err(e) => self.form_error = Some(e.to_string()),
+                    Err(e) => {
+                        dlog::log(format!("Add project {name} failed: {e}"));
+                        self.form_error = Some(e.to_string());
+                    }
                 }
             }
             Mode::Editing(_) => {
@@ -273,10 +281,21 @@ impl ProjectsView {
                     return;
                 }
                 dlog::log(format!("Updating project via Switchboard: {name}"));
-                // Full definition replace via patch with definition body.
-                let patch = serde_json::json!({ "definition": def });
-                match rt_block_on(svc.update_project(&name, &expected, patch)) {
+                let existing = self
+                    .loaded_definitions
+                    .get(&name)
+                    .cloned()
+                    .unwrap_or(def.clone());
+                let merged = merge_form_into_definition(
+                    &existing,
+                    &name,
+                    if repo.is_empty() { None } else { Some(&repo) },
+                    branch,
+                    &ext,
+                );
+                match rt_block_on(svc.replace_project_definition(&name, &expected, merged)) {
                     Ok(sum) => {
+                        dlog::log(format!("Updated project {name} revision={:?}", sum.source_revision));
                         if let Some(rev) = sum.source_revision {
                             self.source_revisions.insert(name, rev);
                         }
@@ -284,7 +303,10 @@ impl ProjectsView {
                         self.mode = Mode::List;
                         self.clear_form(cx);
                     }
-                    Err(e) => self.form_error = Some(e.to_string()),
+                    Err(e) => {
+                        dlog::log(format!("Update project {name} failed: {e}"));
+                        self.form_error = Some(e.to_string());
+                    }
                 }
             }
             Mode::List => {}

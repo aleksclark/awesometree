@@ -25,10 +25,11 @@ confirm.
 
 ## Destroy vs Close
 
-- **Destroy** (`D`): Aborts if `git status --porcelain` shows
-  changes. Removes worktree, kills tag clients, deletes tag,
-  removes workspace from config.
-- **Close** (`J`): Keeps worktree on disk. Kills clients, deletes
-  tag, marks workspace inactive. Re-open via picker.
+- **Destroy** (`Super+D` / `awesometree destroy-current`): Aborts if
+  `git status --porcelain` shows changes. Removes worktree, kills tag
+  clients, deletes tag, deletes the Switchboard WorkSession.
+- **Close** (`Super+J` / `awesometree close`): Keeps worktree on disk.
+  Kills clients, deletes tag, transitions WorkSession to `closed`.
+  Re-open via picker / create.
 
 See: [Lifecycle](workspace-system/lifecycle.md)

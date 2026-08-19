@@ -19,6 +19,8 @@ pub struct WorkProfileInfo {
     pub work_profile_id: String,
     pub display_name: Option<String>,
     pub description: Option<String>,
+    /// Empty means globally applicable.
+    pub project_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, uniffi::Record)]

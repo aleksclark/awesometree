@@ -5,7 +5,7 @@ use crate::log as dlog;
 use crate::model::error::{ErrorCode, Result, SwitchboardError};
 use crate::model::lifecycle::WorkSessionState;
 use crate::model::project::ProjectEnvelope;
-use crate::model::resource::{ResourceBinding, WorkspaceResourceRef};
+use crate::model::resource::{self, ResourceBinding, WorkspaceResourceRef};
 use crate::model::runtime::{RealizationStatus, WorkSessionRuntime};
 use crate::model::work_session::{
     CreateWorkSessionRequest, CreateWorkSessionResponse, RealizationOptions, WorkSession,
@@ -62,6 +62,17 @@ impl WorkSessionService {
     ) -> Result<crate::model::ProjectSummary> {
         self.catalog
             .update_project(project_id, expected_source_revision, patch)
+            .await
+    }
+
+    pub async fn replace_project_definition(
+        &self,
+        project_id: &str,
+        expected_source_revision: &str,
+        definition: serde_json::Value,
+    ) -> Result<crate::model::ProjectSummary> {
+        self.catalog
+            .replace_project_definition(project_id, expected_source_revision, definition)
             .await
     }
 
@@ -239,7 +250,11 @@ impl WorkSessionService {
             (WorkSessionState::Paused, WorkSessionState::Open) => {
                 self.resume_local(id).await?;
             }
-            (_, WorkSessionState::Closed) | (_, WorkSessionState::Aborted) => {
+            (_, WorkSessionState::Closed) => {
+                // Close keeps the material worktree; destroy removes it.
+                self.teardown_local(id, true).await?;
+            }
+            (_, WorkSessionState::Aborted) => {
                 self.teardown_local(id, false).await?;
             }
             _ => {}
@@ -254,12 +269,10 @@ impl WorkSessionService {
     }
 
     pub async fn destroy(&self, id: &str, keep_worktree: bool) -> Result<()> {
-        // Prefer close then delete when open/paused.
         if let Ok(ws) = self.catalog.get_work_session(id).await {
             if !ws.state.is_terminal() {
-                let _ = self
-                    .transition(id, WorkSessionState::Closed)
-                    .await;
+                // Abort (not close) so teardown may delete the worktree.
+                let _ = self.catalog.transition_work_session(id, WorkSessionState::Aborted).await;
             }
         }
         self.teardown_local(id, keep_worktree).await?;
@@ -267,6 +280,57 @@ impl WorkSessionService {
         let _ = runtime_store::remove(id);
         let _ = runtime_store::clear_bezalel_token(id);
         Ok(())
+    }
+
+    /// WorkSession whose WM tag is currently focused, if any.
+    pub fn focused_work_session_id(&self) -> Result<Option<String>> {
+        let Some(wm) = self.wm.as_ref() else {
+            return Ok(None);
+        };
+        let Some(tag) = wm.get_current_tag_name().map_err(|e| {
+            SwitchboardError::new(ErrorCode::InternalError, e).with_operation("focused_work_session")
+        })? else {
+            return Ok(None);
+        };
+        if let Some((_, ws_id)) = wm::parse_tag_name(&tag) {
+            return Ok(Some(ws_id.to_string()));
+        }
+        Ok(None)
+    }
+
+    /// Destroy the focused session after a dirty-worktree check.
+    pub async fn destroy_current(&self) -> Result<String> {
+        let id = self.focused_work_session_id()?.ok_or_else(|| {
+            SwitchboardError::new(
+                ErrorCode::NotFound,
+                "no focused WorkSession tag",
+            )
+            .with_operation("destroy_current")
+        })?;
+        if let Ok(Some(rt)) = runtime_store::get(&id) {
+            if let Some(ws) = &rt.workspace {
+                if worktree_is_dirty(&PathBuf::from(&ws.path)) {
+                    return Err(SwitchboardError::new(
+                        ErrorCode::Conflict,
+                        format!("{id} has uncommitted changes; commit or stash before destroy"),
+                    )
+                    .with_entity("work_session", &id)
+                    .with_operation("destroy_current"));
+                }
+            }
+        }
+        self.destroy(&id, false).await?;
+        Ok(id)
+    }
+
+    /// Close the focused session and keep its worktree.
+    pub async fn close_current(&self) -> Result<String> {
+        let id = self.focused_work_session_id()?.ok_or_else(|| {
+            SwitchboardError::new(ErrorCode::NotFound, "no focused WorkSession tag")
+                .with_operation("close_current")
+        })?;
+        self.transition(&id, WorkSessionState::Closed).await?;
+        Ok(id)
     }
 
     /// Reconcile local runtime against Switchboard on daemon startup.
@@ -411,6 +475,22 @@ impl WorkSessionService {
             last_error: None,
         };
         runtime_store::upsert(runtime.clone())?;
+        if let Some(binding) = &runtime.resource_binding {
+            let policy = resource::merge_workspace_binding(
+                session.policy.as_ref(),
+                binding,
+                "git-worktree",
+            );
+            if let Err(e) = self
+                .catalog
+                .patch_work_session(ws_id, None, Some(policy))
+                .await
+            {
+                dlog::log(format!(
+                    "Warning: failed to record worktree binding on Switchboard for {ws_id}: {e}"
+                ));
+            }
+        }
         Ok(runtime)
     }
 
@@ -480,6 +560,17 @@ impl WorkSessionService {
 
 fn fs_remove_dir_all(path: &PathBuf) -> std::io::Result<()> {
     std::fs::remove_dir_all(path)
+}
+
+fn worktree_is_dirty(path: &PathBuf) -> bool {
+    if !path.exists() {
+        return false;
+    }
+    Command::new("git")
+        .args(["-C", &path.to_string_lossy(), "status", "--porcelain"])
+        .output()
+        .map(|o| !o.stdout.is_empty())
+        .unwrap_or(false)
 }
 
 fn find_git_common_dir(worktree: &PathBuf) -> Option<PathBuf> {
@@ -628,6 +719,14 @@ mod tests {
             unimplemented!()
         }
         async fn update_project(
+            &self,
+            _: &str,
+            _: &str,
+            _: serde_json::Value,
+        ) -> Result<ProjectSummary> {
+            unimplemented!()
+        }
+        async fn replace_project_definition(
             &self,
             _: &str,
             _: &str,

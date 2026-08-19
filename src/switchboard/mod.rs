@@ -23,11 +23,20 @@ pub trait Catalog: Send + Sync {
     async fn list_projects(&self, query: Option<&str>) -> Result<Vec<ProjectSummary>, SwitchboardError>;
     async fn get_project(&self, project_id: &str) -> Result<ProjectEnvelope, SwitchboardError>;
     async fn create_project(&self, definition: Value) -> Result<ProjectSummary, SwitchboardError>;
+    /// `body` is a Switchboard field merge-patch (e.g. `{"description":"x"}`).
+    /// Callers that have a full definition should use [`Catalog::replace_project_definition`].
     async fn update_project(
         &self,
         project_id: &str,
         expected_source_revision: &str,
         patch: Value,
+    ) -> Result<ProjectSummary, SwitchboardError>;
+    /// Full definition replace via Switchboard `project_update.definition`.
+    async fn replace_project_definition(
+        &self,
+        project_id: &str,
+        expected_source_revision: &str,
+        definition: Value,
     ) -> Result<ProjectSummary, SwitchboardError>;
     async fn delete_project(
         &self,

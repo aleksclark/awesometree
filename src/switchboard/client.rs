@@ -132,6 +132,29 @@ impl SwitchboardClient {
         }
         Err(last_err.unwrap_or_else(|| SwitchboardError::unavailable(name, "unknown")))
     }
+
+    async fn project_update(
+        &self,
+        project_id: &str,
+        expected_source_revision: &str,
+        extra: Value,
+    ) -> Result<ProjectSummary> {
+        let mut args = json!({
+            "projectId": project_id,
+            "expectedSourceRevision": expected_source_revision,
+        });
+        if let (Some(obj), Some(extra_obj)) = (args.as_object_mut(), extra.as_object()) {
+            for (k, v) in extra_obj {
+                obj.insert(k.clone(), v.clone());
+            }
+        }
+        let v = self.call_tool("project_update", args).await?;
+        let project = v.get("project").cloned().unwrap_or(v);
+        serde_json::from_value(project).map_err(|e| {
+            SwitchboardError::new(ErrorCode::InternalError, format!("parse update: {e}"))
+                .with_operation("project_update")
+        })
+    }
 }
 
 #[async_trait]
@@ -214,21 +237,26 @@ impl Catalog for SwitchboardClient {
         expected_source_revision: &str,
         patch: Value,
     ) -> Result<ProjectSummary> {
-        let v = self
-            .call_tool(
-                "project_update",
-                json!({
-                    "projectId": project_id,
-                    "expectedSourceRevision": expected_source_revision,
-                    "patch": patch,
-                }),
-            )
-            .await?;
-        let project = v.get("project").cloned().unwrap_or(v);
-        serde_json::from_value(project).map_err(|e| {
-            SwitchboardError::new(ErrorCode::InternalError, format!("parse update: {e}"))
-                .with_operation("project_update")
-        })
+        self.project_update(
+            project_id,
+            expected_source_revision,
+            json!({ "patch": patch }),
+        )
+        .await
+    }
+
+    async fn replace_project_definition(
+        &self,
+        project_id: &str,
+        expected_source_revision: &str,
+        definition: Value,
+    ) -> Result<ProjectSummary> {
+        self.project_update(
+            project_id,
+            expected_source_revision,
+            json!({ "definition": definition }),
+        )
+        .await
     }
 
     async fn delete_project(

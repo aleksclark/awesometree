@@ -126,7 +126,11 @@ data class WorkProfileInfo(
     val workProfileId: String,
     val displayName: String?,
     val description: String?,
-)
+    val projectIds: List<String> = emptyList(),
+) {
+    fun appliesTo(projectId: String): Boolean =
+        projectIds.isEmpty() || projectIds.contains(projectId)
+}
 
 data class ProjectInfo(
     val projectId: String,
@@ -175,10 +179,13 @@ private fun parseWorkProfileList(json: String): List<WorkProfileInfo> {
     val arr = JSONArray(json)
     return (0 until arr.length()).map { i ->
         val o = arr.getJSONObject(i)
+        val ids = o.optJSONArray("project_ids")
+        val projectIds = if (ids == null) emptyList() else (0 until ids.length()).map { ids.getString(it) }
         WorkProfileInfo(
             workProfileId = o.optString("work_profile_id", ""),
             displayName = o.optString("display_name", null),
             description = o.optString("description", null),
+            projectIds = projectIds,
         )
     }
 }

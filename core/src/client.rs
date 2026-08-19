@@ -91,6 +91,15 @@ impl ApiClient {
                     .get("description")
                     .and_then(|x| x.as_str())
                     .map(|s| s.into()),
+                project_ids: v
+                    .get("project_ids")
+                    .and_then(|x| x.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|x| x.as_str().map(|s| s.to_string()))
+                            .collect()
+                    })
+                    .unwrap_or_default(),
             })
             .collect())
     }

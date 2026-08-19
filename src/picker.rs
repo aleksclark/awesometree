@@ -1,3 +1,4 @@
+use crate::model::work_profile::WorkProfile;
 use crate::text_input::{TextInput, TextInputEvent};
 use crate::theme::*;
 use crate::ui_helpers::{self, button, ButtonKind};
@@ -23,8 +24,7 @@ pub enum PickerMode {
     Freeform { prompt: String },
     CreateForm {
         projects: Vec<String>,
-        /// (work_profile_id, display_name)
-        work_profiles: Vec<(String, String)>,
+        work_profiles: Vec<WorkProfile>,
         default_missing: bool,
     },
 }
@@ -114,7 +114,9 @@ struct PickerView {
     form_project: Entity<TextInput>,
     form_profile: Entity<TextInput>,
     projects: Vec<String>,
-    work_profiles: Vec<(String, String)>,
+    work_profiles: Vec<WorkProfile>,
+    /// Indices into `work_profiles` eligible for the current Project (empty until one is selected).
+    eligible_profile_indices: Vec<usize>,
     profile_filtered: Vec<usize>,
     profile_selected: usize,
     default_missing: bool,
@@ -148,6 +150,7 @@ impl PickerView {
 
         cx.subscribe_in(&form_project, _window, |view, _input, _event: &TextInputEvent, _window, cx| {
             view.filter_projects(cx);
+            view.refresh_eligible_profiles(cx);
             cx.notify();
         })
         .detach();
@@ -174,6 +177,7 @@ impl PickerView {
                     form_profile,
                     projects: vec![],
                     work_profiles: vec![],
+                    eligible_profile_indices: vec![],
                     profile_filtered: vec![],
                     profile_selected: 0,
                     default_missing: false,
@@ -199,6 +203,7 @@ impl PickerView {
                 form_profile,
                 projects: vec![],
                 work_profiles: vec![],
+                eligible_profile_indices: vec![],
                 profile_filtered: vec![],
                 profile_selected: 0,
                 default_missing: false,
@@ -216,22 +221,10 @@ impl PickerView {
                 default_missing,
             } => {
                 let project_filtered = (0..projects.len()).collect();
-                let profile_filtered = (0..work_profiles.len()).collect();
-                // Preselect exact ID "default" if present.
-                let profile_selected = work_profiles
-                    .iter()
-                    .position(|(id, _)| id == "default")
-                    .unwrap_or(0);
-                let default_display = work_profiles
-                    .iter()
-                    .find(|(id, _)| id == "default")
-                    .map(|(_, dn)| dn.clone())
-                    .unwrap_or_default();
-                if !default_display.is_empty() {
-                    form_profile.update(cx, |input, cx| {
-                        input.set_value(&default_display, cx);
-                    });
-                }
+                // Profiles stay empty until a Project is selected.
+                form_profile.update(cx, |input, cx| {
+                    input.set_value("", cx);
+                });
                 Self {
                     items: vec![],
                     filtered: vec![],
@@ -245,8 +238,9 @@ impl PickerView {
                     form_profile,
                     projects,
                     work_profiles,
-                    profile_filtered,
-                    profile_selected,
+                    eligible_profile_indices: vec![],
+                    profile_filtered: vec![],
+                    profile_selected: 0,
                     default_missing,
                     project_filtered,
                     project_selected: 0,
@@ -276,20 +270,82 @@ impl PickerView {
         }
     }
 
-    fn resolved_work_profile_id(&self, cx: &App) -> String {
-        let typed = self.form_profile.read(cx).value().to_string();
-        // Prefer exact ID match, then display name match, else typed value.
-        if self.work_profiles.iter().any(|(id, _)| id == &typed) {
+    fn selected_project_id(&self, cx: &App) -> String {
+        let typed = self.form_project.read(cx).value().to_string();
+        if self.projects.iter().any(|p| p == &typed) {
             return typed;
         }
-        if let Some((id, _)) = self.work_profiles.iter().find(|(_, dn)| dn == &typed) {
-            return id.clone();
+        String::new()
+    }
+
+    fn profile_enabled(&self, cx: &App) -> bool {
+        !self.selected_project_id(cx).is_empty()
+    }
+
+    fn refresh_eligible_profiles(&mut self, cx: &mut App) {
+        let project = self.selected_project_id(cx);
+        self.eligible_profile_indices = if project.is_empty() {
+            Vec::new()
+        } else {
+            self.work_profiles
+                .iter()
+                .enumerate()
+                .filter(|(_, p)| p.applies_to(&project))
+                .map(|(i, _)| i)
+                .collect()
+        };
+        // Prefer exact ID default among eligible profiles.
+        let default_idx = self.eligible_profile_indices.iter().copied().find(|&i| {
+            self.work_profiles[i].work_profile_id == crate::model::work_session::DEFAULT_WORK_PROFILE_ID
+        });
+        if let Some(idx) = default_idx {
+            let label = self.work_profiles[idx].display().to_string();
+            self.form_profile.update(cx, |input, cx| {
+                input.set_value(&label, cx);
+            });
+            self.profile_selected = self
+                .eligible_profile_indices
+                .iter()
+                .position(|&i| i == idx)
+                .unwrap_or(0);
+        } else {
+            self.form_profile.update(cx, |input, cx| {
+                input.set_value("", cx);
+            });
+            self.profile_selected = 0;
+        }
+        self.filter_profiles(cx);
+    }
+
+    fn resolved_work_profile_id(&self, cx: &App) -> String {
+        if !self.profile_enabled(cx) {
+            return String::new();
+        }
+        let typed = self.form_profile.read(cx).value().to_string();
+        let eligible = |p: &WorkProfile| {
+            self.eligible_profile_indices
+                .iter()
+                .any(|&i| self.work_profiles.get(i).map(|x| x.work_profile_id.as_str()) == Some(p.work_profile_id.as_str()))
+        };
+        if let Some(p) = self
+            .work_profiles
+            .iter()
+            .find(|p| p.work_profile_id == typed && eligible(p))
+        {
+            return p.work_profile_id.clone();
+        }
+        if let Some(p) = self
+            .work_profiles
+            .iter()
+            .find(|p| p.display() == typed && eligible(p))
+        {
+            return p.work_profile_id.clone();
         }
         if !self.profile_filtered.is_empty() {
             let idx = self.profile_filtered[self.profile_selected.min(self.profile_filtered.len() - 1)];
-            return self.work_profiles[idx].0.clone();
+            return self.work_profiles[idx].work_profile_id.clone();
         }
-        typed
+        String::new()
     }
 
     fn filter(&mut self, cx: &App) {
@@ -326,34 +382,52 @@ impl PickerView {
     }
 
     fn filter_profiles(&mut self, cx: &App) {
+        if self.eligible_profile_indices.is_empty() {
+            self.profile_filtered.clear();
+            self.profile_selected = 0;
+            return;
+        }
         let q = self.form_profile.read(cx).value().to_lowercase();
         if q.is_empty() {
-            self.profile_filtered = (0..self.work_profiles.len()).collect();
+            self.profile_filtered = self.eligible_profile_indices.clone();
         } else {
             self.profile_filtered = self
-                .work_profiles
+                .eligible_profile_indices
                 .iter()
-                .enumerate()
-                .filter(|(_, (id, dn))| {
-                    fuzzy_match(&id.to_lowercase(), &q) || fuzzy_match(&dn.to_lowercase(), &q)
+                .copied()
+                .filter(|&i| {
+                    let p = &self.work_profiles[i];
+                    fuzzy_match(&p.work_profile_id.to_lowercase(), &q)
+                        || fuzzy_match(&p.display().to_lowercase(), &q)
                 })
-                .map(|(i, _)| i)
                 .collect();
         }
         self.profile_selected = 0;
     }
 
-    fn next_form_field(&self, _cx: &App) -> FormField {
+    fn next_form_field(&self, cx: &App) -> FormField {
         match self.form_field {
             FormField::Name => FormField::Project,
-            FormField::Project => FormField::WorkProfile,
+            FormField::Project => {
+                if self.profile_enabled(cx) {
+                    FormField::WorkProfile
+                } else {
+                    FormField::Name
+                }
+            }
             FormField::WorkProfile => FormField::Name,
         }
     }
 
-    fn prev_form_field(&self, _cx: &App) -> FormField {
+    fn prev_form_field(&self, cx: &App) -> FormField {
         match self.form_field {
-            FormField::Name => FormField::WorkProfile,
+            FormField::Name => {
+                if self.profile_enabled(cx) {
+                    FormField::WorkProfile
+                } else {
+                    FormField::Project
+                }
+            }
             FormField::Project => FormField::Name,
             FormField::WorkProfile => FormField::Project,
         }
@@ -388,19 +462,27 @@ impl PickerView {
                 self.form_project.update(cx, |input, cx| {
                     input.set_value(&self.projects[idx], cx);
                 });
+                self.refresh_eligible_profiles(cx);
                 self.form_field = self.next_form_field(cx);
                 self.focus_active_field(window, cx);
                 cx.notify();
                 return;
             }
-            if self.form_field == FormField::WorkProfile && !self.profile_filtered.is_empty() {
-                let idx = self.profile_filtered[self.profile_selected];
-                let (id, dn) = &self.work_profiles[idx];
-                let label = if dn.is_empty() { id.clone() } else { dn.clone() };
-                self.form_profile.update(cx, |input, cx| {
-                    input.set_value(&label, cx);
-                });
-                // Keep selection; submit on next enter from name/project filled state.
+            if self.form_field == FormField::WorkProfile {
+                if !self.profile_enabled(cx) {
+                    self.form_field = FormField::Project;
+                    self.focus_active_field(window, cx);
+                    cx.notify();
+                    return;
+                }
+                if !self.profile_filtered.is_empty() {
+                    let idx = self.profile_filtered[self.profile_selected];
+                    let p = &self.work_profiles[idx];
+                    let label = p.display().to_string();
+                    self.form_profile.update(cx, |input, cx| {
+                        input.set_value(&label, cx);
+                    });
+                }
             }
             let name_val = self.read_field(FormField::Name, cx);
             if name_val.is_empty() {
@@ -539,6 +621,11 @@ fn render_form_field(
 ) -> Stateful<Div> {
     let input_entity = input.clone();
     ui_helpers::render_form_field(label, input, focused, move |view: &mut PickerView, window, cx| {
+        if field == FormField::WorkProfile && !view.profile_enabled(cx) {
+            view.form_field = FormField::Project;
+            window.focus(&view.form_project.read(cx).focus_handle(cx));
+            return;
+        }
         view.form_field = field;
         window.focus(&input_entity.read(cx).focus_handle(cx));
     }, cx)
@@ -584,25 +671,23 @@ fn render_dropdown_items(
                                     view.form_project.update(cx, |input, cx| {
                                         input.set_value(&item_for_click, cx);
                                     });
-                                    view.form_field = FormField::WorkProfile;
+                                    view.refresh_eligible_profiles(cx);
+                                    view.form_field = view.next_form_field(cx);
                                     view.focus_active_field(window, cx);
                                 }
                                 FormField::WorkProfile => {
-                                    // item may be "display (id)" — resolve to id via index.
-                                    if let Some((id, dn)) = view
-                                        .work_profiles
-                                        .iter()
-                                        .find(|(id, dn)| {
-                                            id == &item_for_click
-                                                || dn == &item_for_click
-                                                || format!("{dn} ({id})") == item_for_click
-                                        })
-                                    {
-                                        let label = if dn.is_empty() {
-                                            id.clone()
-                                        } else {
-                                            dn.clone()
-                                        };
+                                    if !view.profile_enabled(cx) {
+                                        view.form_field = FormField::Project;
+                                        view.focus_active_field(window, cx);
+                                        return;
+                                    }
+                                    if let Some(p) = view.work_profiles.iter().find(|p| {
+                                        p.work_profile_id == item_for_click
+                                            || p.display() == item_for_click
+                                            || format!("{} ({})", p.display(), p.work_profile_id)
+                                                == item_for_click
+                                    }) {
+                                        let label = p.display().to_string();
                                         view.form_profile.update(cx, |input, cx| {
                                             input.set_value(&label, cx);
                                         });
@@ -645,14 +730,16 @@ impl PickerView {
         let projects = self.projects.clone();
         let profile_filtered = self.profile_filtered.clone();
         let profile_selected = self.profile_selected;
+        let profile_enabled = self.profile_enabled(cx);
         let profile_labels: Vec<String> = self
             .work_profiles
             .iter()
-            .map(|(id, dn)| {
-                if dn.is_empty() || dn == id {
-                    id.clone()
+            .map(|p| {
+                let dn = p.display();
+                if dn == p.work_profile_id {
+                    p.work_profile_id.clone()
                 } else {
-                    format!("{dn} ({id})")
+                    format!("{dn} ({})", p.work_profile_id)
                 }
             })
             .collect();
@@ -754,15 +841,22 @@ impl PickerView {
                             .flex()
                             .flex_col()
                             .gap(px(4.))
+                            .opacity(if profile_enabled { 1. } else { 0.45 })
                             .child(render_form_field(
-                                "WORK PROFILE",
+                                if profile_enabled {
+                                    "WORK PROFILE"
+                                } else {
+                                    "WORK PROFILE (select a project first)"
+                                },
                                 &self.form_profile,
-                                field == FormField::WorkProfile,
+                                field == FormField::WorkProfile && profile_enabled,
                                 FormField::WorkProfile,
                                 cx,
                             ))
                             .when(
-                                field == FormField::WorkProfile && !profile_filtered.is_empty(),
+                                profile_enabled
+                                    && field == FormField::WorkProfile
+                                    && !profile_filtered.is_empty(),
                                 |this: Div| {
                                     this.child(render_dropdown_items(
                                         &profile_labels,
