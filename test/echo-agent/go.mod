@@ -1,3 +1,3 @@
 module github.com/aleksclark/spec-torture/agents/echo-agent
 
-go 1.23.0
+go 1.26.6
