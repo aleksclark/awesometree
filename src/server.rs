@@ -1,4 +1,4 @@
-use crate::auth;
+use crate::auth::{self, ScopedToken};
 use crate::log as dlog;
 use crate::model::error::{ErrorCode, SwitchboardError};
 use crate::model::lifecycle::WorkSessionState;
@@ -8,7 +8,7 @@ use crate::model::work_session::{
 };
 use crate::model::WorkProfile;
 use crate::service_access;
-use axum::extract::{Path, Query, Request};
+use axum::extract::{Extension, Path, Query, Request};
 use axum::http::StatusCode;
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Json, Response};
@@ -44,6 +44,20 @@ fn err(status: StatusCode, msg: impl Into<String>) -> Response {
         }),
     )
         .into_response()
+}
+
+fn forbid(msg: impl Into<String>) -> Response {
+    err(StatusCode::FORBIDDEN, msg)
+}
+
+fn require_project_scope(token: &ScopedToken, project_id: &str) -> Result<(), Response> {
+    if auth::scope_includes_project(&token.scope, project_id) {
+        Ok(())
+    } else {
+        Err(forbid(format!(
+            "token scope does not include project: {project_id}"
+        )))
+    }
 }
 
 fn map_err(e: SwitchboardError) -> Response {
@@ -153,6 +167,16 @@ fn build_api_router() -> (axum::Router<AppState>, utoipa::openapi::OpenApi) {
 pub fn openapi_spec() -> String {
     let (_, api) = build_api_router();
     api.to_pretty_json().expect("OpenAPI JSON serialization")
+}
+
+/// REST API router with auth middleware. Used by the daemon and integration tests.
+/// Without `ConnectInfo`, loopback auto-admin does not apply — callers must send a Bearer token
+/// (or set `ARP_DISABLE_AUTH`).
+pub fn api_app() -> axum::Router {
+    let (router, _) = build_api_router();
+    router
+        .layer(middleware::from_fn(auth_middleware))
+        .with_state(AppState)
 }
 
 async fn auth_middleware(mut req: Request, next: Next) -> Result<Response, Response> {
@@ -269,11 +293,24 @@ pub async fn run_grpc(port: u16) {
 
 fn redact_runtime_secrets(mut view: WorkSessionView) -> WorkSessionView {
     // Never return raw bezalel tokens from list/detail APIs.
+    // Tokens live only in the host-local secrets store; runtime may carry token_ref only.
     if let Some(ref mut rt) = view.runtime {
-        // token lives only in secrets store; token_ref is safe.
-        let _ = rt;
+        // Defensive: clear any accidental raw fields if schema drifts.
+        rt.bezalel_token_ref = rt.bezalel_token_ref.take().filter(|r| r.starts_with("bezalel:"));
     }
     view
+}
+
+fn redact_create_response(mut resp: CreateWorkSessionResponse) -> CreateWorkSessionResponse {
+    if let Some(rt) = resp.runtime.take() {
+        let mut view = WorkSessionView {
+            work_session: resp.work_session.clone(),
+            runtime: Some(rt),
+        };
+        view = redact_runtime_secrets(view);
+        resp.runtime = view.runtime;
+    }
+    resp
 }
 
 #[utoipa::path(
@@ -286,6 +323,7 @@ fn redact_runtime_secrets(mut view: WorkSessionView) -> WorkSessionView {
     )
 )]
 async fn list_work_sessions(
+    Extension(token): Extension<ScopedToken>,
     Query(q): Query<ListFilter>,
 ) -> Result<Json<Vec<WorkSessionView>>, Response> {
     let svc = service_access::service().await;
@@ -294,7 +332,16 @@ async fn list_work_sessions(
         .await
         .map_err(map_err)?;
     Ok(Json(
-        list.into_iter().map(redact_runtime_secrets).collect(),
+        list.into_iter()
+            .filter(|v| {
+                v.work_session
+                    .project_id
+                    .as_deref()
+                    .map(|p| auth::scope_includes_project(&token.scope, p))
+                    .unwrap_or(false)
+            })
+            .map(redact_runtime_secrets)
+            .collect(),
     ))
 }
 
@@ -308,9 +355,17 @@ async fn list_work_sessions(
         (status = 404, description = "Not found", body = ErrorBody),
     )
 )]
-async fn get_work_session(Path(id): Path<String>) -> Result<Json<WorkSessionView>, Response> {
+async fn get_work_session(
+    Extension(token): Extension<ScopedToken>,
+    Path(id): Path<String>,
+) -> Result<Json<WorkSessionView>, Response> {
     let svc = service_access::service().await;
     let view = svc.get_work_session(&id).await.map_err(map_err)?;
+    if let Some(pid) = view.work_session.project_id.as_deref() {
+        require_project_scope(&token, pid)?;
+    } else {
+        return Err(forbid("work session has no project_id"));
+    }
     Ok(Json(redact_runtime_secrets(view)))
 }
 
@@ -327,8 +382,10 @@ async fn get_work_session(Path(id): Path<String>) -> Result<Json<WorkSessionView
     )
 )]
 async fn create_work_session(
+    Extension(token): Extension<ScopedToken>,
     Json(req): Json<CreateWorkSessionHttpReq>,
 ) -> Result<(StatusCode, Json<CreateWorkSessionResponse>), Response> {
+    require_project_scope(&token, &req.project_id)?;
     let svc = service_access::service().await;
     let create = CreateWorkSessionRequest {
         work_session_id: req.work_session_id,
@@ -339,7 +396,7 @@ async fn create_work_session(
             create_tag: !req.no_tag && !req.headless,
             launch_apps: !req.no_launch && !req.headless,
             headless: req.headless,
-            no_wm: req.headless,
+            no_wm: req.headless || req.no_tag,
         },
     };
     let resp = svc.create_work_session(create).await.map_err(map_err)?;
@@ -349,7 +406,7 @@ async fn create_work_session(
         resp.work_profile_id,
         resp.work_session.state
     ));
-    Ok((StatusCode::CREATED, Json(resp)))
+    Ok((StatusCode::CREATED, Json(redact_create_response(resp))))
 }
 
 #[utoipa::path(
@@ -362,8 +419,18 @@ async fn create_work_session(
         (status = 404, description = "Not found", body = ErrorBody),
     )
 )]
-async fn delete_work_session(Path(id): Path<String>) -> Result<StatusCode, Response> {
+async fn delete_work_session(
+    Extension(token): Extension<ScopedToken>,
+    Path(id): Path<String>,
+) -> Result<StatusCode, Response> {
     let svc = service_access::service().await;
+    // Authorize against current record before destroy side effects.
+    let view = svc.get_work_session(&id).await.map_err(map_err)?;
+    if let Some(pid) = view.work_session.project_id.as_deref() {
+        require_project_scope(&token, pid)?;
+    } else {
+        return Err(forbid("work session has no project_id"));
+    }
     svc.destroy(&id, false).await.map_err(map_err)?;
     dlog::log(format!("API: deleted work_session {id}"));
     Ok(StatusCode::NO_CONTENT)
@@ -381,16 +448,23 @@ async fn delete_work_session(Path(id): Path<String>) -> Result<StatusCode, Respo
     )
 )]
 async fn transition_work_session(
+    Extension(token): Extension<ScopedToken>,
     Path(id): Path<String>,
     Json(req): Json<TransitionReq>,
 ) -> Result<Json<WorkSessionView>, Response> {
+    let svc = service_access::service().await;
+    let current = svc.get_work_session(&id).await.map_err(map_err)?;
+    if let Some(pid) = current.work_session.project_id.as_deref() {
+        require_project_scope(&token, pid)?;
+    } else {
+        return Err(forbid("work session has no project_id"));
+    }
     let state = WorkSessionState::parse(&req.state).ok_or_else(|| {
         err(
             StatusCode::BAD_REQUEST,
             format!("invalid state {:?}", req.state),
         )
     })?;
-    let svc = service_access::service().await;
     let view = svc.transition(&id, state).await.map_err(map_err)?;
     Ok(Json(redact_runtime_secrets(view)))
 }

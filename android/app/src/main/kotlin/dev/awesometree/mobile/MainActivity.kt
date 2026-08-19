@@ -21,7 +21,7 @@ import dev.awesometree.mobile.data.ConnectionStore
 import dev.awesometree.mobile.ui.AwesometreeTheme
 import dev.awesometree.mobile.ui.projects.ProjectsScreen
 import dev.awesometree.mobile.ui.settings.SettingsScreen
-import dev.awesometree.mobile.ui.workspaces.WorkSessionsScreen
+import dev.awesometree.mobile.ui.worksessions.WorkSessionsScreen
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {

@@ -475,7 +475,7 @@ pub fn router() -> axum::Router {
         // Projects
         .route("/v1/projects", get(list_projects).post(register_project))
         .route("/v1/projects/{name}", delete(unregister_project))
-        // Workspaces
+        // WorkSessions
         .route("/v1/work-sessions", get(list_work_sessions).post(create_work_session))
         .route("/v1/work-sessions/{work_session_id}", get(get_work_session).delete(destroy_work_session))
         // Agents

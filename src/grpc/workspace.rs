@@ -56,10 +56,10 @@ impl WorkSessionService for WorkSessionServiceImpl {
                     Some(req.display_name)
                 },
                 realization: RealizationOptions {
-                    create_tag: true,
+                    create_tag: !req.headless,
                     launch_apps: !req.headless,
                     headless: req.headless,
-                    no_wm: false,
+                    no_wm: req.headless,
                 },
             })
             .await

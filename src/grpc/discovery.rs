@@ -248,15 +248,15 @@ impl DiscoveryService for DiscoveryServiceImpl {
         let token = extract_token(&request);
         let req = request.into_inner();
 
-        if req.workspace_name.is_empty() {
-            return Err(Status::invalid_argument("workspace_name is required"));
+        if req.work_session_id.is_empty() {
+            return Err(Status::invalid_argument("work_session_id is required"));
         }
 
         let store = state::load()
             .map_err(|e| Status::internal(format!("failed to load state: {e}")))?;
 
-        let ws = store.work_session_id(&req.workspace_name).ok_or_else(|| {
-            Status::not_found(format!("workspace '{}' not found", req.workspace_name))
+        let ws = store.work_session_id(&req.work_session_id).ok_or_else(|| {
+            Status::not_found(format!("work_session '{}' not found", req.work_session_id))
         })?;
 
         // Check scope
@@ -279,7 +279,7 @@ impl DiscoveryService for DiscoveryServiceImpl {
             .map(|agent| {
                 Ok(WorkspaceEvent {
                     event_type: WorkspaceEventType::AgentStatusChanged as i32,
-                    workspace: Some(convert::work_session_to_proto_workspace(&req.workspace_name, "", "", true, &[])),
+                    workspace: Some(convert::work_session_to_discovery_payload(&req.work_session_id, "", "", true, &[])),
                     agent: Some(convert::agent_instance_to_proto(agent)),
                 })
             })
@@ -288,7 +288,7 @@ impl DiscoveryService for DiscoveryServiceImpl {
         let mut rx = agent_supervisor::subscribe_events()
             .ok_or_else(|| Status::unavailable("agent supervisor not initialized"))?;
 
-        let workspace_name = req.workspace_name.clone();
+        let work_session_id = req.work_session_id.clone();
 
         let (tx, rx_stream) = tokio::sync::mpsc::channel(32);
 
@@ -330,7 +330,7 @@ impl DiscoveryService for DiscoveryServiceImpl {
                             ),
                         };
 
-                        if event_work_session_id != workspace_name {
+                        if event_work_session_id != work_session_id {
                             continue; // Not our work session
                         }
 
@@ -339,8 +339,8 @@ impl DiscoveryService for DiscoveryServiceImpl {
                             .ok()
                             .and_then(|store| {
                                 store
-                                    .work_session_id(&workspace_name)
-                                    .map(|_ws| convert::work_session_to_proto_workspace(&workspace_name, "", "", true, &[]))
+                                    .work_session_id(&work_session_id)
+                                    .map(|_ws| convert::work_session_to_discovery_payload(&work_session_id, "", "", true, &[]))
                             });
 
                         let agent_proto = match &event {

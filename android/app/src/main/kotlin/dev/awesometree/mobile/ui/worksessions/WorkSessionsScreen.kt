@@ -1,4 +1,4 @@
-package dev.awesometree.mobile.ui.workspaces
+package dev.awesometree.mobile.ui.worksessions
 
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.clickable

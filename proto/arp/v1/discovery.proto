@@ -26,11 +26,13 @@ service DiscoveryService {
     };
   }
 
-  // Streams real-time events for all agents in a workspace (spawns,
-  // status changes, stops, workspace destruction).
+  // Streams real-time events for all agents in a WorkSession (spawns,
+  // status changes, stops, session destruction).
+  // HTTP path uses work-sessions; RPC/message names retain Workspace*
+  // for wire stability until a major proto break.
   rpc WatchWorkspace(WatchWorkspaceRequest) returns (stream WorkspaceEvent) {
     option (google.api.http) = {
-      get: "/v1/workspaces/{workspace_name}:watch"
+      get: "/v1/work-sessions/{work_session_id}:watch"
     };
   }
 }
@@ -80,7 +82,8 @@ enum AgentEventType {
 }
 
 message WatchWorkspaceRequest {
-  string workspace_name = 1 [(google.api.field_behavior) = REQUIRED];
+  // work_session_id (field number stable; JSON/proto3 name updated).
+  string work_session_id = 1 [(google.api.field_behavior) = REQUIRED];
 }
 
 // WorkspaceEvent is a real-time notification about a workspace.

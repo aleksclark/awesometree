@@ -444,3 +444,459 @@ async fn e2e_missing_default_fails_closed() {
         "failed create must not leave Switchboard WorkSession"
     );
 }
+
+// ── Shared fixture for multi-boundary tests ───────────────────────────────
+
+struct E2eFixture {
+    _guard: std::sync::MutexGuard<'static, ()>,
+    _sb: SwitchboardProc,
+    _env: EnvGuard,
+    _tmp: tempfile::TempDir,
+    endpoint: String,
+    runtime_path: PathBuf,
+    secrets_path: PathBuf,
+    repo: PathBuf,
+    svc: std::sync::Arc<awesometree::work_session_service::WorkSessionService>,
+}
+
+impl E2eFixture {
+    async fn start() -> Option<Self> {
+        let guard = e2e_env_lock();
+        let sb = start_switchboard()?;
+        let tmp = tempfile::tempdir().unwrap();
+        let runtime_path = tmp.path().join("runtime.json");
+        let secrets_path = tmp.path().join("secrets.json");
+        let home = tmp.path().join("home");
+        std::fs::create_dir_all(home.join(".config/awesometree")).unwrap();
+
+        let env = EnvGuard::set(&[
+            ("AWESOMETREE_SWITCHBOARD_URL", sb.endpoint.clone()),
+            (
+                "AWESOMETREE_RUNTIME_PATH",
+                runtime_path.to_string_lossy().into_owned(),
+            ),
+            (
+                "AWESOMETREE_SECRETS_PATH",
+                secrets_path.to_string_lossy().into_owned(),
+            ),
+            ("HOME", home.to_string_lossy().into_owned()),
+        ]);
+
+        let repo = init_git_repo(tmp.path());
+        let catalog = std::sync::Arc::new(SwitchboardClient::new(
+            SwitchboardConfig::with_endpoint(sb.endpoint.clone()),
+        ));
+        wait_healthy(&catalog).await;
+
+        let svc = std::sync::Arc::new(
+            awesometree::work_session_service::WorkSessionService::new(catalog.clone(), None),
+        );
+        // Process-wide accessor used by REST/MCP/gRPC/CLI paths.
+        awesometree::service_access::set_service(svc.clone()).await;
+
+        Some(Self {
+            _guard: guard,
+            endpoint: sb.endpoint.clone(),
+            _sb: sb,
+            _env: env,
+            _tmp: tmp,
+            runtime_path,
+            secrets_path,
+            repo,
+            svc,
+        })
+    }
+
+    async fn ensure_project(&self, project_id: &str) {
+        let def = awesometree::model::project::definition_for_create(
+            project_id,
+            Some("e2e"),
+            Some(self.repo.to_str().unwrap()),
+            Some("master"),
+            None,
+        );
+        let _ = self.svc.create_project(def).await.expect("create project");
+    }
+}
+
+fn admin_bearer() -> String {
+    let t = awesometree::auth::localhost_admin_token();
+    format!(
+        "Bearer {}",
+        awesometree::auth::encode_scoped_token(&t)
+    )
+}
+
+fn project_bearer(project_id: &str) -> String {
+    let t = awesometree::auth::create_scoped_token(
+        "e2e-user",
+        awesometree::auth::TokenScope::Projects(vec![project_id.into()]),
+        awesometree::auth::Permission::Project,
+        None,
+    );
+    format!(
+        "Bearer {}",
+        awesometree::auth::encode_scoped_token(&t)
+    )
+}
+
+fn no_wm_opts() -> awesometree::model::work_session::RealizationOptions {
+    awesometree::model::work_session::RealizationOptions {
+        create_tag: false,
+        launch_apps: false,
+        headless: false,
+        no_wm: true,
+    }
+}
+
+#[tokio::test]
+async fn e2e_rest_create_work_session() {
+    let Some(fx) = E2eFixture::start().await else { return; };
+    fx.ensure_project("rest-proj").await;
+
+    let app = awesometree::server::api_app();
+    let server = axum_test_serve(app).await;
+    let client = reqwest::Client::new();
+
+    let body = serde_json::json!({
+        "work_session_id": "rest-ws-1",
+        "project_id": "rest-proj",
+        "headless": false,
+        "no_tag": true,
+        "no_launch": true,
+    });
+    let resp = client
+        .post(format!("{}/api/work-sessions", server.base))
+        .header("Authorization", admin_bearer())
+        .json(&body)
+        .send()
+        .await
+        .expect("rest create");
+    assert_eq!(resp.status(), 201, "body={}", resp.text().await.unwrap_or_default());
+    let v: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(v["work_session"]["work_session_id"], "rest-ws-1");
+    assert_eq!(v["work_profile_id"], "default");
+
+    let got = fx.svc.get_work_session("rest-ws-1").await.expect("sb readback");
+    assert_eq!(got.work_session.work_profile_id.as_deref(), Some("default"));
+    let _ = fx.svc.destroy("rest-ws-1", false).await;
+}
+
+#[tokio::test]
+async fn e2e_grpc_create_work_session() {
+    let Some(fx) = E2eFixture::start().await else { return; };
+    fx.ensure_project("grpc-proj").await;
+
+    let impl_svc = awesometree::grpc::workspace::WorkSessionServiceImpl::new();
+    use awesometree::grpc::arp_proto::work_session_service_server::WorkSessionService;
+    use tonic::Request;
+
+    let resp = impl_svc
+        .create_work_session(Request::new(
+            awesometree::grpc::arp_proto::CreateWorkSessionRequest {
+                work_session_id: "grpc-ws-1".into(),
+                project_id: "grpc-proj".into(),
+                work_profile_id: String::new(),
+                display_name: "grpc".into(),
+                headless: true, // no_wm via headless realization path
+            },
+        ))
+        .await
+        .expect("grpc create")
+        .into_inner();
+
+    assert_eq!(resp.work_session_id, "grpc-ws-1");
+    assert_eq!(resp.work_profile_id, "default");
+    assert_eq!(resp.project_id, "grpc-proj");
+
+    let got = fx.svc.get_work_session("grpc-ws-1").await.expect("sb readback");
+    assert_eq!(got.work_session.work_profile_id.as_deref(), Some("default"));
+    let _ = fx.svc.destroy("grpc-ws-1", false).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn e2e_mcp_tool_create_work_session() {
+    let Some(fx) = E2eFixture::start().await else { return; };
+    fx.ensure_project("mcp-proj").await;
+
+    let server = awesometree::mcp::ArpServer::new();
+    let params = awesometree::mcp::tools_workspace::WorkSessionCreateParams {
+        work_session_id: "mcp-ws-1".into(),
+        project_id: "mcp-proj".into(),
+        work_profile_id: None,
+        display_name: Some("mcp".into()),
+        headless: Some(true),
+    };
+    let result = server
+        .work_session_create(rmcp::handler::server::wrapper::Parameters(params))
+        .expect("mcp tool create");
+    let text = result
+        .content
+        .iter()
+        .filter_map(|c| match &c.raw {
+            rmcp::model::RawContent::Text(t) => Some(t.text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        text.contains("mcp-ws-1") && text.contains("default"),
+        "mcp tool output missing session/profile: {text}"
+    );
+
+    let got = fx.svc.get_work_session("mcp-ws-1").await.expect("sb readback");
+    assert_eq!(got.work_session.work_profile_id.as_deref(), Some("default"));
+    let _ = fx.svc.destroy("mcp-ws-1", false).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn e2e_cli_create_work_session() {
+    let Some(fx) = E2eFixture::start().await else { return; };
+    fx.ensure_project("cli-proj").await;
+
+    let bin = match option_env!("CARGO_BIN_EXE_awesometree") {
+        Some(p) => PathBuf::from(p),
+        None => {
+            // Built without gui binary name in this profile.
+            let fallback = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("target/debug/awesometree");
+            if !fallback.exists() {
+                if switchboard_required() {
+                    panic!("CLI binary missing under SWITCHBOARD_REQUIRED");
+                }
+                eprintln!("skip: awesometree CLI binary not built");
+                return;
+            }
+            fallback
+        }
+    };
+
+    let out = Command::new(&bin)
+        .args([
+            "work-session",
+            "create",
+            "cli-ws-1",
+            "--project",
+            "cli-proj",
+            "--headless",
+        ])
+        .env("AWESOMETREE_SWITCHBOARD_URL", &fx.endpoint)
+        .env("AWESOMETREE_RUNTIME_PATH", &fx.runtime_path)
+        .env("AWESOMETREE_SECRETS_PATH", &fx.secrets_path)
+        .env("HOME", fx._tmp.path().join("home"))
+        .output()
+        .expect("spawn cli");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success(),
+        "cli failed status={} stdout={stdout} stderr={stderr}",
+        out.status
+    );
+    assert!(
+        stdout.contains("cli-ws-1") || stdout.contains("work_session=cli-ws-1"),
+        "unexpected cli stdout: {stdout}"
+    );
+
+    let got = fx.svc.get_work_session("cli-ws-1").await.expect("sb readback");
+    assert_eq!(got.work_session.project_id.as_deref(), Some("cli-proj"));
+    let _ = fx.svc.destroy("cli-ws-1", false).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn e2e_core_client_create_work_session() {
+    let Some(fx) = E2eFixture::start().await else { return; };
+    fx.ensure_project("core-proj").await;
+
+    let app = awesometree::server::api_app();
+    let server = axum_test_serve(app).await;
+    // server.base like http://127.0.0.1:PORT
+    let base = server.base.trim_start_matches("http://");
+    let (host, port_s) = base.split_once(':').expect("host:port");
+    let host = host.to_string();
+    let port: u16 = port_s.parse().unwrap();
+
+    let admin = awesometree::auth::localhost_admin_token();
+    let token = awesometree::auth::encode_scoped_token(&admin);
+    let client = awesometree_core::ApiClient::new(host, port, token);
+
+    let info = tokio::task::spawn_blocking(move || {
+        client
+            .create_work_session(awesometree_core::CreateWorkSessionReq {
+                work_session_id: "core-ws-1".into(),
+                project_id: "core-proj".into(),
+                work_profile_id: String::new(),
+                display_name: "core".into(),
+                headless: true,
+            })
+    })
+    .await
+    .expect("join")
+    .expect("core create");
+    assert_eq!(info.work_session_id, "core-ws-1");
+    assert_eq!(info.project_id.as_deref(), Some("core-proj"));
+
+    let got = fx.svc.get_work_session("core-ws-1").await.expect("sb readback");
+    assert_eq!(got.work_session.work_profile_id.as_deref(), Some("default"));
+    let _ = fx.svc.destroy("core-ws-1", false).await;
+}
+
+#[tokio::test]
+async fn e2e_auth_scope_denies_other_project() {
+    let Some(fx) = E2eFixture::start().await else { return; };
+    fx.ensure_project("auth-a").await;
+    fx.ensure_project("auth-b").await;
+
+    // Create under project A via service.
+    fx.svc
+        .create_work_session(awesometree::model::work_session::CreateWorkSessionRequest {
+            work_session_id: "auth-ws-a".into(),
+            project_id: "auth-a".into(),
+            work_profile_id: None,
+            display_name: None,
+            realization: no_wm_opts(),
+        })
+        .await
+        .expect("create a");
+
+    let app = awesometree::server::api_app();
+    let server = axum_test_serve(app).await;
+    let client = reqwest::Client::new();
+
+    // Project-B scoped token cannot GET project-A session.
+    let resp = client
+        .get(format!("{}/api/work-sessions/auth-ws-a", server.base))
+        .header("Authorization", project_bearer("auth-b"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 403, "cross-project get must be forbidden");
+
+    // Cannot create into project A with B scope.
+    let resp = client
+        .post(format!("{}/api/work-sessions", server.base))
+        .header("Authorization", project_bearer("auth-b"))
+        .json(&serde_json::json!({
+            "work_session_id": "auth-ws-evil",
+            "project_id": "auth-a",
+            "no_tag": true,
+            "no_launch": true,
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 403, "cross-project create must be forbidden");
+
+    // List with B scope must not include A sessions.
+    let resp = client
+        .get(format!("{}/api/work-sessions", server.base))
+        .header("Authorization", project_bearer("auth-b"))
+        .send()
+        .await
+        .unwrap();
+    assert!(resp.status().is_success());
+    let list: serde_json::Value = resp.json().await.unwrap();
+    let arr = list.as_array().cloned().unwrap_or_default();
+    assert!(
+        arr.iter()
+            .all(|v| v["work_session"]["work_session_id"] != "auth-ws-a"
+                && v.get("work_session_id").and_then(|x| x.as_str()) != Some("auth-ws-a")),
+        "scoped list leaked foreign session: {list}"
+    );
+
+    let _ = fx.svc.destroy("auth-ws-a", false).await;
+}
+
+#[tokio::test]
+async fn e2e_secrets_never_in_list_or_runtime_json() {
+    let Some(fx) = E2eFixture::start().await else { return; };
+    fx.ensure_project("sec-proj").await;
+
+    // Headless create allocates bezalel token in secrets store.
+    let resp = fx
+        .svc
+        .create_work_session(awesometree::model::work_session::CreateWorkSessionRequest {
+            work_session_id: "sec-ws-1".into(),
+            project_id: "sec-proj".into(),
+            work_profile_id: None,
+            display_name: None,
+            realization: awesometree::model::work_session::RealizationOptions {
+                create_tag: false,
+                launch_apps: false,
+                headless: true,
+                no_wm: true,
+            },
+        })
+        .await
+        .expect("headless create");
+
+    let token = awesometree::runtime_store::get_bezalel_token("sec-ws-1")
+        .expect("secrets load")
+        .expect("bezalel token stored host-locally");
+    assert!(!token.is_empty());
+    assert!(token.chars().all(|c| c.is_ascii_hexdigit()));
+
+    // Runtime JSON must not embed the raw token.
+    let runtime_doc = std::fs::read_to_string(&fx.runtime_path).unwrap_or_default();
+    assert!(
+        !runtime_doc.contains(&token),
+        "runtime.json must not contain raw bezalel token"
+    );
+    assert!(!runtime_doc.contains("acp_"));
+    assert!(!runtime_doc.to_lowercase().contains("\"acp"));
+
+    // REST list/detail must not contain the raw token.
+    let app = awesometree::server::api_app();
+    let server = axum_test_serve(app).await;
+    let client = reqwest::Client::new();
+    for path in [
+        "/api/work-sessions".to_string(),
+        "/api/work-sessions/sec-ws-1".to_string(),
+    ] {
+        let body = client
+            .get(format!("{}{path}", server.base))
+            .header("Authorization", admin_bearer())
+            .send()
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
+        assert!(
+            !body.contains(&token),
+            "API {path} leaked bezalel token"
+        );
+        assert!(!body.contains("acp_port"), "API {path} leaked acp_port");
+    }
+
+    // Create response path also redacts.
+    let create_json = serde_json::to_string(&resp).unwrap();
+    assert!(!create_json.contains(&token));
+
+    // Switchboard authoritative record must not hold the token either.
+    let sb_view = fx.svc.get_work_session("sec-ws-1").await.unwrap();
+    let sb_json = serde_json::to_string(&sb_view.work_session).unwrap();
+    assert!(!sb_json.contains(&token));
+
+    let _ = fx.svc.destroy("sec-ws-1", false).await;
+}
+
+/// Minimal in-process HTTP listener for axum Router (no tower-test dep).
+struct TestHttp {
+    base: String,
+    _join: tokio::task::JoinHandle<()>,
+}
+
+async fn axum_test_serve(app: axum::Router) -> TestHttp {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let join = tokio::spawn(async move {
+        axum::serve(listener, app).await.ok();
+    });
+    // Tiny settle for accept loop.
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    TestHttp {
+        base: format!("http://{addr}"),
+        _join: join,
+    }
+}

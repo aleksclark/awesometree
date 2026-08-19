@@ -2,40 +2,67 @@
 
 Date: 2026-08-18
 Branch: awm/grok45-complete
-Workspace: /home/aleks/.paseo/worktrees/1xjojxd2/awm-grok45-complete
+Workspace: `/home/aleks/.paseo/worktrees/1xjojxd2/awm-grok45-complete`
 
 ## Gates
 
 | Gate | Result |
 |------|--------|
-| `cargo test --workspace` | PASS (incl. real Switchboard e2e) |
-| `cargo build --workspace` | PASS |
-| `cargo clippy --workspace -- -D warnings` | PASS |
-| Phase-01 full completion gate | NOT complete (see open items) |
+| `cargo test --workspace` | **PASS** (9 e2e + unit suite) |
+| `cargo build --workspace` | **PASS** |
+| `cargo clippy --workspace -- -D warnings` | **PASS** |
+| `SCREENSHOTS=1 cargo test --test screenshots` | **PASS** (picker.png, create-form.png) |
+| `make -C agent-work-model check` | **PASS** (validate/lint/generate + 52 pytest) |
+| `make -C switchboard/.../impl-project-catalog-mcp ci` | **PASS** (incl. gosec 0 issues, govulncheck) |
+| Android `./gradlew test` + `compileDebugKotlin` | **PASS** (no unit sources; compile green) |
+| Phase-01 full completion gate | **Near-complete** — see remaining gaps |
 
-## Done in this session
+## Done
 
-- Tree compiles; `arp_store` callers fixed (`list_tasks` + active filter).
-- ACP product surface removed from Android (`AcpScreen` route, `acpPort`, chat nav) and Rust (`ACP_PORT_*`, `CRUSH_ACP_PORT`).
-- Dual-authority: `state`/`arp_store` remain agent-runtime only; worktree create delegated to shared `workspace::ensure_git_worktree` with local-branch fallback.
-- E2E `tests/e2e_switchboard_awm.rs`: starts real Switchboard from impl worktree with isolated config; production MCP client; default-profile create; Switchboard read-back; runtime keyed by `work_session_id`; no ACP/secrets in runtime; missing-default fails closed via real delete+create path.
-- Tray labels and ARP docs examples updated off workspace-as-episode tool names.
-- Clippy `-D warnings` clean.
+### Authority / runtime
+- Switchboard sole authority for Project/WorkProfile/WorkSession.
+- Host-local `runtime_store` + `state`/`arp_store` agent rows keyed by `work_session_id` only.
+- Shared `WorkSessionService` + production MCP client; no local fallback store.
+- Git worktree realization via `workspace::ensure_git_worktree` (local-branch fallback when no `origin/*`).
 
-## Still open vs phase-01 completion gate
+### ACP purge
+- No `AcpScreen`, `acp_supervisor`, `ACP_PORT_*`, `CRUSH_ACP_PORT`, Android ACP nav/fields.
 
-- Not every public boundary has a positive production-orchestration creation test (CLI/daemon IPC/REST/MCP stdio/gRPC/core/GPUI/Android each).
-- Authorization + secret-redaction end-to-end suites incomplete.
-- Full anti-cheating audit / Switchboard `make ci` / AWM `make check` / Android build not run here.
-- Leftover term hits (justified or remaining cleanup):
-  - `docs/specs/project-interop/**` historical tombstone/samples (README already says superseded).
-  - Plan docs under `docs/plans/switchboard-awm-single-pass/**` describe pre-cutover world (expected).
-  - `proto/arp/v1/discovery.proto` still has `/v1/workspaces/{workspace_name}:watch` gRPC path (proto surface rename incomplete).
-  - `docker-compose.test.yml` no longer mounts project-interop fixture; still a thin ARP docker harness, not full Switchboard e2e.
-  - Android package dir still named `ui/workspaces` (screen is `WorkSessionsScreen`).
-  - gRPC convert helpers still named `work_session_to_proto_workspace` for wire compat with old proto message names.
-  - Server tests assert absence of `/api/workspaces` (good).
+### Public boundaries — positive production create (real Switchboard)
+| Surface | Evidence |
+|---------|----------|
+| Service | `e2e_default_profile_work_session_create` |
+| REST `/api/work-sessions` | `e2e_rest_create_work_session` |
+| gRPC `WorkSessionService` | `e2e_grpc_create_work_session` |
+| MCP tool `work_session/create` | `e2e_mcp_tool_create_work_session` |
+| CLI `work-session create` | `e2e_cli_create_work_session` |
+| core/UniFFI `ApiClient` | `e2e_core_client_create_work_session` |
+| Missing default fails closed | `e2e_missing_default_fails_closed` |
 
-## Commit
+GPUI picker/daemon IPC and full Android device create still lack dedicated e2e here (manual/UI paths use same `WorkSessionService`).
 
-Local WIP commit intended after green tests (no push).
+### Auth + secret redaction
+- REST enforces project scope on list/get/create/delete/transition (`Extension<ScopedToken>`).
+- `e2e_auth_scope_denies_other_project` — foreign project get/create/list blocked (403).
+- `e2e_secrets_never_in_list_or_runtime_json` — headless Bezalel token host-local only; absent from runtime.json, REST list/detail, create payload, Switchboard WorkSession JSON; no `acp_*`.
+
+### Surface cleanup
+- discovery.proto watch HTTP path → `/v1/work-sessions/{work_session_id}:watch`; field `work_session_id`.
+- gRPC helper `work_session_to_discovery_payload` (legacy alias deprecated).
+- Android package `ui/workspaces` → `ui/worksessions` + `WorkSessionsScreen.kt`.
+- Tray labels / ARP docs off workspace-as-episode tool names.
+- `docs/specs/project-interop/**` left as historical tombstone (README says superseded).
+
+## Still open / not claimed
+
+- GPUI picker + daemon socket IPC do not have automated Switchboard create e2e (same service path; not exercised via UI harness).
+- Android instrumented/device create not run (unit test task empty).
+- Full anti-cheating audit checklist from phase-01 not exhaustively re-walked line-by-line.
+- Discovery stream still uses wire message names `WatchWorkspace` / `WorkspaceEvent` (HTTP path renamed; major proto break deferred).
+- `WorkspaceServiceImpl` type alias remains for compile-compat; not a public route.
+- Docker ARP harness is still not full Switchboard e2e.
+
+## Commits
+
+- `6238887` WIP: finish Switchboard AWM cutover compile, ACP purge, e2e
+- (pending) multi-boundary e2e + auth/redaction + proto/Android rename

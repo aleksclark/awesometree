@@ -50,8 +50,11 @@ pub fn agent_to_proto(agent: &state::AgentInstanceState) -> arp_proto::AgentInst
     agent_instance_to_proto(agent)
 }
 
-/// Convert WorkSession view into the legacy Workspace message (discovery payloads).
-pub fn work_session_to_proto_workspace(
+/// Convert a WorkSession id into the discovery stream Workspace payload.
+///
+/// Not the AWM material Workspace Resource; discovery events still use the
+/// legacy Workspace message until those streams get a major proto rename.
+pub fn work_session_to_discovery_payload(
     work_session_id: &str,
     project_id: &str,
     dir: &str,
@@ -71,6 +74,18 @@ pub fn work_session_to_proto_workspace(
         created_at: None,
         metadata: None,
     }
+}
+
+/// Legacy name — prefer [`work_session_to_discovery_payload`].
+#[deprecated(note = "use work_session_to_discovery_payload")]
+pub fn work_session_to_proto_workspace(
+    work_session_id: &str,
+    project_id: &str,
+    dir: &str,
+    active: bool,
+    agents: &[state::AgentInstanceState],
+) -> arp_proto::Workspace {
+    work_session_to_discovery_payload(work_session_id, project_id, dir, active, agents)
 }
 
 pub fn work_session_state_to_proto(state: ModelState) -> i32 {
