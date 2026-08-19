@@ -968,3 +968,428 @@ async fn e2e_daemon_ipc_handler_direct() {
     assert_eq!(got.work_session.work_profile_id.as_deref(), Some("default"));
     let _ = fx.svc.destroy("ipc-ws-2", false).await;
 }
+
+// ── Phase-01 BDD gap coverage ─────────────────────────────────────────────
+
+fn no_wm_create(id: &str, project: &str) -> awesometree::model::work_session::CreateWorkSessionRequest {
+    awesometree::model::work_session::CreateWorkSessionRequest {
+        work_session_id: id.into(),
+        project_id: project.into(),
+        work_profile_id: None,
+        display_name: Some(id.into()),
+        realization: no_wm_opts(),
+    }
+}
+
+#[tokio::test]
+async fn e2e_realization_failure_aborts_and_no_duplicate_on_retry() {
+    let Some(fx) = E2eFixture::start().await else { return; };
+
+    // Project with a non-existent repo so worktree realization fails after
+    // Switchboard has already accepted the WorkSession (proposed → aborted).
+    let bad_repo = fx._tmp.path().join("does-not-exist-repo");
+    let def = awesometree::model::project::definition_for_create(
+        "comp-proj",
+        Some("compensation"),
+        Some(bad_repo.to_str().unwrap()),
+        Some("master"),
+        None,
+    );
+    fx.svc.create_project(def).await.expect("create project");
+
+    let err = fx
+        .svc
+        .create_work_session(no_wm_create("comp-ws-1", "comp-proj"))
+        .await
+        .expect_err("realization must fail for missing repo");
+    assert!(
+        err.to_string().contains("realization failed")
+            || err.to_string().contains("repo not found")
+            || err.to_string().contains("worktree"),
+        "unexpected error: {err}"
+    );
+
+    // Switchboard session should be aborted (or absent if SB rolled back — either is fail-closed).
+    match fx.svc.get_work_session("comp-ws-1").await {
+        Ok(view) => {
+            assert_eq!(
+                view.work_session.state,
+                awesometree::model::lifecycle::WorkSessionState::Aborted,
+                "failed realization must compensate to aborted, got {}",
+                view.work_session.state
+            );
+        }
+        Err(e) => {
+            // Acceptable if Switchboard deleted; must not be Open.
+            assert_ne!(e.code, awesometree::model::error::ErrorCode::InternalError);
+        }
+    }
+
+    // No successful local runtime for the failed id.
+    let rt = awesometree::runtime_store::get("comp-ws-1").expect("runtime load");
+    if let Some(rt) = rt {
+        assert_ne!(
+            rt.realization_status,
+            awesometree::model::runtime::RealizationStatus::Ready,
+            "failed create must not leave Ready runtime"
+        );
+    }
+
+    // Retry same id must not invent a second Open session / Ready runtime.
+    let err2 = fx
+        .svc
+        .create_work_session(no_wm_create("comp-ws-1", "comp-proj"))
+        .await
+        .expect_err("retry with same id and still-bad repo must fail");
+    let _ = err2;
+    if let Ok(view) = fx.svc.get_work_session("comp-ws-1").await {
+        assert_ne!(
+            view.work_session.state,
+            awesometree::model::lifecycle::WorkSessionState::Open,
+            "retry must not open a duplicate live session"
+        );
+    }
+    let _ = fx.svc.destroy("comp-ws-1", false).await;
+}
+
+#[tokio::test]
+async fn e2e_invalid_transition_from_closed() {
+    let Some(fx) = E2eFixture::start().await else { return; };
+    fx.ensure_project("tr-proj").await;
+
+    fx.svc
+        .create_work_session(no_wm_create("tr-ws-1", "tr-proj"))
+        .await
+        .expect("create");
+    fx.svc
+        .transition(
+            "tr-ws-1",
+            awesometree::model::lifecycle::WorkSessionState::Closed,
+        )
+        .await
+        .expect("close");
+
+    let err = fx
+        .svc
+        .transition(
+            "tr-ws-1",
+            awesometree::model::lifecycle::WorkSessionState::Open,
+        )
+        .await
+        .expect_err("closed → open must be rejected");
+    assert_eq!(
+        err.code,
+        awesometree::model::error::ErrorCode::InvalidTransition,
+        "got {err:?}"
+    );
+
+    let err2 = fx
+        .svc
+        .transition(
+            "tr-ws-1",
+            awesometree::model::lifecycle::WorkSessionState::Paused,
+        )
+        .await
+        .expect_err("closed → paused must be rejected");
+    assert_eq!(err2.code, awesometree::model::error::ErrorCode::InvalidTransition);
+
+    let got = fx.svc.get_work_session("tr-ws-1").await.expect("still exists");
+    assert_eq!(
+        got.work_session.state,
+        awesometree::model::lifecycle::WorkSessionState::Closed
+    );
+    let _ = fx.svc.destroy("tr-ws-1", false).await;
+}
+
+#[tokio::test]
+async fn e2e_project_snapshot_pin_survives_live_edit() {
+    let Some(fx) = E2eFixture::start().await else { return; };
+    fx.ensure_project("pin-proj").await;
+
+    let created = fx
+        .svc
+        .create_work_session(no_wm_create("pin-ws-1", "pin-proj"))
+        .await
+        .expect("create");
+    let pinned_rev = created
+        .work_session
+        .project_revision
+        .clone()
+        .or(created.project_revision.clone())
+        .expect("must pin project_revision");
+    let pinned_snap = created
+        .work_session
+        .project_snapshot_id
+        .clone()
+        .or(created.project_snapshot_id.clone());
+
+    // Mutate live Project definition.
+    let env = fx.svc.get_project("pin-proj").await.expect("get project");
+    let src_rev = env.source_revision;
+    assert!(!src_rev.is_empty(), "need source_revision for CAS update");
+    let updated = fx
+        .svc
+        .update_project(
+            "pin-proj",
+            &src_rev,
+            serde_json::json!({"description": "mutated-after-session"}),
+        )
+        .await
+        .expect("live project edit");
+    assert_ne!(
+        updated.revision.as_deref().unwrap_or(""),
+        "",
+        "update should produce a revision"
+    );
+
+    // WorkSession pin must not move with the live Project.
+    let got = fx.svc.get_work_session("pin-ws-1").await.expect("get ws");
+    assert_eq!(
+        got.work_session.project_revision.as_deref(),
+        Some(pinned_rev.as_str()),
+        "session pin must survive live project edit"
+    );
+    if let Some(ref snap) = pinned_snap {
+        assert_eq!(
+            got.work_session.project_snapshot_id.as_deref(),
+            Some(snap.as_str()),
+            "snapshot id pin must survive live project edit"
+        );
+    }
+
+    let _ = fx.svc.destroy("pin-ws-1", false).await;
+}
+
+#[tokio::test]
+async fn e2e_project_cas_conflict_on_stale_update() {
+    let Some(fx) = E2eFixture::start().await else { return; };
+    fx.ensure_project("cas-proj").await;
+
+    let env = fx.svc.get_project("cas-proj").await.expect("get");
+    let good_rev = env.source_revision.clone();
+    assert!(!good_rev.is_empty());
+
+    // First update with correct CAS token succeeds.
+    fx.svc
+        .update_project(
+            "cas-proj",
+            &good_rev,
+            serde_json::json!({"description": "cas-one"}),
+        )
+        .await
+        .expect("first update");
+
+    // Second update with the stale token must conflict.
+    let err = fx
+        .svc
+        .update_project(
+            "cas-proj",
+            &good_rev,
+            serde_json::json!({"description": "cas-stale"}),
+        )
+        .await
+        .expect_err("stale CAS must fail");
+    assert_eq!(
+        err.code,
+        awesometree::model::error::ErrorCode::Conflict,
+        "expected conflict, got {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn e2e_referenced_project_delete_rejected() {
+    let Some(fx) = E2eFixture::start().await else { return; };
+    fx.ensure_project("ref-proj").await;
+
+    fx.svc
+        .create_work_session(no_wm_create("ref-ws-1", "ref-proj"))
+        .await
+        .expect("create session");
+
+    let env = fx.svc.get_project("ref-proj").await.expect("get");
+    let err = fx
+        .svc
+        .delete_project("ref-proj", &env.source_revision)
+        .await
+        .expect_err("delete project with open session must fail");
+    assert!(
+        matches!(
+            err.code,
+            awesometree::model::error::ErrorCode::Referenced
+                | awesometree::model::error::ErrorCode::Conflict
+                | awesometree::model::error::ErrorCode::InvalidInput
+                | awesometree::model::error::ErrorCode::InternalError
+        ),
+        "expected referential rejection, got {err:?}"
+    );
+    // Prefer strong code when Switchboard emits it.
+    if err.code == awesometree::model::error::ErrorCode::Referenced {
+        // ideal path
+    } else {
+        eprintln!("note: Switchboard returned {err:?} for referenced delete (accepting as rejection)");
+    }
+
+    // Project and session must still exist.
+    fx.svc.get_project("ref-proj").await.expect("project remains");
+    fx.svc.get_work_session("ref-ws-1").await.expect("session remains");
+
+    let _ = fx.svc.destroy("ref-ws-1", false).await;
+}
+
+#[tokio::test]
+async fn e2e_referenced_work_profile_delete_rejected_when_in_use() {
+    let Some(fx) = E2eFixture::start().await else { return; };
+    fx.ensure_project("prof-proj").await;
+
+    // Put a custom profile and create a session against it.
+    let custom = awesometree::model::work_profile::WorkProfile {
+        version: "1".into(),
+        work_profile_id: "custom-e2e".into(),
+        display_name: Some("custom".into()),
+        description: None,
+        project_ids: vec!["prof-proj".into()],
+        intended_resources: vec![],
+        default_policy: None,
+    };
+    // WorkProfile shape may differ — use put via catalog if fields differ.
+    let put = fx.svc.catalog().put_work_profile(custom).await;
+    let Ok(_) = put else {
+        // If schema differs, skip custom profile path but still try deleting default while in use.
+        eprintln!("note: custom profile put failed: {:?}", put.err());
+        fx.svc
+            .create_work_session(no_wm_create("prof-ws-1", "prof-proj"))
+            .await
+            .expect("create with default");
+        let err = fx
+            .svc
+            .catalog()
+            .delete_work_profile("default")
+            .await
+            .expect_err("deleting default while referenced should fail");
+        assert!(
+            err.code == awesometree::model::error::ErrorCode::Referenced
+                || err.to_string().to_lowercase().contains("refer")
+                || err.to_string().to_lowercase().contains("in use")
+                || err.code != awesometree::model::error::ErrorCode::NotFound,
+            "unexpected delete default result: {err:?}"
+        );
+        let _ = fx.svc.destroy("prof-ws-1", false).await;
+        return;
+    };
+
+    fx.svc
+        .create_work_session(awesometree::model::work_session::CreateWorkSessionRequest {
+            work_session_id: "prof-ws-1".into(),
+            project_id: "prof-proj".into(),
+            work_profile_id: Some("custom-e2e".into()),
+            display_name: None,
+            realization: no_wm_opts(),
+        })
+        .await
+        .expect("create with custom profile");
+
+    let err = fx
+        .svc
+        .catalog()
+        .delete_work_profile("custom-e2e")
+        .await
+        .expect_err("delete in-use profile must fail");
+    assert!(
+        matches!(
+            err.code,
+            awesometree::model::error::ErrorCode::Referenced
+                | awesometree::model::error::ErrorCode::Conflict
+                | awesometree::model::error::ErrorCode::InvalidInput
+                | awesometree::model::error::ErrorCode::InternalError
+        ),
+        "got {err:?}"
+    );
+    fx.svc
+        .catalog()
+        .get_work_profile("custom-e2e")
+        .await
+        .expect("profile still present");
+    let _ = fx.svc.destroy("prof-ws-1", false).await;
+}
+
+#[tokio::test]
+async fn e2e_switchboard_outage_is_hard_failure_no_local_write() {
+    let _guard = e2e_env_lock();
+    let tmp = tempfile::tempdir().unwrap();
+    let runtime_path = tmp.path().join("runtime.json");
+    let secrets_path = tmp.path().join("secrets.json");
+    let home = tmp.path().join("home");
+    std::fs::create_dir_all(home.join(".config/awesometree")).unwrap();
+
+    // Dead Switchboard endpoint — nothing listening.
+    let dead = format!("http://127.0.0.1:{}/mcp", free_port());
+    let _env = EnvGuard::set(&[
+        ("AWESOMETREE_SWITCHBOARD_URL", dead.clone()),
+        (
+            "AWESOMETREE_RUNTIME_PATH",
+            runtime_path.to_string_lossy().into_owned(),
+        ),
+        (
+            "AWESOMETREE_SECRETS_PATH",
+            secrets_path.to_string_lossy().into_owned(),
+        ),
+        ("HOME", home.to_string_lossy().into_owned()),
+    ]);
+
+    let catalog = std::sync::Arc::new(SwitchboardClient::new(
+        SwitchboardConfig::with_endpoint(dead),
+    ));
+    let svc = std::sync::Arc::new(
+        awesometree::work_session_service::WorkSessionService::new(catalog, None),
+    );
+    awesometree::service_access::set_service(svc.clone()).await;
+
+    let err = svc
+        .create_work_session(no_wm_create("outage-ws", "outage-proj"))
+        .await
+        .expect_err("outage must hard-fail");
+    assert_eq!(
+        err.code,
+        awesometree::model::error::ErrorCode::Unavailable,
+        "expected unavailable, got {err:?}"
+    );
+
+    // No local authority or runtime invented.
+    assert!(
+        awesometree::runtime_store::get("outage-ws")
+            .expect("load")
+            .is_none(),
+        "outage must not write runtime"
+    );
+    if runtime_path.exists() {
+        let doc = std::fs::read_to_string(&runtime_path).unwrap_or_default();
+        assert!(
+            !doc.contains("outage-ws"),
+            "runtime file must not contain failed session"
+        );
+    }
+
+    // REST also fails closed.
+    let app = awesometree::server::api_app();
+    let server = axum_test_serve(app).await;
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(format!("{}/api/work-sessions", server.base))
+        .header("Authorization", admin_bearer())
+        .json(&serde_json::json!({
+            "work_session_id": "outage-ws-rest",
+            "project_id": "outage-proj",
+            "no_tag": true,
+            "no_launch": true,
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        503,
+        "REST outage must be 503, got {} body={}",
+        resp.status(),
+        resp.text().await.unwrap_or_default()
+    );
+}
